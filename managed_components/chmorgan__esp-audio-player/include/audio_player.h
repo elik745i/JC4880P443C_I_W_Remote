@@ -49,6 +49,8 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "driver/i2s_std.h"
@@ -89,6 +91,15 @@ typedef struct {
 /** Audio callback function type */
 typedef void (*audio_player_cb_t)(audio_player_cb_ctx_t *);
 
+typedef int (*audio_player_stream_read_fn)(void *user_ctx, uint8_t *buffer, size_t len, bool *is_eof);
+typedef void (*audio_player_stream_close_fn)(void *user_ctx);
+
+typedef struct {
+    audio_player_stream_read_fn read_fn;
+    audio_player_stream_close_fn close_fn;
+    void *user_ctx;
+} audio_player_stream_t;
+
 /**
  * @brief Play mp3 audio file.
  *
@@ -103,6 +114,21 @@ typedef void (*audio_player_cb_t)(audio_player_cb_ctx_t *);
  *    - Others: Fail
  */
 esp_err_t audio_player_play(FILE *fp);
+
+/**
+ * @brief Play a continuous MP3 stream.
+ *
+ * The stream callbacks are copied into the audio system. If ESP_OK is returned,
+ * ownership of user_ctx is transferred to the audio system and close_fn will be
+ * called when playback ends or errors out. If not ESP_OK is returned, the caller
+ * remains responsible for cleaning up user_ctx.
+ *
+ * @param stream Stream callbacks and user context.
+ * @return
+ *    - ESP_OK: Success in queuing play request
+ *    - Others: Fail
+ */
+esp_err_t audio_player_play_mp3_stream(audio_player_stream_t stream);
 
 /**
  * @brief Pause playback

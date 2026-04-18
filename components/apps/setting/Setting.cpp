@@ -316,7 +316,8 @@ typedef enum {
     WIFI_EVENT_CONNECTED = BIT(0),
     WIFI_EVENT_INIT_DONE = BIT(1),
     WIFI_EVENT_UI_INIT_DONE = BIT(2),
-    WIFI_EVENT_SCANING = BIT(3)
+    WIFI_EVENT_SCANING = BIT(3),
+    WIFI_EVENT_CONNECTING = BIT(4)
 } wifi_event_id_t;
 
 LV_IMG_DECLARE(img_app_setting);
@@ -331,6 +332,7 @@ AppSettings::AppSettings():
     _is_ui_resumed(false),
     _is_ui_del(true),
     _screen_index(UI_MAIN_SETTING_INDEX),
+    _wifi_signal_strength_level(WIFI_SIGNAL_STRENGTH_NONE),
     _savedWifiPanel(nullptr),
     _savedWifiValueLabel(nullptr),
     _savedWifiForgetButton(nullptr),
@@ -1938,6 +1940,7 @@ esp_err_t AppSettings::initWifi()
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED);
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_INIT_DONE);
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_SCANING);
+    xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTING);
     if(!(xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_UI_INIT_DONE)) {
         xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_UI_INIT_DONE);
     }
@@ -1968,13 +1971,32 @@ esp_err_t AppSettings::initWifi()
     ESP_ERROR_CHECK(esp_wifi_start());
 
     if (_nvs_param_map[NVS_KEY_WIFI_ENABLE] && has_saved_wifi) {
-        esp_err_t reconnect_err = esp_wifi_connect();
-        if ((reconnect_err != ESP_OK) && (reconnect_err != ESP_ERR_WIFI_CONN)) {
-            ESP_LOGW(TAG, "Immediate Wi-Fi reconnect failed to start: %s", esp_err_to_name(reconnect_err));
-        }
+        requestWifiConnect("saved credentials");
     }
 
     return ESP_OK;
+}
+
+void AppSettings::requestWifiConnect(const char *reason)
+{
+    if ((s_wifi_event_group == nullptr) || !_nvs_param_map[NVS_KEY_WIFI_ENABLE] || (st_wifi_ssid[0] == '\0')) {
+        return;
+    }
+
+    const EventBits_t wifi_bits = xEventGroupGetBits(s_wifi_event_group);
+    if ((wifi_bits & WIFI_EVENT_CONNECTED) || (wifi_bits & WIFI_EVENT_CONNECTING)) {
+        return;
+    }
+
+    esp_err_t err = esp_wifi_connect();
+    if ((err == ESP_OK) || (err == ESP_ERR_WIFI_CONN)) {
+        xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_CONNECTING);
+        ESP_LOGI(TAG, "Queued Wi-Fi connect (%s) for SSID:%s", (reason != nullptr) ? reason : "unknown", st_wifi_ssid);
+        return;
+    }
+
+    ESP_LOGW(TAG, "Wi-Fi connect request (%s) failed to start: %s",
+             (reason != nullptr) ? reason : "unknown", esp_err_to_name(err));
 }
 
 void AppSettings::startWifiScan(void)
@@ -1983,6 +2005,42 @@ void AppSettings::startWifiScan(void)
     xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_SCANING);
     lv_obj_clear_flag(ui_SpinnerScreenSettingWiFi, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(ui_SwitchPanelScreenSettingWiFiSwitch, LV_OBJ_FLAG_CLICKABLE);
+}
+
+AppSettings::WifiSignalStrengthLevel_t AppSettings::wifiSignalStrengthFromRssi(int rssi) const
+{
+    if (rssi > -100 && rssi <= -80) {
+        return WIFI_SIGNAL_STRENGTH_WEAK;
+    }
+
+    if (rssi > -80 && rssi <= -60) {
+        return WIFI_SIGNAL_STRENGTH_MODERATE;
+    }
+
+    if (rssi > -60) {
+        return WIFI_SIGNAL_STRENGTH_GOOD;
+    }
+
+    return WIFI_SIGNAL_STRENGTH_NONE;
+}
+
+void AppSettings::refreshWifiStatusBar(void)
+{
+    WifiSignalStrengthLevel_t signal_level = WIFI_SIGNAL_STRENGTH_NONE;
+    const EventBits_t wifi_bits = xEventGroupGetBits(s_wifi_event_group);
+
+    if (wifi_bits & WIFI_EVENT_CONNECTED) {
+        wifi_ap_record_t ap_info = {};
+        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+            signal_level = wifiSignalStrengthFromRssi(ap_info.rssi);
+        }
+    }
+
+    _wifi_signal_strength_level = signal_level;
+
+    bsp_display_lock(0);
+    status_bar->setWifiIconState(static_cast<int>(signal_level));
+    bsp_display_unlock();
 }
 
 void AppSettings::stopWifiScan(void)
@@ -2031,15 +2089,7 @@ void AppSettings::scanWifiAndUpdateUi(void)
         ESP_LOGI(TAG, "psk_flag: %d", psk_flag);
 #endif
 
-        if(ap_info[i].rssi > -100 && ap_info[i].rssi <= -80) {
-            _wifi_signal_strength_level = WIFI_SIGNAL_STRENGTH_WEAK;
-        } else if(ap_info[i].rssi > -80 && ap_info[i].rssi <= -60) {
-            _wifi_signal_strength_level = WIFI_SIGNAL_STRENGTH_MODERATE;
-        } else if(ap_info[i].rssi > -60) {
-            _wifi_signal_strength_level = WIFI_SIGNAL_STRENGTH_GOOD;
-        } else {
-            _wifi_signal_strength_level = WIFI_SIGNAL_STRENGTH_NONE;
-        }
+        _wifi_signal_strength_level = wifiSignalStrengthFromRssi(ap_info[i].rssi);
 #if ENABLE_DEBUG_LOG
         ESP_LOGI(TAG, "signal_strength: %d", _wifi_signal_strength_level);
 #endif
@@ -2119,19 +2169,8 @@ void AppSettings::euiRefresTask(void *arg)
         // Update WiFi icon state
         if((xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_CONNECTED)) {
             app_sntp_init();
-
-            bsp_display_lock(0);
-            if(app->_wifi_signal_strength_level == WIFI_SIGNAL_STRENGTH_NONE) {
-                app->status_bar->setWifiIconState(0);
-            } else if(app->_wifi_signal_strength_level == WIFI_SIGNAL_STRENGTH_WEAK) {
-                app->status_bar->setWifiIconState(1);
-            } else if(app->_wifi_signal_strength_level == WIFI_SIGNAL_STRENGTH_MODERATE) {
-                app->status_bar->setWifiIconState(2);
-            } else if (app->_wifi_signal_strength_level == WIFI_SIGNAL_STRENGTH_GOOD) {
-                app->status_bar->setWifiIconState(3);
-            }
-            bsp_display_unlock();
         }
+        app->refreshWifiStatusBar();
 
         /* Updte Smart Gadget app */
         // app->updateGadgetTime(timeinfo);
@@ -2201,7 +2240,6 @@ void AppSettings::wifiScanTask(void *arg)
 {
     AppSettings *app = (AppSettings *)arg;
     esp_err_t ret = ESP_OK;
-    TickType_t last_reconnect_attempt = 0;
 
     if (app == NULL) {
         ESP_LOGE(TAG, "App instance is NULL");
@@ -2220,8 +2258,6 @@ void AppSettings::wifiScanTask(void *arg)
     } else {
         ESP_LOGE(TAG, "wifi_init failed");
     }
-
-    last_reconnect_attempt = xTaskGetTickCount() - pdMS_TO_TICKS(WIFI_RECONNECT_RETRY_PERIOD_MS);
 
     while (true) {
         if((xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_INIT_DONE) &&
@@ -2245,16 +2281,6 @@ void AppSettings::wifiScanTask(void *arg)
                 app->applyManualTimezonePreference();
             }
             app_sntp_init();
-        }
-
-        if (app->_nvs_param_map[NVS_KEY_WIFI_ENABLE] && (st_wifi_ssid[0] != '\0') &&
-            !(wifi_bits & WIFI_EVENT_CONNECTED) && !(wifi_bits & WIFI_EVENT_SCANING) &&
-            ((xTaskGetTickCount() - last_reconnect_attempt) >= pdMS_TO_TICKS(WIFI_RECONNECT_RETRY_PERIOD_MS))) {
-            esp_err_t err = esp_wifi_connect();
-            if ((err != ESP_OK) && (err != ESP_ERR_WIFI_CONN)) {
-                ESP_LOGW(TAG, "Periodic reconnect attempt failed: %s", esp_err_to_name(err));
-            }
-            last_reconnect_attempt = xTaskGetTickCount();
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -2283,13 +2309,14 @@ void AppSettings::wifiConnectTask(void *arg)
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
+    xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED | WIFI_EVENT_CONNECTING);
 
     app->setNvsStringParam(NVS_KEY_WIFI_SSID, st_wifi_ssid);
     app->setNvsStringParam(NVS_KEY_WIFI_PASSWORD, st_wifi_password);
     app->setNvsParam(NVS_KEY_WIFI_ENABLE, 1);
     app->_nvs_param_map[NVS_KEY_WIFI_ENABLE] = true;
     ESP_LOGI(TAG, "Starting Wi-Fi connection for SSID: %s", st_wifi_ssid);
-    esp_wifi_connect();
+    app->requestWifiConnect("manual connection");
 
     EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
             WIFI_EVENT_CONNECTED,
@@ -2356,20 +2383,14 @@ void AppSettings::wifiEventHandler(void* arg, esp_event_base_t event_base, int32
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         ESP_LOGI(TAG, "Connected to AP SSID:%s", st_wifi_ssid);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        if (app->_nvs_param_map[NVS_KEY_WIFI_ENABLE] && (st_wifi_ssid[0] != '\0')) {
-            esp_err_t err = esp_wifi_connect();
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Auto reconnect failed to start: %s", esp_err_to_name(err));
-            }
+        if (app != nullptr) {
+            app->requestWifiConnect("station start");
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED);
+        xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED | WIFI_EVENT_CONNECTING);
         ESP_LOGI(TAG, "Disconnected from AP SSID:%s", st_wifi_ssid);
-        if (app->_nvs_param_map[NVS_KEY_WIFI_ENABLE] && (st_wifi_ssid[0] != '\0')) {
-            esp_err_t err = esp_wifi_connect();
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "Reconnect retry failed: %s", esp_err_to_name(err));
-            }
+        if (app != nullptr) {
+            app->requestWifiConnect("disconnect recovery");
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
         if(lv_obj_has_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN) &&
@@ -2384,9 +2405,11 @@ void AppSettings::wifiEventHandler(void* arg, esp_event_base_t event_base, int32
             }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTING);
         xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_CONNECTED);
         if (app != nullptr) {
             app->_autoTimezoneRefreshPending = true;
+            app->refreshWifiStatusBar();
         }
     }
 }

@@ -22,6 +22,8 @@
 
 static const char *TAG = "sntp";
 static char s_timezone[32] = "UTC0";
+static bool s_sntp_initialized = false;
+static bool s_sntp_initializing = false;
 
 static void obtain_time(void);
 static void initialize_sntp(void);
@@ -55,18 +57,19 @@ static void time_sync_notification_cb(struct timeval *tv)
 
 void app_sntp_init(void)
 {
-    static bool sntp_initialized = false;
     time_t now;
     struct tm timeinfo;
-
-    if (sntp_initialized) {
-        return;
-    }
 
     time(&now);
     localtime_r(&now, &timeinfo);
 
     app_sntp_set_timezone(s_timezone);
+
+    if (s_sntp_initialized || s_sntp_initializing) {
+        return;
+    }
+
+    s_sntp_initializing = true;
     // Is time set? If not, tm_year will be (1970 - 1900).
     if (timeinfo.tm_year < (2016 - 1900)) {
         ESP_LOGI(TAG, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
@@ -112,7 +115,8 @@ void app_sntp_init(void)
         }
     }
 
-    sntp_initialized = true;
+    s_sntp_initializing = false;
+    s_sntp_initialized = true;
 }
 
 static void obtain_time(void)

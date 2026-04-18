@@ -109,10 +109,13 @@ private:
     void updateUiByNvsParam(void);
     // WiFi
     esp_err_t initWifi(void);
+    void requestWifiConnect(const char *reason);
     bool restoreWifiCredentials(void);
     void startWifiScan(void);
     void stopWifiScan(void);
     void scanWifiAndUpdateUi(void);
+    WifiSignalStrengthLevel_t wifiSignalStrengthFromRssi(int rssi) const;
+    void refreshWifiStatusBar(void);
     // Smart Gadget
     // void updateGadgetTime(struct tm timeinfo);
 

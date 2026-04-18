@@ -72,6 +72,7 @@ private:
     void handleEntrySelection(size_t index);
     const char *entrySymbol(void) const;
     const char *entrySymbol(const ListEntry &entry) const;
+    void stopPreviewPlayback(void);
 
     static std::string percentEncode(const std::string &value);
     bool fetchEntries(const std::string &url, ViewMode next_mode, StationSource next_source, const std::string &status_text,

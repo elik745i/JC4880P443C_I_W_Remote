@@ -27,6 +27,8 @@
 #include <sys/stat.h>
 
 #include "esp_check.h"
+#include "esp_heap_caps.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -41,6 +43,22 @@
 
 static const char *TAG = "audio";
 
+static void *audio_psram_malloc(size_t size, const char *label)
+{
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        ESP_LOGI(TAG, "%s allocated in PSRAM (%u bytes)", label, (unsigned)size);
+        return ptr;
+    }
+
+    ptr = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        ESP_LOGW(TAG, "%s allocated in internal RAM fallback (%u bytes)", label, (unsigned)size);
+    }
+
+    return ptr;
+}
+
 typedef enum {
     AUDIO_PLAYER_REQUEST_NONE = 0,
     AUDIO_PLAYER_REQUEST_PAUSE,              /**< pause playback */
@@ -51,11 +69,18 @@ typedef enum {
     AUDIO_PLAYER_REQUEST_MAX
 } audio_player_event_type_t;
 
+typedef enum {
+    AUDIO_PLAYER_SOURCE_FILE = 0,
+    AUDIO_PLAYER_SOURCE_MP3_STREAM,
+} audio_player_source_type_t;
+
 typedef struct {
     audio_player_event_type_t type;
-
-    // valid if type == AUDIO_PLAYER_EVENT_TYPE_PLAY
-    FILE* fp;
+    audio_player_source_type_t source_type;
+    union {
+        FILE* fp;
+        audio_player_stream_t stream;
+    } source;
 } audio_player_event_t;
 
 typedef enum {
@@ -242,7 +267,10 @@ static esp_err_t aplay_file(audio_instance_t *i, FILE *fp)
     memset(&i2s_format, 0, sizeof(i2s_format));
 
     esp_err_t ret = ESP_OK;
-    audio_player_event_t audio_event = { .type = AUDIO_PLAYER_REQUEST_NONE, .fp = NULL };
+    audio_player_event_t audio_event = {};
+    audio_event.type = AUDIO_PLAYER_REQUEST_NONE;
+    audio_event.source_type = AUDIO_PLAYER_SOURCE_FILE;
+    audio_event.source.fp = NULL;
 
     FILE_TYPE file_type = FILE_TYPE_UNKNOWN;
 
@@ -405,6 +433,163 @@ clean_up:
     return ret;
 }
 
+static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_stream_t *stream,
+    decode_data *pData, mp3_instance *pInstance)
+{
+    MP3FrameInfo frame_info;
+
+    size_t unread_bytes = pInstance->bytes_in_data_buf - (pInstance->read_ptr - pInstance->data_buf);
+
+    if (unread_bytes < 1.25 * MAINBUF_SIZE && !pInstance->eof_reached) {
+        uint8_t *write_ptr = pInstance->data_buf + unread_bytes;
+        size_t free_space = pInstance->data_buf_size - unread_bytes;
+
+        memmove(pInstance->data_buf, pInstance->read_ptr, unread_bytes);
+
+        bool is_eof = false;
+        int nRead = stream->read_fn(stream->user_ctx, write_ptr, free_space, &is_eof);
+        if (nRead < 0) {
+            ESP_LOGE(TAG, "stream read failed");
+            return DECODE_STATUS_ERROR;
+        }
+
+        pInstance->bytes_in_data_buf = unread_bytes + nRead;
+        pInstance->read_ptr = pInstance->data_buf;
+
+        if ((nRead == 0) || is_eof) {
+            pInstance->eof_reached = true;
+        }
+
+        unread_bytes = pInstance->bytes_in_data_buf;
+    }
+
+    if (unread_bytes == 0) {
+        return DECODE_STATUS_DONE;
+    }
+
+    int offset = MP3FindSyncWord(pInstance->read_ptr, unread_bytes);
+    if (offset >= 0) {
+        uint8_t *read_ptr = pInstance->read_ptr + offset;
+        unread_bytes -= offset;
+        int mp3_dec_err = MP3Decode(mp3_decoder, &read_ptr, (int*)&unread_bytes,
+            reinterpret_cast<int16_t *>(pData->samples), 0);
+
+        pInstance->read_ptr = read_ptr;
+
+        if (mp3_dec_err == ERR_MP3_NONE) {
+            MP3GetLastFrameInfo(mp3_decoder, &frame_info);
+
+            pData->fmt.sample_rate = frame_info.samprate;
+            pData->fmt.bits_per_sample = frame_info.bitsPerSample;
+            pData->fmt.channels = frame_info.nChans;
+            pData->frame_count = (frame_info.outputSamps / frame_info.nChans);
+        } else {
+            if (pInstance->eof_reached) {
+                return DECODE_STATUS_DONE;
+            }
+            if (mp3_dec_err == ERR_MP3_MAINDATA_UNDERFLOW) {
+                return DECODE_STATUS_NO_DATA_CONTINUE;
+            }
+            ESP_LOGE(TAG, "stream decode error %d", mp3_dec_err);
+            return DECODE_STATUS_NO_DATA_CONTINUE;
+        }
+    } else {
+        pData->frame_count = 0;
+
+        size_t words_to_drop = unread_bytes / BYTES_IN_WORD;
+        size_t bytes_to_drop = words_to_drop * BYTES_IN_WORD;
+        if (unread_bytes < BYTES_IN_WORD) {
+            bytes_to_drop = unread_bytes;
+        }
+        pInstance->read_ptr += bytes_to_drop;
+    }
+
+    return DECODE_STATUS_CONTINUE;
+}
+
+static esp_err_t aplay_mp3_stream(audio_instance_t *i, audio_player_stream_t *stream)
+{
+    format i2s_format;
+    memset(&i2s_format, 0, sizeof(i2s_format));
+
+    esp_err_t ret = ESP_OK;
+    audio_player_event_t audio_event = { .type = AUDIO_PLAYER_REQUEST_NONE, .source_type = AUDIO_PLAYER_SOURCE_FILE };
+
+    i->mp3_data.bytes_in_data_buf = 0;
+    i->mp3_data.read_ptr = i->mp3_data.data_buf;
+    i->mp3_data.eof_reached = false;
+
+    do {
+        if (pdPASS == xQueuePeek(i->event_queue, &audio_event, 0)) {
+            if (AUDIO_PLAYER_REQUEST_PAUSE == audio_event.type) {
+                xQueueReceive(i->event_queue, &audio_event, 0);
+                set_state(i, AUDIO_PLAYER_STATE_PAUSE);
+
+                while (1) {
+                    xQueuePeek(i->event_queue, &audio_event, portMAX_DELAY);
+
+                    if ((AUDIO_PLAYER_REQUEST_PLAY != audio_event.type) &&
+                        (AUDIO_PLAYER_REQUEST_STOP != audio_event.type) &&
+                        (AUDIO_PLAYER_REQUEST_RESUME != audio_event.type)) {
+                        xQueueReceive(i->event_queue, &audio_event, 0);
+                    } else {
+                        break;
+                    }
+                }
+
+                if (AUDIO_PLAYER_REQUEST_RESUME == audio_event.type) {
+                    xQueueReceive(i->event_queue, &audio_event, 0);
+                    continue;
+                }
+            }
+
+            if ((AUDIO_PLAYER_REQUEST_STOP == audio_event.type) ||
+                (AUDIO_PLAYER_REQUEST_PLAY == audio_event.type)) {
+                ret = ESP_OK;
+                goto clean_up;
+            }
+
+            xQueueReceive(i->event_queue, &audio_event, 0);
+            continue;
+        }
+
+        set_state(i, AUDIO_PLAYER_STATE_PLAYING);
+
+        DECODE_STATUS decode_status = decode_mp3_stream(i->mp3_decoder, stream, &i->output, &i->mp3_data);
+        if (decode_status == DECODE_STATUS_CONTINUE) {
+            if (i->output.fmt.channels == 1) {
+                ret = mono_to_stereo(i->output.fmt.bits_per_sample, i->output);
+                if (ret != ESP_OK) {
+                    goto clean_up;
+                }
+            }
+
+            if ((i2s_format.sample_rate != i->output.fmt.sample_rate) ||
+                (i2s_format.channels != i->output.fmt.channels) ||
+                (i2s_format.bits_per_sample != i->output.fmt.bits_per_sample)) {
+                i2s_format = i->output.fmt;
+                i2s_slot_mode_t channel_setting = (i2s_format.channels == 1) ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO;
+                ret = i->config.clk_set_fn(i2s_format.sample_rate, i2s_format.bits_per_sample, channel_setting);
+                ESP_GOTO_ON_ERROR(ret, clean_up, TAG, "i2s_set_clk");
+            }
+
+            size_t i2s_bytes_written = 0;
+            size_t bytes_to_write = i->output.frame_count * i->output.fmt.channels * (i2s_format.bits_per_sample / 8);
+            i->config.write_fn(i->output.samples, bytes_to_write, &i2s_bytes_written, portMAX_DELAY);
+            if (bytes_to_write != i2s_bytes_written) {
+                ESP_LOGE(TAG, "to write %d != written %d", bytes_to_write, i2s_bytes_written);
+            }
+        } else if (decode_status == DECODE_STATUS_NO_DATA_CONTINUE) {
+            continue;
+        } else {
+            break;
+        }
+    } while (true);
+
+clean_up:
+    return ret;
+}
+
 static void audio_task(void *pvParam)
 {
     audio_instance_t *i = static_cast<audio_instance_t*>(pvParam);
@@ -452,14 +637,25 @@ static void audio_task(void *pvParam)
         }
 
         i->config.mute_fn(AUDIO_PLAYER_UNMUTE);
-        esp_err_t ret_val = aplay_file(i, audio_event.fp);
+        esp_err_t ret_val = ESP_OK;
+        if (audio_event.source_type == AUDIO_PLAYER_SOURCE_MP3_STREAM) {
+            ret_val = aplay_mp3_stream(i, &audio_event.source.stream);
+        } else {
+            ret_val = aplay_file(i, audio_event.source.fp);
+        }
         if(ret_val != ESP_OK)
         {
             ESP_LOGE(TAG, "aplay_file() %d", ret_val);
         }
         i->config.mute_fn(AUDIO_PLAYER_MUTE);
 
-        if(audio_event.fp) fclose(audio_event.fp);
+        if (audio_event.source_type == AUDIO_PLAYER_SOURCE_MP3_STREAM) {
+            if (audio_event.source.stream.close_fn) {
+                audio_event.source.stream.close_fn(audio_event.source.stream.user_ctx);
+            }
+        } else if (audio_event.source.fp) {
+            fclose(audio_event.source.fp);
+        }
     }
 }
 
@@ -479,28 +675,44 @@ static esp_err_t audio_send_event(audio_instance_t *i, audio_player_event_t even
 esp_err_t audio_player_play(FILE *fp)
 {
     LOGI_1("%s", __FUNCTION__);
-    audio_player_event_t event = { .type = AUDIO_PLAYER_REQUEST_PLAY, .fp = fp };
+    audio_player_event_t event = {};
+    event.type = AUDIO_PLAYER_REQUEST_PLAY;
+    event.source_type = AUDIO_PLAYER_SOURCE_FILE;
+    event.source.fp = fp;
+    return audio_send_event(&instance, event);
+}
+
+esp_err_t audio_player_play_mp3_stream(audio_player_stream_t stream)
+{
+    LOGI_1("%s", __FUNCTION__);
+    audio_player_event_t event = {};
+    event.type = AUDIO_PLAYER_REQUEST_PLAY;
+    event.source_type = AUDIO_PLAYER_SOURCE_MP3_STREAM;
+    event.source.stream = stream;
     return audio_send_event(&instance, event);
 }
 
 esp_err_t audio_player_pause(void)
 {
     LOGI_1("%s", __FUNCTION__);
-    audio_player_event_t event = { .type = AUDIO_PLAYER_REQUEST_PAUSE, .fp = NULL };
+    audio_player_event_t event = {};
+    event.type = AUDIO_PLAYER_REQUEST_PAUSE;
     return audio_send_event(&instance, event);
 }
 
 esp_err_t audio_player_resume(void)
 {
     LOGI_1("%s", __FUNCTION__);
-    audio_player_event_t event = { .type = AUDIO_PLAYER_REQUEST_RESUME, .fp = NULL };
+    audio_player_event_t event = {};
+    event.type = AUDIO_PLAYER_REQUEST_RESUME;
     return audio_send_event(&instance, event);
 }
 
 esp_err_t audio_player_stop(void)
 {
     LOGI_1("%s", __FUNCTION__);
-    audio_player_event_t event = { .type = AUDIO_PLAYER_REQUEST_STOP, .fp = NULL };
+    audio_player_event_t event = {};
+    event.type = AUDIO_PLAYER_REQUEST_STOP;
     return audio_send_event(&instance, event);
 }
 
@@ -511,7 +723,8 @@ esp_err_t audio_player_stop(void)
 static esp_err_t _internal_audio_player_shutdown_thread(void)
 {
     LOGI_1("%s", __FUNCTION__);
-    audio_player_event_t event = { .type = AUDIO_PLAYER_REQUEST_SHUTDOWN_THREAD, .fp = NULL };
+    audio_player_event_t event = {};
+    event.type = AUDIO_PLAYER_REQUEST_SHUTDOWN_THREAD;
     return audio_send_event(&instance, event);
 }
 
@@ -519,9 +732,9 @@ static void cleanup_memory(audio_instance_t &i)
 {
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
     if(i.mp3_decoder) MP3FreeDecoder(i.mp3_decoder);
-    if(i.mp3_data.data_buf) free(i.mp3_data.data_buf);
+    if(i.mp3_data.data_buf) heap_caps_free(i.mp3_data.data_buf);
 #endif
-    if(i.output.samples) free(i.output.samples);
+    if(i.output.samples) heap_caps_free(i.output.samples);
 
     vQueueDelete(i.event_queue);
 }
@@ -541,7 +754,7 @@ esp_err_t audio_player_new(audio_player_config_t config)
     /** See https://github.com/ultraembedded/libhelix-mp3/blob/0a0e0673f82bc6804e5a3ddb15fb6efdcde747cd/testwrap/main.c#L74 */
     instance.output.samples_capacity = MAX_NCHAN * MAX_NGRAN * MAX_NSAMP;
     instance.output.samples_capacity_max = instance.output.samples_capacity * 2;
-    instance.output.samples = static_cast<uint8_t*>(malloc(instance.output.samples_capacity_max));
+    instance.output.samples = static_cast<uint8_t*>(audio_psram_malloc(instance.output.samples_capacity_max, "audio output buffer"));
     LOGI_1("samples_capacity %d bytes", instance.output.samples_capacity_max);
     int ret = ESP_OK;
     ESP_GOTO_ON_FALSE(NULL != instance.output.samples, ESP_ERR_NO_MEM, cleanup,
@@ -549,7 +762,7 @@ esp_err_t audio_player_new(audio_player_config_t config)
 
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
     instance.mp3_data.data_buf_size = MAINBUF_SIZE * 3;
-    instance.mp3_data.data_buf = static_cast<uint8_t*>(malloc(instance.mp3_data.data_buf_size));
+    instance.mp3_data.data_buf = static_cast<uint8_t*>(audio_psram_malloc(instance.mp3_data.data_buf_size, "mp3 data buffer"));
     ESP_GOTO_ON_FALSE(NULL != instance.mp3_data.data_buf, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed allocate mp3 data buffer");
 
@@ -559,14 +772,42 @@ esp_err_t audio_player_new(audio_player_config_t config)
 #endif
 
     instance.running = true;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
+    task_val = xTaskCreatePinnedToCoreWithCaps(
+        (TaskFunction_t)        audio_task,
+                                "Audio Task",
+                                8 * 1024,
+                                &instance,
+        (UBaseType_t)           instance.config.priority,
+        (TaskHandle_t * const)  NULL,
+        (BaseType_t)            instance.config.coreID,
+                                MALLOC_CAP_SPIRAM);
+    if (task_val == pdPASS) {
+        ESP_LOGI(TAG, "Audio task created with PSRAM-backed stack");
+    } else {
+        ESP_LOGW(TAG, "Falling back to internal RAM for audio task stack");
+    }
+
+    if (task_val != pdPASS) {
+        task_val = xTaskCreatePinnedToCore(
+            (TaskFunction_t)        audio_task,
+                                    "Audio Task",
+                                    8 * 1024,
+                                    &instance,
+            (UBaseType_t)           instance.config.priority,
+            (TaskHandle_t * const)  NULL,
+            (BaseType_t)            instance.config.coreID);
+    }
+#else
     task_val = xTaskCreatePinnedToCore(
         (TaskFunction_t)        audio_task,
                                 "Audio Task",
-                                4 * 1024,
+                                8 * 1024,
                                 &instance,
         (UBaseType_t)           instance.config.priority,
         (TaskHandle_t * const)  NULL,
         (BaseType_t)            instance.config.coreID);
+#endif
 
     ESP_GOTO_ON_FALSE(pdPASS == task_val, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed create audio task");

@@ -38,7 +38,7 @@ static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
 
 static audio_player_cb_t audio_idle_callback = NULL;
 static void *audio_idle_cb_user_data = NULL;
-static char audio_file_path[128];
+static char audio_file_path[512];
 
 #define DISPLAY_IDLE_TASK_STACK_SIZE            (4096)
 #define DISPLAY_IDLE_TASK_PRIORITY              (1)
@@ -95,6 +95,16 @@ static void audio_callback(audio_player_cb_ctx_t *ctx)
         ctx->user_ctx = audio_idle_cb_user_data;
         audio_idle_callback(ctx);
     }
+}
+
+static void audio_file_path_set(const char *path)
+{
+    if (path == NULL) {
+        audio_file_path[0] = '\0';
+        return;
+    }
+
+    snprintf(audio_file_path, sizeof(audio_file_path), "%s", path);
 }
 
 static int clamp_display_brightness_percent(int brightness_percent)
@@ -377,7 +387,7 @@ esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int in
     ESP_LOGI(TAG, "Playing '%s'", filename);
     ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
 
-    memcpy(audio_file_path, filename, sizeof(audio_file_path));
+    audio_file_path_set(filename);
 
     return ESP_OK;
 }
@@ -391,7 +401,7 @@ esp_err_t bsp_extra_player_play_file(const char *file_path)
     ESP_LOGI(TAG, "Playing '%s'", file_path);
     ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
 
-    memcpy(audio_file_path, file_path, sizeof(audio_file_path));
+    audio_file_path_set(file_path);
 
     return ESP_OK;
 }

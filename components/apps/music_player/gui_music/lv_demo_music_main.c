@@ -69,6 +69,8 @@ static void track_load(uint32_t id);
 static void stop_start_anim_timer_cb(lv_timer_t * t);
 static void spectrum_end_cb(lv_anim_t * a);
 static void album_fade_anim_cb(void * var, int32_t v);
+static void music_player_event_cb(audio_player_cb_ctx_t *ctx);
+static void music_player_async_next_cb(void * context);
 static int32_t get_cos(int32_t deg, int32_t a);
 static int32_t get_sin(int32_t deg, int32_t a);
 
@@ -104,6 +106,7 @@ static const uint16_t rnd_array[30] = {994, 285, 553, 11, 792, 707, 966, 641, 85
 
 static bool pause = false;
 static bool pause_exit = false;
+static bool closing = false;
 
 /**********************
  *      MACROS
@@ -144,6 +147,7 @@ lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent)
     track_id = 0;
     start_anim = false;
     spectrum_len = 0;
+    closing = false;
 
 #if APP_DEMO_MUSIC_LARGE
     font_small = &lv_font_montserrat_22;
@@ -249,6 +253,8 @@ lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent)
     sec_counter_timer = lv_timer_create(timer_cb, 1000, NULL);
     lv_timer_pause(sec_counter_timer);
 
+    bsp_extra_player_register_callback(music_player_event_cb, NULL);
+
     /*Animate in the content after the intro time*/
     lv_anim_t a;
 
@@ -316,6 +322,8 @@ lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent)
 
 void _lv_demo_music_main_close(void)
 {
+    closing = true;
+    bsp_extra_player_register_callback(NULL, NULL);
     if(stop_start_anim_timer) lv_timer_del(stop_start_anim_timer);
     lv_timer_del(sec_counter_timer);
 }
@@ -1090,7 +1098,6 @@ static void timer_cb(lv_timer_t * t)
 static void spectrum_end_cb(lv_anim_t * a)
 {
     LV_UNUSED(a);
-    _lv_demo_music_album_next(true);
 }
 
 static void stop_start_anim_timer_cb(lv_timer_t * t)
@@ -1104,5 +1111,29 @@ static void stop_start_anim_timer_cb(lv_timer_t * t)
 static void album_fade_anim_cb(void * var, int32_t v)
 {
     lv_obj_set_style_img_opa(var, v, 0);
+}
+
+static void music_player_event_cb(audio_player_cb_ctx_t *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    if ((ctx->audio_event != AUDIO_PLAYER_CALLBACK_EVENT_IDLE) || closing || pause || !playing) {
+        return;
+    }
+
+    lv_async_call(music_player_async_next_cb, NULL);
+}
+
+static void music_player_async_next_cb(void * context)
+{
+    LV_UNUSED(context);
+
+    if (closing || pause || !playing) {
+        return;
+    }
+
+    _lv_demo_music_album_next(true);
 }
 #endif /*APP_DEMO_MUSIC_ENABLE*/

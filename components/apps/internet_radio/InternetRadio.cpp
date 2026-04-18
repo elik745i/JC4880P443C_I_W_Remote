@@ -9,8 +9,10 @@
 
 #include "audio_player.h"
 #include "cJSON.h"
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,12 +24,10 @@ namespace {
 static const char *TAG = "InternetRadio";
 static constexpr const char *kApiBaseUrl = "http://de1.api.radio-browser.info/json";
 static constexpr int kListLimit = 40;
-static constexpr size_t kPreviewMaxBytes = 1024 * 1024;
-static constexpr size_t kPreviewMinBytes = 48 * 1024;
-static constexpr uint32_t kPreviewTaskStackSize = 8 * 1024;
+static constexpr uint32_t kPreviewTaskStackSize = 32 * 1024;
 static constexpr UBaseType_t kPreviewTaskPriority = 3;
-
-uint8_t *s_previewBuffer = nullptr;
+static constexpr TickType_t kPreviewStopWait = pdMS_TO_TICKS(1500);
+static constexpr int kStreamTimeoutMs = 500;
 
 struct PreviewTaskContext {
     InternetRadio *app = nullptr;
@@ -41,12 +41,91 @@ struct AsyncStatusContext {
     std::string text;
 };
 
-void release_preview_buffer()
+struct HttpMp3StreamContext {
+    esp_http_client_handle_t client = nullptr;
+};
+
+BaseType_t create_preview_task(TaskFunction_t task, void *context, TaskHandle_t *handle)
 {
-    if (s_previewBuffer != nullptr) {
-        heap_caps_free(s_previewBuffer);
-        s_previewBuffer = nullptr;
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
+    BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
+        task,
+        "radio_preview",
+        kPreviewTaskStackSize,
+        context,
+        kPreviewTaskPriority,
+        handle,
+        1,
+        MALLOC_CAP_SPIRAM);
+    if (result == pdPASS) {
+        ESP_LOGI(TAG, "Created radio preview task with PSRAM-backed stack");
+        return result;
     }
+
+    ESP_LOGW(TAG, "Falling back to internal RAM for radio preview task stack");
+#endif
+
+    return xTaskCreatePinnedToCore(task, "radio_preview", kPreviewTaskStackSize, context,
+                                   kPreviewTaskPriority, handle, 1);
+}
+
+int http_mp3_stream_read(void *user_ctx, uint8_t *buffer, size_t len, bool *is_eof)
+{
+    auto *context = static_cast<HttpMp3StreamContext *>(user_ctx);
+    if ((context == nullptr) || (context->client == nullptr) || (buffer == nullptr) || (len == 0)) {
+        if (is_eof != nullptr) {
+            *is_eof = true;
+        }
+        return 0;
+    }
+
+    const int bytes_read = esp_http_client_read(context->client, reinterpret_cast<char *>(buffer), static_cast<int>(len));
+    if (bytes_read > 0) {
+        if (is_eof != nullptr) {
+            *is_eof = false;
+        }
+        return bytes_read;
+    }
+
+    const bool complete = esp_http_client_is_complete_data_received(context->client);
+    if (is_eof != nullptr) {
+        *is_eof = complete;
+    }
+
+    if ((bytes_read < 0) && !complete) {
+        ESP_LOGW(TAG, "HTTP stream read yielded %d, retrying", bytes_read);
+    }
+
+    return 0;
+}
+
+void http_mp3_stream_close(void *user_ctx)
+{
+    auto *context = static_cast<HttpMp3StreamContext *>(user_ctx);
+    if (context == nullptr) {
+        return;
+    }
+
+    if (context->client != nullptr) {
+        esp_http_client_close(context->client);
+        esp_http_client_cleanup(context->client);
+        context->client = nullptr;
+    }
+
+    delete context;
+}
+
+bool wait_for_audio_player_state(audio_player_state_t expected_state, TickType_t timeout)
+{
+    TickType_t start = xTaskGetTickCount();
+    while (audio_player_get_state() != expected_state) {
+        if ((xTaskGetTickCount() - start) >= timeout) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    return true;
 }
 
 bool decode_utf8_codepoint(const std::string &text, size_t &offset, uint32_t &codepoint)
@@ -188,16 +267,15 @@ bool is_mp3_preview_candidate(const std::string &codec, const std::string &url)
            (url_lower.find(".mp3") != std::string::npos);
 }
 
-void radio_audio_callback(audio_player_cb_ctx_t *ctx)
+bool url_uses_https(const std::string &url)
 {
-    if (ctx == nullptr) {
-        return;
-    }
+    return url.rfind("https://", 0) == 0;
+}
 
-    if ((ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_IDLE) ||
-        (ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN) ||
-        (ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE)) {
-        release_preview_buffer();
+void configure_http_client_security(const std::string &url, esp_http_client_config_t &config)
+{
+    if (url_uses_https(url)) {
+        config.crt_bundle_attach = esp_crt_bundle_attach;
     }
 }
 
@@ -242,8 +320,6 @@ bool InternetRadio::init(void)
     if (!buildUi()) {
         return false;
     }
-
-    audio_player_callback_register(radio_audio_callback, nullptr);
 
     showRootMenu();
     return true;
@@ -293,11 +369,13 @@ bool InternetRadio::back(void)
 
 bool InternetRadio::close(void)
 {
+    stopPreviewPlayback();
     return notifyCoreClosed();
 }
 
 bool InternetRadio::pause(void)
 {
+    stopPreviewPlayback();
     return true;
 }
 
@@ -553,8 +631,8 @@ void InternetRadio::showEntryDetails(size_t index)
         message += "\n\n";
     }
     message += entry.canPreview ?
-        "MP3 preview playback is available for this station." :
-        "Preview playback is currently limited to MP3 stations in this firmware.";
+        "Continuous MP3 playback is available for this station." :
+        "Playback is currently limited to MP3 stations in this firmware.";
 
     lv_obj_t *box = lv_msgbox_create(nullptr, entry.title.c_str(), message.c_str(), nullptr, true);
     lv_obj_set_width(box, 420);
@@ -580,8 +658,7 @@ void InternetRadio::playStationPreview(size_t index)
     }
 
     auto *task_context = new PreviewTaskContext{this, entry.title, entry.value, entry.canPreview};
-    if (xTaskCreatePinnedToCore(previewPlaybackTask, "radio_preview", kPreviewTaskStackSize, task_context,
-                                kPreviewTaskPriority, &_previewTaskHandle, 1) != pdPASS) {
+    if (create_preview_task(previewPlaybackTask, task_context, &_previewTaskHandle) != pdPASS) {
         delete task_context;
         _previewTaskHandle = nullptr;
         _previewStartInProgress.store(false);
@@ -601,74 +678,47 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
 
     if (audio_player_get_state() != AUDIO_PLAYER_STATE_IDLE) {
         audio_player_stop();
-        for (int retry = 0; retry < 20; ++retry) {
-            if (audio_player_get_state() == AUDIO_PLAYER_STATE_IDLE) {
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(50));
+        if (!wait_for_audio_player_state(AUDIO_PLAYER_STATE_IDLE, kPreviewStopWait)) {
+            setStatus("Audio player is still stopping. Please try again.");
+            return false;
         }
     }
 
-    release_preview_buffer();
-    s_previewBuffer = static_cast<uint8_t *>(heap_caps_malloc(kPreviewMaxBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (s_previewBuffer == nullptr) {
-        s_previewBuffer = static_cast<uint8_t *>(heap_caps_malloc(kPreviewMaxBytes, MALLOC_CAP_8BIT));
-    }
-    if (s_previewBuffer == nullptr) {
-        setStatus("Unable to allocate preview buffer.");
+    auto *stream_context = new HttpMp3StreamContext();
+    if (stream_context == nullptr) {
+        setStatus("Unable to allocate stream context.");
         return false;
     }
 
     esp_http_client_config_t config = {};
     config.url = entry.value.c_str();
     config.method = HTTP_METHOD_GET;
-    config.timeout_ms = 15000;
+    config.timeout_ms = kStreamTimeoutMs;
     config.disable_auto_redirect = false;
+    configure_http_client_security(entry.value, config);
 
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) {
-        release_preview_buffer();
+    stream_context->client = esp_http_client_init(&config);
+    if (stream_context->client == nullptr) {
+        delete stream_context;
         setStatus("Failed to open station stream.");
         return false;
     }
 
-    setStatus("Buffering MP3 preview...");
-
-    size_t bytes_read = 0;
-    bool ok = false;
-    if (esp_http_client_open(client, 0) == ESP_OK) {
-        while (bytes_read < kPreviewMaxBytes) {
-            const int chunk = esp_http_client_read(client,
-                                                   reinterpret_cast<char *>(s_previewBuffer + bytes_read),
-                                                   static_cast<int>(kPreviewMaxBytes - bytes_read));
-            if (chunk <= 0) {
-                break;
-            }
-            bytes_read += static_cast<size_t>(chunk);
-        }
-        ok = bytes_read >= kPreviewMinBytes;
-    }
-
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (!ok) {
-        release_preview_buffer();
-        setStatus("Could not buffer enough audio for preview.");
+    if (esp_http_client_open(stream_context->client, 0) != ESP_OK) {
+        http_mp3_stream_close(stream_context);
+        setStatus("Failed to connect to station stream.");
         return false;
     }
 
-    FILE *preview_file = fmemopen(s_previewBuffer, bytes_read, "rb");
-    if (preview_file == nullptr) {
-        release_preview_buffer();
-        setStatus("Failed to prepare preview buffer.");
-        return false;
-    }
+    audio_player_stream_t stream = {
+        .read_fn = http_mp3_stream_read,
+        .close_fn = http_mp3_stream_close,
+        .user_ctx = stream_context,
+    };
 
-    if (audio_player_play(preview_file) != ESP_OK) {
-        fclose(preview_file);
-        release_preview_buffer();
-        setStatus("Preview playback failed to start.");
+    if (audio_player_play_mp3_stream(stream) != ESP_OK) {
+        http_mp3_stream_close(stream_context);
+        setStatus("Stream playback failed to start.");
         return false;
     }
 
@@ -686,19 +736,14 @@ void InternetRadio::previewPlaybackTask(void *context)
         return;
     }
 
-    ListEntry entry = {
-        .title = task_context->title,
-        .subtitle = {},
-        .value = task_context->url,
-        .detail = {},
-        .leadingSymbol = {},
-        .codec = {},
-        .canPreview = task_context->can_preview,
-    };
+    ListEntry entry = {};
+    entry.title = std::move(task_context->title);
+    entry.value = std::move(task_context->url);
+    entry.canPreview = task_context->can_preview;
     delete task_context;
 
     if (entry.canPreview) {
-        app->setStatusFromTask(std::string("Buffering MP3 preview: ") + entry.title);
+        app->setStatusFromTask(std::string("Starting stream: ") + entry.title);
     } else {
         app->setStatusFromTask(std::string("Trying stream: ") + entry.title + " (MP3 streams work best)");
     }
@@ -707,14 +752,31 @@ void InternetRadio::previewPlaybackTask(void *context)
     if (started) {
         app->setStatusFromTask(std::string("Playing: ") + entry.title);
     } else if (!entry.canPreview) {
-        app->setStatusFromTask(std::string("Preview failed for ") + entry.title + ". This stream may use an unsupported codec.");
+        app->setStatusFromTask(std::string("Playback failed for ") + entry.title + ". This stream may use an unsupported codec.");
     } else {
-        app->setStatusFromTask(std::string("Failed to start playback for ") + entry.title + ". Try another station.");
+        app->setStatusFromTask(std::string("Failed to start streaming ") + entry.title + ". Try another station.");
     }
 
     app->_previewTaskHandle = nullptr;
     app->_previewStartInProgress.store(false);
     vTaskDelete(nullptr);
+}
+
+void InternetRadio::stopPreviewPlayback(void)
+{
+    _previewStartInProgress.store(false);
+
+    if (audio_player_get_state() != AUDIO_PLAYER_STATE_IDLE) {
+        if (audio_player_stop() != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to stop audio player before releasing preview buffer");
+            return;
+        }
+
+        if (!wait_for_audio_player_state(AUDIO_PLAYER_STATE_IDLE, kPreviewStopWait)) {
+            ESP_LOGW(TAG, "Timed out waiting for audio player to go idle");
+            return;
+        }
+    }
 }
 
 void InternetRadio::handleEntrySelection(size_t index)
@@ -826,6 +888,7 @@ bool InternetRadio::fetchJsonArray(const std::string &url, std::vector<ListEntry
     config.event_handler = httpEventHandler;
     config.user_data = &response;
     config.disable_auto_redirect = false;
+    configure_http_client_security(url, config);
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {

@@ -53,13 +53,16 @@ static esp_err_t file_scan(file_iterator_instance_t *i, const char *base_path)
     for (size_t file_index = 0; file_index < i->count; file_index++) {
         p_dirent = readdir(p_dir_stream);
         if (NULL != p_dirent) {
-            i->list[file_index] = malloc(sizeof(p_dirent->d_name));
+            size_t name_len = strlen(p_dirent->d_name) + 1;
+            i->list[file_index] = malloc(name_len);
+            ESP_RETURN_ON_FALSE(i->list[file_index] != NULL, ESP_ERR_NO_MEM,
+                TAG, "Failed allocate file name buffer");
             ESP_LOGI(TAG, "File : %s", strcpy(i->list[file_index], p_dirent->d_name));
         } else {
             ESP_LOGE(TAG, "The file system may be corrupted");
             closedir(p_dir_stream);
             for (int j = file_index - 1; j >= 0; j--) {
-                free(i->list[file_index]);
+                free(i->list[j]);
             }
             free(i->list);
             return ESP_ERR_INVALID_STATE;

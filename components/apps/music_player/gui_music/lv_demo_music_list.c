@@ -224,11 +224,15 @@ static lv_obj_t * add_list_btn(lv_obj_t * parent, uint32_t track_id)
     lv_label_set_text(title_label, title);
     lv_obj_set_grid_cell(title_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 0, 1);
     lv_obj_add_style(title_label, &style_title, 0);
+    lv_obj_set_width(title_label, lv_pct(100));
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
 
     lv_obj_t * artist_label = lv_label_create(btn);
     lv_label_set_text(artist_label, artist);
     lv_obj_add_style(artist_label, &style_artist, 0);
     lv_obj_set_grid_cell(artist_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 1, 1);
+    lv_obj_set_width(artist_label, lv_pct(100));
+    lv_label_set_long_mode(artist_label, LV_LABEL_LONG_DOT);
 
     lv_obj_t * time_label = lv_label_create(btn);
     lv_label_set_text(time_label, time);

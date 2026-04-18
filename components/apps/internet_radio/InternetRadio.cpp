@@ -12,7 +12,6 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
-#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -47,24 +46,6 @@ struct HttpMp3StreamContext {
 
 BaseType_t create_preview_task(TaskFunction_t task, void *context, TaskHandle_t *handle)
 {
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
-    BaseType_t result = xTaskCreatePinnedToCoreWithCaps(
-        task,
-        "radio_preview",
-        kPreviewTaskStackSize,
-        context,
-        kPreviewTaskPriority,
-        handle,
-        1,
-        MALLOC_CAP_SPIRAM);
-    if (result == pdPASS) {
-        ESP_LOGI(TAG, "Created radio preview task with PSRAM-backed stack");
-        return result;
-    }
-
-    ESP_LOGW(TAG, "Falling back to internal RAM for radio preview task stack");
-#endif
-
     return xTaskCreatePinnedToCore(task, "radio_preview", kPreviewTaskStackSize, context,
                                    kPreviewTaskPriority, handle, 1);
 }

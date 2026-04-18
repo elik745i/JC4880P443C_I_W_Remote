@@ -28,7 +28,6 @@
 
 #include "esp_check.h"
 #include "esp_heap_caps.h"
-#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -772,33 +771,6 @@ esp_err_t audio_player_new(audio_player_config_t config)
 #endif
 
     instance.running = true;
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 1, 0)
-    task_val = xTaskCreatePinnedToCoreWithCaps(
-        (TaskFunction_t)        audio_task,
-                                "Audio Task",
-                                8 * 1024,
-                                &instance,
-        (UBaseType_t)           instance.config.priority,
-        (TaskHandle_t * const)  NULL,
-        (BaseType_t)            instance.config.coreID,
-                                MALLOC_CAP_SPIRAM);
-    if (task_val == pdPASS) {
-        ESP_LOGI(TAG, "Audio task created with PSRAM-backed stack");
-    } else {
-        ESP_LOGW(TAG, "Falling back to internal RAM for audio task stack");
-    }
-
-    if (task_val != pdPASS) {
-        task_val = xTaskCreatePinnedToCore(
-            (TaskFunction_t)        audio_task,
-                                    "Audio Task",
-                                    8 * 1024,
-                                    &instance,
-            (UBaseType_t)           instance.config.priority,
-            (TaskHandle_t * const)  NULL,
-            (BaseType_t)            instance.config.coreID);
-    }
-#else
     task_val = xTaskCreatePinnedToCore(
         (TaskFunction_t)        audio_task,
                                 "Audio Task",
@@ -807,7 +779,6 @@ esp_err_t audio_player_new(audio_player_config_t config)
         (UBaseType_t)           instance.config.priority,
         (TaskHandle_t * const)  NULL,
         (BaseType_t)            instance.config.coreID);
-#endif
 
     ESP_GOTO_ON_FALSE(pdPASS == task_val, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed create audio task");

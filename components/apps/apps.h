@@ -9,4 +9,6 @@
 #include "video_player/VideoPlayer.hpp"
 #include "image_display/ImageDisplay.hpp"
 #include "file_manager/FileManager.hpp"
+#include "internet_radio/InternetRadio.hpp"
 #include "new_app/NewApp.hpp"
+#include "sega_emulator/SegaEmulator.hpp"

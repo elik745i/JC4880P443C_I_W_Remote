@@ -12,6 +12,8 @@
 
 using namespace std;
 
+extern "C" bool __attribute__((weak)) jc_security_handle_app_launch_request(int app_id, const char *app_name);
+
 ESP_Brookesia_AppLauncherIcon::ESP_Brookesia_AppLauncherIcon(ESP_Brookesia_Core &core, const ESP_Brookesia_AppLauncherIconInfo_t &info,
         const ESP_Brookesia_AppLauncherIconData_t &data):
     _core(core),
@@ -206,6 +208,10 @@ void ESP_Brookesia_AppLauncherIcon::onIconTouchEventCallback(lv_event_t *event)
     case LV_EVENT_CLICKED:
         ESP_BROOKESIA_LOGD("Clicked");
         if (icon->_flags.is_pressed_losted || icon->_flags.is_click_disable) {
+            break;
+        }
+        if ((jc_security_handle_app_launch_request != nullptr) &&
+            jc_security_handle_app_launch_request(icon->_info.id, icon->_info.name)) {
             break;
         }
         app_event_data.id = icon->_info.id;

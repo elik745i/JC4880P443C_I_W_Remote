@@ -26,6 +26,7 @@
  **********************/
 static lv_obj_t * add_list_btn(lv_obj_t * parent, uint32_t track_id);
 static void btn_click_event_cb(lv_event_t * e);
+static void close_btn_event_cb(lv_event_t * e);
 
 /**********************
  *  STATIC VARIABLES
@@ -118,9 +119,38 @@ lv_obj_t * _lv_demo_music_list_create(lv_obj_t * parent)
     lv_obj_add_style(list, &style_scrollbar, LV_PART_SCROLLBAR);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 
+    lv_obj_t * close_btn = lv_btn_create(list);
+    lv_obj_set_size(close_btn, 120, 42);
+    lv_obj_align(close_btn, LV_ALIGN_TOP_RIGHT, -16, 8);
+    lv_obj_add_flag(close_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_style_radius(close_btn, 18, 0);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0x5E72EB), 0);
+    lv_obj_set_style_bg_opa(close_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(close_btn, 0, 0);
+    lv_obj_add_event_cb(close_btn, close_btn_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t * close_label = lv_label_create(close_btn);
+    lv_label_set_text(close_label, LV_SYMBOL_LEFT " Close");
+    lv_obj_set_style_text_color(close_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(close_label);
+
     uint32_t track_id;
-    for(track_id = 0; _lv_demo_music_get_title(track_id); track_id++) {
+    for(track_id = 0; track_id < _lv_demo_music_get_track_count(); track_id++) {
         add_list_btn(list,  track_id);
+    }
+
+    if (_lv_demo_music_get_track_count() == 0) {
+        lv_obj_t *emptyLabel = lv_label_create(list);
+        lv_label_set_text(emptyLabel, "No supported audio files found on SD card");
+        lv_obj_add_style(emptyLabel, &style_title, 0);
+        lv_obj_set_style_text_align(emptyLabel, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(emptyLabel, lv_pct(100));
+
+        lv_obj_t *hintLabel = lv_label_create(list);
+        lv_label_set_text(hintLabel, "Browse SD after adding MP3 or WAV files.");
+        lv_obj_add_style(hintLabel, &style_artist, 0);
+        lv_obj_set_style_text_align(hintLabel, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_width(hintLabel, lv_pct(100));
     }
 
 #if APP_DEMO_MUSIC_SQUARE || APP_DEMO_MUSIC_ROUND
@@ -146,7 +176,7 @@ void _lv_demo_music_list_close(void)
 
 void _lv_demo_music_list_btn_check(uint32_t track_id, bool state)
 {
-    lv_obj_t * btn = lv_obj_get_child(list, track_id);
+    lv_obj_t * btn = lv_obj_get_child(list, track_id + 1);
     lv_obj_t * icon = lv_obj_get_child(btn, 0);
 
     if(state) {
@@ -186,10 +216,6 @@ static lv_obj_t * add_list_btn(lv_obj_t * parent, uint32_t track_id)
     lv_obj_add_style(btn, &style_btn_dis, LV_STATE_DISABLED);
     lv_obj_add_event_cb(btn, btn_click_event_cb, LV_EVENT_CLICKED, NULL);
 
-    if(track_id >= ACTIVE_TRACK_CNT) {
-        lv_obj_add_state(btn, LV_STATE_DISABLED);
-    }
-
     lv_obj_t * icon = lv_img_create(btn);
     lv_img_set_src(icon, &img_lv_demo_music_btn_list_play);
     lv_obj_set_grid_cell(icon, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, 0, 2);
@@ -223,8 +249,14 @@ static void btn_click_event_cb(lv_event_t * e)
 {
     lv_obj_t * btn = lv_event_get_target(e);
 
-    uint32_t idx = lv_obj_get_child_id(btn);
+    uint32_t idx = lv_obj_get_child_id(btn) - 1;
 
     _lv_demo_music_play(idx);
+}
+
+static void close_btn_event_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    _lv_demo_music_close_browser();
 }
 #endif /*APP_DEMO_MUSIC_ENABLE*/

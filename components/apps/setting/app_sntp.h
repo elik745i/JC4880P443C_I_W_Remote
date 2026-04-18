@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 void app_sntp_init(void);
+void app_sntp_set_timezone(const char *tz);
 
 #ifdef __cplusplus
 }

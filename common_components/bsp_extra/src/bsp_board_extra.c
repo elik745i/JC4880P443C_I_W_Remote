@@ -7,6 +7,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <inttypes.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_codec_dev_defaults.h"
@@ -17,9 +20,12 @@
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_sleep.h"
 
 #include "bsp/esp-bsp.h"
+#include "bsp/display.h"
 #include "bsp_board_extra.h"
+#include "lvgl.h"
 
 static const char *TAG = "bsp_extra_board";
 
@@ -33,6 +39,34 @@ static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
 static audio_player_cb_t audio_idle_callback = NULL;
 static void *audio_idle_cb_user_data = NULL;
 static char audio_file_path[128];
+
+#define DISPLAY_IDLE_TASK_STACK_SIZE            (4096)
+#define DISPLAY_IDLE_TASK_PRIORITY              (1)
+#define DISPLAY_IDLE_TASK_PERIOD_MS             (250)
+#define DISPLAY_ADAPTIVE_TIMEOUT_MS             (15 * 1000)
+#define DISPLAY_ADAPTIVE_TRIGGER_BRIGHTNESS     (80)
+#define DISPLAY_ADAPTIVE_DIMMED_BRIGHTNESS      (50)
+
+typedef struct {
+    bool initialized;
+    bool adaptive_brightness_enabled;
+    bool screensaver_enabled;
+    uint32_t screen_off_timeout_sec;
+    uint32_t sleep_timeout_sec;
+    int base_brightness_percent;
+    int applied_brightness_percent;
+} display_idle_state_t;
+
+static display_idle_state_t s_display_idle_state = {
+    .initialized = false,
+    .adaptive_brightness_enabled = false,
+    .screensaver_enabled = false,
+    .screen_off_timeout_sec = 0,
+    .sleep_timeout_sec = 0,
+    .base_brightness_percent = 100,
+    .applied_brightness_percent = -1,
+};
+static bool s_deep_sleep_warning_logged = false;
 
 /**************************************************************************************************
  *
@@ -60,6 +94,78 @@ static void audio_callback(audio_player_cb_ctx_t *ctx)
     if (audio_idle_callback) {
         ctx->user_ctx = audio_idle_cb_user_data;
         audio_idle_callback(ctx);
+    }
+}
+
+static int clamp_display_brightness_percent(int brightness_percent)
+{
+    if (brightness_percent > 100) {
+        return 100;
+    }
+    if (brightness_percent < 0) {
+        return 0;
+    }
+    return brightness_percent;
+}
+
+static int display_idle_get_target_brightness(uint32_t inactive_time_ms)
+{
+    int target_brightness = s_display_idle_state.base_brightness_percent;
+
+    if ((s_display_idle_state.screen_off_timeout_sec > 0) &&
+        (inactive_time_ms >= (s_display_idle_state.screen_off_timeout_sec * 1000U))) {
+        return 0;
+    }
+
+    if (s_display_idle_state.adaptive_brightness_enabled &&
+        (s_display_idle_state.base_brightness_percent > DISPLAY_ADAPTIVE_TRIGGER_BRIGHTNESS) &&
+        (inactive_time_ms >= DISPLAY_ADAPTIVE_TIMEOUT_MS)) {
+        target_brightness = DISPLAY_ADAPTIVE_DIMMED_BRIGHTNESS;
+    }
+
+    return target_brightness;
+}
+
+static void display_idle_task(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        lv_disp_t *display = NULL;
+        uint32_t inactive_time_ms = 0;
+        bool should_enter_deep_sleep = false;
+
+        if (bsp_display_lock(DISPLAY_IDLE_TASK_PERIOD_MS)) {
+            display = lv_disp_get_default();
+            if (display != NULL) {
+                inactive_time_ms = lv_disp_get_inactive_time(display);
+                const int target_brightness = display_idle_get_target_brightness(inactive_time_ms);
+                if (target_brightness != s_display_idle_state.applied_brightness_percent) {
+                    if (bsp_display_brightness_set(target_brightness) == ESP_OK) {
+                        s_display_idle_state.applied_brightness_percent = target_brightness;
+                    } else {
+                        ESP_LOGW(TAG, "Failed to apply idle brightness target: %d", target_brightness);
+                    }
+                }
+
+                should_enter_deep_sleep = (s_display_idle_state.sleep_timeout_sec > 0) &&
+                                          (inactive_time_ms >= (s_display_idle_state.sleep_timeout_sec * 1000U));
+            }
+            bsp_display_unlock();
+        }
+
+        if (should_enter_deep_sleep) {
+            if (!s_deep_sleep_warning_logged) {
+                ESP_LOGW(TAG, "Entering deep sleep without a dedicated wake GPIO; wake requires reset or power cycle");
+                s_deep_sleep_warning_logged = true;
+            }
+            ESP_LOGI(TAG, "Entering deep sleep after %lu seconds of inactivity",
+                     (unsigned long)s_display_idle_state.sleep_timeout_sec);
+            bsp_display_backlight_off();
+            esp_deep_sleep_start();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(DISPLAY_IDLE_TASK_PERIOD_MS));
     }
 }
 
@@ -304,4 +410,42 @@ bool bsp_extra_player_is_playing_by_path(const char *file_path)
 bool bsp_extra_player_is_playing_by_index(file_iterator_instance_t *instance, int index)
 {
     return (index == file_iterator_get_index(instance));
+}
+
+esp_err_t bsp_extra_display_idle_init(void)
+{
+    if (s_display_idle_state.initialized) {
+        return ESP_OK;
+    }
+
+    s_display_idle_state.base_brightness_percent = clamp_display_brightness_percent(s_display_idle_state.base_brightness_percent);
+
+    BaseType_t ret = xTaskCreatePinnedToCore(display_idle_task, "display_idle", DISPLAY_IDLE_TASK_STACK_SIZE,
+                                             NULL, DISPLAY_IDLE_TASK_PRIORITY, NULL, 1);
+    if (ret != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_display_idle_state.initialized = true;
+    return ESP_OK;
+}
+
+void bsp_extra_display_idle_set_base_brightness(int brightness_percent)
+{
+    s_display_idle_state.base_brightness_percent = clamp_display_brightness_percent(brightness_percent);
+
+    if (!s_display_idle_state.adaptive_brightness_enabled ||
+        (s_display_idle_state.base_brightness_percent <= DISPLAY_ADAPTIVE_TRIGGER_BRIGHTNESS)) {
+        s_display_idle_state.applied_brightness_percent = -1;
+    }
+}
+
+void bsp_extra_display_idle_configure(bool adaptive_brightness_enabled, bool screensaver_enabled,
+                                      uint32_t screen_off_timeout_sec, uint32_t sleep_timeout_sec)
+{
+    s_display_idle_state.adaptive_brightness_enabled = adaptive_brightness_enabled;
+    s_display_idle_state.screensaver_enabled = screensaver_enabled;
+    s_display_idle_state.screen_off_timeout_sec = screen_off_timeout_sec;
+    s_display_idle_state.sleep_timeout_sec = sleep_timeout_sec;
+    s_display_idle_state.applied_brightness_percent = -1;
 }

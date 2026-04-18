@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "bsp_board_extra.h"
 #include "audio_player.h"
+#include "music_library.h"
 
 /*********************
  *      DEFINES
@@ -62,6 +63,7 @@ static void album_gesture_event_cb(lv_event_t * e);
 static void play_event_click_cb(lv_event_t * e);
 static void prev_click_event_cb(lv_event_t * e);
 static void next_click_event_cb(lv_event_t * e);
+static void browse_click_event_cb(lv_event_t * e);
 static void timer_cb(lv_timer_t * t);
 static void track_load(uint32_t id);
 static void stop_start_anim_timer_cb(lv_timer_t * t);
@@ -100,7 +102,6 @@ static const uint16_t (* spectrum)[4];
 static uint32_t spectrum_len;
 static const uint16_t rnd_array[30] = {994, 285, 553, 11, 792, 707, 966, 641, 852, 827, 44, 352, 146, 581, 490, 80, 729, 58, 695, 940, 724, 561, 124, 653, 27, 292, 557, 506, 382, 199};
 
-static file_iterator_instance_t *file_iterator;
 static bool pause = false;
 static bool pause_exit = false;
 
@@ -130,9 +131,8 @@ static void _obj_set_x_anim_cb(void * obj, int32_t x)
     lv_obj_set_x((lv_obj_t *)obj, (lv_coord_t)x);
 }
 
-lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent, file_iterator_instance_t *iterator)
+lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent)
 {
-    file_iterator = iterator;
     pause = false;
     playing = false;
     spectrum_i = 0;
@@ -322,16 +322,21 @@ void _lv_demo_music_main_close(void)
 
 void _lv_demo_music_album_next(bool next)
 {
+    const uint32_t trackCount = _lv_demo_music_get_track_count();
+    if (trackCount == 0) {
+        return;
+    }
+
     uint32_t id = track_id;
 
     if (next) {
         id++;
-        if (id >= ACTIVE_TRACK_CNT) {
+        if (id >= trackCount) {
             id = 0;
-    }
+        }
     } else {
         if (id == 0) {
-            id = ACTIVE_TRACK_CNT - 1;
+            id = trackCount - 1;
         } else {
             id--;
         }
@@ -346,12 +351,15 @@ void _lv_demo_music_album_next(bool next)
 
 void _lv_demo_music_play(uint32_t id)
 {
-    uint8_t current = file_iterator_get_index(file_iterator);
+    const uint32_t trackCount = _lv_demo_music_get_track_count();
+    if ((trackCount == 0) || (id >= trackCount)) {
+        return;
+    }
+
+    uint32_t current = music_library_get_current_index();
     LV_LOG_USER("play:%d, current:%d", id, current);
     if (current != id) {
-        file_iterator_set_index(file_iterator, id);
-        //play_index(id);
-        LV_LOG_USER("audio_play actual:%d", id);
+        music_library_set_current_index(id);
     }
 
     track_load(id);
@@ -361,6 +369,11 @@ void _lv_demo_music_play(uint32_t id)
 
 void _lv_demo_music_resume(void)
 {
+    if (_lv_demo_music_get_track_count() == 0) {
+        lv_obj_clear_state(play_obj, LV_STATE_CHECKED);
+        return;
+    }
+
     spectrum_i = spectrum_i_pause;
     LV_LOG_USER("resume, [%d-%d]", spectrum_i, spectrum_len);
 
@@ -379,13 +392,19 @@ void _lv_demo_music_resume(void)
 
     lv_obj_add_state(play_obj, LV_STATE_CHECKED);
 
-    if (!pause_exit && pause && bsp_extra_player_is_playing_by_index(file_iterator, track_id)) {
+    if (!pause_exit && pause && music_library_is_playing(track_id)) {
         LV_LOG_USER("Resume music");
         audio_player_resume();
     } else {
         pause_exit = false;
         LV_LOG_USER("Music is not playing. Start playing.");
-        bsp_extra_player_play_index(file_iterator, track_id);
+        if (!music_library_play(track_id)) {
+            lv_obj_clear_state(play_obj, LV_STATE_CHECKED);
+            lv_timer_pause(sec_counter_timer);
+            playing = false;
+            pause = true;
+            return;
+        }
     }
 
     playing = true;
@@ -574,6 +593,20 @@ static lv_obj_t * create_icon_box(lv_obj_t * parent)
     icon = lv_img_create(cont);
     lv_img_set_src(icon, &img_lv_demo_music_icon_4);
 
+    lv_obj_t * browseBtn = lv_btn_create(cont);
+    lv_obj_set_style_radius(browseBtn, 18, 0);
+    lv_obj_set_style_bg_color(browseBtn, lv_color_hex(0x5E72EB), 0);
+    lv_obj_set_style_bg_opa(browseBtn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(browseBtn, 0, 0);
+    lv_obj_set_size(browseBtn, 120, 34);
+    lv_obj_add_event_cb(browseBtn, browse_click_event_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *browseLabel = lv_label_create(browseBtn);
+    lv_label_set_text(browseLabel, LV_SYMBOL_DIRECTORY " Browse SD");
+    lv_obj_set_style_text_color(browseLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(browseLabel, font_small, 0);
+    lv_obj_center(browseLabel);
+
     return cont;
 }
 
@@ -688,7 +721,7 @@ static lv_obj_t * create_handle(lv_obj_t * parent)
 
     /*A handle to scroll to the track list*/
     lv_obj_t * handle_label = lv_label_create(cont);
-    lv_label_set_text(handle_label, "ALL TRACKS");
+    lv_label_set_text(handle_label, "SD CARD MEDIA");
     lv_obj_set_style_text_font(handle_label, font_small, 0);
     lv_obj_set_style_text_color(handle_label, lv_color_hex(0x8a86b8), 0);
 
@@ -713,9 +746,13 @@ static void track_load(uint32_t id)
     lv_slider_set_value(slider_obj, 0, LV_ANIM_OFF);
     lv_label_set_text(time_obj, "0:00");
 
+    if (_lv_demo_music_get_track_count() == 0) {
+        return;
+    }
+
     if(id == track_id) return;
     bool next = false;
-    if((track_id + 1) % ACTIVE_TRACK_CNT == id) next = true;
+    if((track_id + 1) % _lv_demo_music_get_track_count() == id) next = true;
 
     _lv_demo_music_list_btn_check(track_id, false);
 
@@ -1012,6 +1049,9 @@ static void play_event_click_cb(lv_event_t * e)
 {
     lv_obj_t * obj = lv_event_get_target(e);
     if(lv_obj_has_state(obj, LV_STATE_CHECKED)) {
+        if ((_lv_demo_music_get_track_count() > 0) && !playing && !pause) {
+            track_load(music_library_get_current_index());
+        }
         _lv_demo_music_resume();
     }
     else {
@@ -1031,6 +1071,12 @@ static void next_click_event_cb(lv_event_t * e)
     if(code == LV_EVENT_CLICKED) {
         _lv_demo_music_album_next(true);
     }
+}
+
+static void browse_click_event_cb(lv_event_t * e)
+{
+    LV_UNUSED(e);
+    _lv_demo_music_open_browser();
 }
 
 static void timer_cb(lv_timer_t * t)

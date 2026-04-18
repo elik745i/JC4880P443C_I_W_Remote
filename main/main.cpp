@@ -1,5 +1,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <cstring>
 #include <dirent.h>
 #include "nvs_flash.h"
@@ -13,44 +14,172 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "bsp_board_extra.h"
+#include "device_security.hpp"
+#include "sdmmc_cmd.h"
 
 #include "esp_brookesia.hpp"
 #include "app_examples/phone/squareline/src/phone_app_squareline.hpp"
 #include "apps.h"
  
 static const char *TAG = "main";
-static constexpr const char *kVideoDirectory = "/sdcard/mjpeg";
-static constexpr const char *kVideoExtension = ".mjpeg";
+static constexpr TickType_t kSdcardMonitorPeriod = pdMS_TO_TICKS(2000);
 
-static bool has_supported_sdcard_videos(void)
+struct SdcardRuntimeApps {
+    ESP_Brookesia_Phone *phone = nullptr;
+    FileManager *file_manager = nullptr;
+    MusicPlayer *music_player = nullptr;
+};
+
+static SemaphoreHandle_t s_sdcardMutex = nullptr;
+static bool s_sdcardMounted = false;
+static SdcardRuntimeApps s_sdcardRuntimeApps;
+
+template <typename T>
+static T *install_app_or_delete(ESP_Brookesia_Phone &phone, T *app, const char *app_name)
 {
-    DIR *dir = opendir(kVideoDirectory);
-    if (dir == nullptr) {
-        ESP_LOGW(TAG, "SD card mounted, but %s is missing", kVideoDirectory);
+    if (app == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate %s", app_name);
+        return nullptr;
+    }
+
+    if (phone.installApp(app) < 0) {
+        ESP_LOGW(TAG, "Skipping %s because install/init failed", app_name);
+        delete app;
+        return nullptr;
+    }
+
+    return app;
+}
+
+template <typename T>
+static void uninstall_app_and_delete(ESP_Brookesia_Phone &phone, T *&app, const char *app_name)
+{
+    if (app == nullptr) {
+        return;
+    }
+
+    if (phone.uninstallApp(app) < 0) {
+        ESP_LOGW(TAG, "Failed to uninstall %s", app_name);
+        return;
+    }
+
+    delete app;
+    app = nullptr;
+}
+
+static bool probe_sdcard_health(void)
+{
+    return (bsp_sdcard != nullptr) && (sdmmc_get_status(bsp_sdcard) == ESP_OK);
+}
+
+static bool sync_sdcard_mount_state(bool try_mount)
+{
+    if (s_sdcardMutex == nullptr) {
         return false;
     }
 
-    bool found_supported_video = false;
-    struct dirent *entry = nullptr;
-    while ((entry = readdir(dir)) != nullptr) {
-        if ((entry->d_type == DT_DIR) || (strcmp(entry->d_name, ".") == 0) || (strcmp(entry->d_name, "..") == 0)) {
-            continue;
-        }
+    xSemaphoreTake(s_sdcardMutex, portMAX_DELAY);
 
-        const char *extension = strrchr(entry->d_name, '.');
-        if ((extension != nullptr) && (strcmp(extension, kVideoExtension) == 0)) {
-            found_supported_video = true;
-            break;
+    if (s_sdcardMounted && !probe_sdcard_health()) {
+        esp_err_t unmount_ret = bsp_sdcard_unmount();
+        if (unmount_ret != ESP_OK) {
+            ESP_LOGW(TAG, "SD card unmount after removal failed: %s", esp_err_to_name(unmount_ret));
+        }
+        s_sdcardMounted = false;
+    }
+
+    if (!s_sdcardMounted && try_mount) {
+        s_sdcardMounted = (bsp_sdcard_mount() == ESP_OK) && probe_sdcard_health();
+        if (!s_sdcardMounted) {
+            bsp_sdcard_unmount();
         }
     }
 
-    closedir(dir);
+    const bool mounted = s_sdcardMounted;
+    xSemaphoreGive(s_sdcardMutex);
+    return mounted;
+}
 
-    if (!found_supported_video) {
-        ESP_LOGW(TAG, "SD card mounted, but no %s files were found in %s", kVideoExtension, kVideoDirectory);
+static bool with_display_lock(TickType_t timeout_ms, void (*callback)(void *), void *context)
+{
+    if (!bsp_display_lock(timeout_ms)) {
+        ESP_LOGW(TAG, "Timed out waiting for display lock");
+        return false;
     }
 
-    return found_supported_video;
+    callback(context);
+    bsp_display_unlock();
+    return true;
+}
+
+static void install_storage_apps_locked(void *context)
+{
+    (void)context;
+
+    if (s_sdcardRuntimeApps.phone == nullptr) {
+        return;
+    }
+
+    if (s_sdcardRuntimeApps.file_manager == nullptr) {
+        s_sdcardRuntimeApps.file_manager = install_app_or_delete(*s_sdcardRuntimeApps.phone, new FileManager(), "file manager");
+    }
+
+    if (s_sdcardRuntimeApps.music_player == nullptr) {
+        s_sdcardRuntimeApps.music_player = install_app_or_delete(*s_sdcardRuntimeApps.phone, new MusicPlayer(), "music player");
+    }
+}
+
+static void uninstall_storage_apps_locked(void *context)
+{
+    (void)context;
+
+    if (s_sdcardRuntimeApps.phone == nullptr) {
+        return;
+    }
+
+    uninstall_app_and_delete(*s_sdcardRuntimeApps.phone, s_sdcardRuntimeApps.music_player, "music player");
+    uninstall_app_and_delete(*s_sdcardRuntimeApps.phone, s_sdcardRuntimeApps.file_manager, "file manager");
+}
+
+static void ensure_sdcard_apps_available(void)
+{
+    if (s_sdcardRuntimeApps.phone == nullptr) {
+        return;
+    }
+
+    with_display_lock(1000, install_storage_apps_locked, nullptr);
+}
+
+static void remove_sdcard_apps(void)
+{
+    if (s_sdcardRuntimeApps.phone == nullptr) {
+        return;
+    }
+
+    with_display_lock(1000, uninstall_storage_apps_locked, nullptr);
+}
+
+static void sdcard_monitor_task(void *parameter)
+{
+    (void)parameter;
+
+    bool last_state = sync_sdcard_mount_state(false);
+    for (;;) {
+        const bool current_state = sync_sdcard_mount_state(true);
+        if (current_state != last_state) {
+            ESP_LOGI(TAG, "SD card %s", current_state ? "available" : "removed");
+            if (current_state) {
+                ensure_sdcard_apps_available();
+            } else {
+                remove_sdcard_apps();
+            }
+            last_state = current_state;
+        } else if (current_state && ((s_sdcardRuntimeApps.file_manager == nullptr) ||
+                                     (s_sdcardRuntimeApps.music_player == nullptr))) {
+            ensure_sdcard_apps_available();
+        }
+        vTaskDelay(kSdcardMonitorPeriod);
+    }
 }
 
 extern "C" void app_main(void)
@@ -62,15 +191,18 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    s_sdcardMutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(s_sdcardMutex != nullptr ? ESP_OK : ESP_ERR_NO_MEM);
+
     ESP_ERROR_CHECK(bsp_spiffs_mount());
     ESP_LOGI(TAG, "SPIFFS mount successfully");
 
-// #if CONFIG_EXAMPLE_ENABLE_SD_CARD
-    esp_err_t ret = bsp_sdcard_mount();
-    if(ret == ESP_OK)
+    const bool sdcard_available_on_boot = sync_sdcard_mount_state(true);
+    if (sdcard_available_on_boot) {
         ESP_LOGI(TAG, "SD card mount successfully");
-// #endif
-
+    } else {
+        ESP_LOGW(TAG, "No SD card detected at boot, continuing without removable storage");
+    }
  //    ESP_ERROR_CHECK(bsp_extra_codec_init());
 
     bsp_display_cfg_t cfg = {
@@ -96,49 +228,33 @@ extern "C" void app_main(void)
     ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->addStylesheet(*phone_stylesheet), "Add phone stylesheet failed");
     ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->activateStylesheet(*phone_stylesheet), "Activate phone stylesheet failed");
 
-    assert(phone->begin() && "Failed to begin phone");
+    ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->begin(), "Failed to begin phone");
 
-    PhoneAppSquareline *smart_gadget = new PhoneAppSquareline();
-    assert(smart_gadget != nullptr && "Failed to create phone app squareline");
-    assert((phone->installApp(smart_gadget) >= 0) && "Failed to install phone app squareline");
+    s_sdcardRuntimeApps.phone = phone;
 
-    Calculator *calculator = new Calculator();
-    assert(calculator != nullptr && "Failed to create calculator");
-    assert((phone->installApp(calculator) >= 0) && "Failed to begin calculator");
+    install_app_or_delete(*phone, new PhoneAppSquareline(), "phone app squareline");
 
-    AppSettings *app_settings = new AppSettings();
-    assert(app_settings != nullptr && "Failed to create app_settings");
-    assert((phone->installApp(app_settings) >= 0) && "Failed to begin app_settings");
+    install_app_or_delete(*phone, new Calculator(), "calculator");
 
-    Game2048 *game_2048 = new Game2048();
-    assert(game_2048 != nullptr && "Failed to create game_2048");
-    assert((phone->installApp(game_2048) >= 0) && "Failed to begin game_2048");
+    install_app_or_delete(*phone, new AppSettings(), "settings");
 
-    Camera *camera = new Camera(1288, 728);
-    assert(camera != nullptr && "Failed to create camera");
-    assert((phone->installApp(camera) >= 0) && "Failed to begin camera");
-    if(camera->get_camera_ctlr_handle() < 0)
-    {
-        assert((phone->uninstallApp(camera) >= 0) && "Failed to begin camera");
-    
+    install_app_or_delete(*phone, new Game2048(), "2048");
+
+    install_app_or_delete(*phone, new SegaEmulator(), "sega emulator");
+
+    Camera *camera = install_app_or_delete(*phone, new Camera(1288, 728), "camera");
+    if ((camera != nullptr) && (camera->get_camera_ctlr_handle() < 0)) {
+        ESP_LOGW(TAG, "Camera hardware is unavailable, uninstalling camera app");
+        phone->uninstallApp(camera);
+        delete camera;
+        camera = nullptr;
     }
         
-    AppImageDisplay *image = new AppImageDisplay();
-    assert(image != nullptr && "Failed to create image");
-    assert((phone->installApp(image) >= 0) && "Failed to begin image");
+    install_app_or_delete(*phone, new AppImageDisplay(), "image viewer");
 
-    FileManager *file_manager = new FileManager();
-    assert(file_manager != nullptr && "Failed to create file_manager");
-    assert((phone->installApp(file_manager) >= 0) && "Failed to begin file_manager");
+    install_app_or_delete(*phone, new InternetRadio(), "internet radio");
 
-     MusicPlayer *music_player = new MusicPlayer();
-    assert(music_player != nullptr && "Failed to create music_player");
-    assert((phone->installApp(music_player) >= 0) && "Failed to begin music_player");
-
-    // 新增应用
-    NewApp *new_app = new NewApp(480, 800);
-    assert(new_app != nullptr && "Failed to create new_app");
-    assert((phone->installApp(new_app) >= 0) && "Failed to begin new_app");
+    install_app_or_delete(*phone, new NewApp(480, 800), "new app");
 
     uint16_t free_sram_size_kb = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
     uint16_t total_sram_size_kb = heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024;
@@ -148,19 +264,11 @@ extern "C" void app_main(void)
                          "free psram size: %d KB, total psram size: %d KB",
                          free_sram_size_kb, total_sram_size_kb, free_psram_size_kb, total_psram_size_kb);
 
-// #if CONFIG_EXAMPLE_ENABLE_SD_CARD
-    if ((ret == ESP_OK) && has_supported_sdcard_videos())
-    {
-        ESP_LOGI(TAG, "SD card contains supported MJPEG videos, enabling Video Player app");
-        AppVideoPlayer *app_video_player = new AppVideoPlayer();
-        assert(app_video_player != nullptr && "Failed to create app_video_player");
-        if (phone->installApp(app_video_player) < 0) {
-            ESP_LOGE(TAG, "Video Player app install failed, continuing boot without it");
-            delete app_video_player;
-        }
-    } else if (ret == ESP_OK) {
-        ESP_LOGW(TAG, "Skipping Video Player app. Put MJPEG files under %s to enable it", kVideoDirectory);
+    if (sdcard_available_on_boot) {
+        install_storage_apps_locked(nullptr);
     }
+
+    device_security::init(phone);
 
     free_sram_size_kb = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
     total_sram_size_kb = heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024;
@@ -171,7 +279,8 @@ extern "C" void app_main(void)
                          free_sram_size_kb, total_sram_size_kb, free_psram_size_kb, total_psram_size_kb);
 
     
-// #endif
     ESP_LOGI(TAG,"setup done");
     bsp_display_unlock();
+    device_security::promptBootUnlockIfNeeded();
+    xTaskCreatePinnedToCore(sdcard_monitor_task, "sdcard_monitor", 4096, nullptr, 1, nullptr, 0);
 }

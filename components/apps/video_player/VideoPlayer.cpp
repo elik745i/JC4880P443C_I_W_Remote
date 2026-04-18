@@ -236,9 +236,11 @@ bool AppVideoPlayer::init(void)
     bsp_extra_codec_volume_set(60, nullptr);
     bsp_extra_codec_mute_set(false);
 
-    ESP_ERROR_CHECK(
-        bsp_extra_file_instance_init(APP_MJPEG_PATH, &_file_iterator)
-    );
+    esp_err_t ret = bsp_extra_file_instance_init(APP_MJPEG_PATH, &_file_iterator);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Video directory unavailable at %s: %s", APP_MJPEG_PATH, esp_err_to_name(ret));
+        return false;
+    }
 
     avi_cnt = file_iterator_get_count(_file_iterator);
 
@@ -254,7 +256,11 @@ bool AppVideoPlayer::init(void)
         .stack_size = 4096,
     };
 
-    ESP_ERROR_CHECK(avi_player_init(config, &avi_handle));
+    ret = avi_player_init(config, &avi_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "avi_player_init failed: %s", esp_err_to_name(ret));
+        return false;
+    }
 
     semph_event = xSemaphoreCreateBinary();
     video_task_event = xSemaphoreCreateBinary();
@@ -262,7 +268,11 @@ bool AppVideoPlayer::init(void)
     jpeg_decode_engine_cfg_t jpeg_cfg = {
         .timeout_ms = 40,
     };
-    ESP_ERROR_CHECK(jpeg_new_decoder_engine(&jpeg_cfg, &avi_jpgd_handle));
+    ret = jpeg_new_decoder_engine(&jpeg_cfg, &avi_jpgd_handle);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "jpeg_new_decoder_engine failed: %s", esp_err_to_name(ret));
+        return false;
+    }
 
     return true;
 }

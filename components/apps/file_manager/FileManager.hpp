@@ -55,8 +55,10 @@ private:
     std::string rootLabel(StorageRoot root) const;
     std::string joinPath(const std::string &base, const std::string &name) const;
     std::string formatSize(uint64_t size) const;
+    std::string formatEntrySummary() const;
     void setStatus(const std::string &message, bool isError = false);
     void updatePathLabel();
+    void updateOverviewCard();
     void updateStorageButtons();
     void updateActionButtons();
     void selectEntry(EntryInfo *entry);
@@ -82,11 +84,15 @@ private:
 
     lv_obj_t *_screen;
     lv_obj_t *_titleLabel;
+    lv_obj_t *_subtitleLabel;
     lv_obj_t *_pathLabel;
     lv_obj_t *_statusLabel;
     lv_obj_t *_entryList;
     lv_obj_t *_sdButton;
     lv_obj_t *_spiffsButton;
+    lv_obj_t *_storageNameLabel;
+    lv_obj_t *_storageMetaLabel;
+    lv_obj_t *_folderMetaLabel;
     lv_obj_t *_upButton;
     lv_obj_t *_refreshButton;
     lv_obj_t *_openButton;

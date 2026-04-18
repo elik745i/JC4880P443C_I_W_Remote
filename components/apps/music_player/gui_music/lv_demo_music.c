@@ -12,6 +12,7 @@
 
 #include "lv_demo_music_main.h"
 #include "lv_demo_music_list.h"
+#include "music_library.h"
 
 /*********************
  *      DEFINES
@@ -34,73 +35,11 @@
 static lv_obj_t * ctrl;
 static lv_obj_t * list;
 
-static const char * title_list[] = {
-    "Why now?",
-    "Never Look Back",
-    "It happened Yesterday",
-    "Feeling so High",
-    "Go Deeper",
-    "Find You There",
-    "Until the End",
-    "Unknown",
-    "Unknown",
-    "Unknown",
-    "Unknown",
-};
-
-static const char * artist_list[] = {
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-    "Unknown artist",
-};
-
-static const char * genre_list[] = {
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-    "Metal - 2015",
-};
-
-static const uint32_t time_list[] = {
-    1 * 60 + 14,
-    2 * 60 + 26,
-    1 * 60 + 54,
-    2 * 60 + 24,
-    2 * 60 + 37,
-    3 * 60 + 33,
-    1 * 60 + 56,
-    3 * 60 + 31,
-    2 * 60 + 20,
-    2 * 60 + 19,
-    2 * 60 + 20,
-};
-
 #if APP_DEMO_MUSIC_AUTO_PLAY
     static lv_timer_t * auto_step_timer;
 #endif
 
 static lv_color_t original_screen_bg_color;
-
-static uint32_t active_track_cnt = 5;
-static file_iterator_instance_t *_file_iterator = NULL;
-static const char * artist_list_name = "Unknown Artist";
-static const char * genre_list_name = "Unknown Genre";
-static const uint32_t time_list_num = 1 * 60;
 
 /**********************
  *      MACROS
@@ -110,17 +49,13 @@ static const uint32_t time_list_num = 1 * 60;
  *   GLOBAL FUNCTIONS
  **********************/
 
-void lv_demo_music(lv_obj_t *parent, file_iterator_instance_t *file_iterator)
+void lv_demo_music(lv_obj_t *parent)
 {
-    _file_iterator = file_iterator;
-
-    active_track_cnt = file_iterator_get_count(_file_iterator);
-
     original_screen_bg_color = lv_obj_get_style_bg_color(parent, 0);
     lv_obj_set_style_bg_color(parent, lv_color_hex(0x343247), 0);
 
     list = _lv_demo_music_list_create(parent);
-    ctrl = _lv_demo_music_main_create(parent, file_iterator);
+    ctrl = _lv_demo_music_main_create(parent);
 
 #if APP_DEMO_MUSIC_AUTO_PLAY
     auto_step_timer = lv_timer_create(auto_step_cb, 1000, NULL);
@@ -143,64 +78,43 @@ void lv_demo_music_close(void)
     lv_obj_set_style_bg_color(lv_scr_act(), original_screen_bg_color, 0);
 }
 
+uint32_t _lv_demo_music_get_track_count(void)
+{
+    return music_library_get_count();
+}
+
 const char * _lv_demo_music_get_title(uint32_t track_id)
 {
-    if (_file_iterator == NULL) {
-        return NULL;
-    }
-
-    if (track_id < active_track_cnt) {
-        return file_iterator_get_name_from_index(_file_iterator, track_id);
-    } else if (track_id < active_track_cnt + sizeof(title_list) / sizeof(title_list[0])) {
-        return title_list[track_id - active_track_cnt];
-    }
-
-    return NULL;
+    return music_library_get_title(track_id);
 }
 
 const char * _lv_demo_music_get_artist(uint32_t track_id)
 {
-    if (_file_iterator == NULL) {
-        return artist_list_name;
-    }
-
-    if (track_id < active_track_cnt) {
-        return artist_list_name;
-    } else if (track_id < active_track_cnt + sizeof(artist_list) / sizeof(artist_list[0])) {
-        return artist_list[track_id - active_track_cnt];
-    }
-
-    return artist_list_name;
+    return music_library_get_artist(track_id);
 }
 
 const char * _lv_demo_music_get_genre(uint32_t track_id)
 {
-    if (_file_iterator == NULL) {
-        return genre_list_name;
-    }
-
-    if (track_id < active_track_cnt) {
-    return genre_list_name;
-    } else if (track_id < active_track_cnt + sizeof(genre_list) / sizeof(genre_list[0])) {
-        return genre_list[track_id - active_track_cnt];
-    }
-
-    return genre_list_name;
+    return music_library_get_genre(track_id);
 }
 
 uint32_t _lv_demo_music_get_track_length(uint32_t track_id)
 {
-    if (_file_iterator == NULL) {
-        return time_list_num;
-    }
+    return music_library_get_track_length(track_id);
+}
 
-    if (track_id < active_track_cnt) {
-    return time_list_num;
-    } else if (track_id < active_track_cnt + sizeof(time_list) / sizeof(time_list[0])) {
-        return time_list[track_id - active_track_cnt];
+void _lv_demo_music_open_browser(void)
+{
+    if (ctrl != NULL) {
+        lv_obj_scroll_by(ctrl, 0, -LV_VER_RES, LV_ANIM_ON);
     }
+}
 
-    return time_list_num;
+void _lv_demo_music_close_browser(void)
+{
+    if (ctrl != NULL) {
+        lv_obj_scroll_by(ctrl, 0, LV_VER_RES, LV_ANIM_ON);
+    }
 }
 
 /**********************

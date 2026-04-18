@@ -12,8 +12,7 @@
 #include "gui_music/lv_demo_music.h"
 #include "gui_music/lv_demo_music_main.h"
 #include "MusicPlayer.hpp"
-
-#define MUSIC_DIR   BSP_SPIFFS_MOUNT_POINT "/music"
+#include "music_library.h"
 
 using namespace std;
 
@@ -22,8 +21,7 @@ LV_IMG_DECLARE(img_app_music_player);
 static const char *TAG = "MusicPlayer";
 
 MusicPlayer::MusicPlayer():
-    ESP_Brookesia_PhoneApp("Music Player", &img_app_music_player, true), // auto_resize_visual_area
-    _file_iterator(NULL)
+    ESP_Brookesia_PhoneApp("Music Player", &img_app_music_player, true)
 {
 }
 
@@ -33,7 +31,8 @@ MusicPlayer::~MusicPlayer()
 
 bool MusicPlayer::run(void)
 {
-    lv_demo_music(lv_scr_act(), _file_iterator);
+    music_library_refresh();
+    lv_demo_music(lv_scr_act());
 
     return true;
 }
@@ -80,16 +79,12 @@ bool MusicPlayer::init(void)
     ESP_ERROR_CHECK(bsp_extra_codec_init());
         vTaskDelay(100 / portTICK_PERIOD_MS);
     if (bsp_extra_player_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Play init with SPIFFS failed");
+        ESP_LOGE(TAG, "Audio player init failed");
         return false;
     }
 
-    if (bsp_extra_file_instance_init(MUSIC_DIR, &_file_iterator) != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_extra_file_instance_init failed");
-        return false;
-    }
+    music_library_refresh();
 
-    
     return true;
 }
 void MusicPlayer::stop_audio_fully(void)

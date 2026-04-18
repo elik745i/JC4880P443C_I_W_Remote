@@ -6,7 +6,6 @@
 #pragma once
 
 #include "lvgl.h"
-#include "file_iterator.h"
 #include "esp_brookesia.hpp"
 
 class MusicPlayer: public ESP_Brookesia_PhoneApp {
@@ -22,6 +21,5 @@ public:
     bool pause(void) override;
 
 private:
-    file_iterator_instance_t *_file_iterator;
     void stop_audio_fully(void);
 };

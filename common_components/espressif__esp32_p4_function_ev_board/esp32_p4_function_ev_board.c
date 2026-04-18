@@ -41,6 +41,8 @@ static lv_indev_t *disp_indev = NULL;
 #endif // (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
 
 sdmmc_card_t *bsp_sdcard = NULL;    // Global uSD card handler
+static sd_pwr_ctrl_handle_t s_sd_pwr_ctrl_handle = NULL;
+static bool s_sdcard_mounted = false;
 static bool i2c_initialized = false;
 static TaskHandle_t usb_host_task;  // USB Host Library task
 #if (ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0))
@@ -107,6 +109,10 @@ i2c_master_bus_handle_t bsp_i2c_get_handle(void)
 
 esp_err_t bsp_sdcard_mount(void)
 {
+    if (s_sdcard_mounted && (bsp_sdcard != NULL)) {
+        return ESP_OK;
+    }
+
     const esp_vfs_fat_sdmmc_mount_config_t mount_config = {
 #ifdef CONFIG_BSP_SD_FORMAT_ON_MOUNT_FAIL
         .format_if_mount_failed = true,
@@ -124,13 +130,14 @@ esp_err_t bsp_sdcard_mount(void)
     sd_pwr_ctrl_ldo_config_t ldo_config = {
         .ldo_chan_id = 4,
     };
-    sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
-    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create a new on-chip LDO power control driver");
-        return ret;
+    if (s_sd_pwr_ctrl_handle == NULL) {
+        esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &s_sd_pwr_ctrl_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to create a new on-chip LDO power control driver");
+            return ret;
+        }
     }
-    host.pwr_ctrl_handle = pwr_ctrl_handle;
+    host.pwr_ctrl_handle = s_sd_pwr_ctrl_handle;
 
     const sdmmc_slot_config_t slot_config = {
         /* SD card is connected to Slot 0 pins. Slot 0 uses IO MUX, so not specifying the pins here */
@@ -140,12 +147,32 @@ esp_err_t bsp_sdcard_mount(void)
         .flags = 0,
     };
 
-    return esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &bsp_sdcard);
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &bsp_sdcard);
+    if (ret == ESP_OK) {
+        s_sdcard_mounted = true;
+    } else {
+        bsp_sdcard = NULL;
+        s_sdcard_mounted = false;
+    }
+
+    return ret;
 }
 
 esp_err_t bsp_sdcard_unmount(void)
 {
-    return esp_vfs_fat_sdcard_unmount(BSP_SD_MOUNT_POINT, bsp_sdcard);
+    if (!s_sdcard_mounted || (bsp_sdcard == NULL)) {
+        bsp_sdcard = NULL;
+        s_sdcard_mounted = false;
+        return ESP_OK;
+    }
+
+    esp_err_t ret = esp_vfs_fat_sdcard_unmount(BSP_SD_MOUNT_POINT, bsp_sdcard);
+    if (ret == ESP_OK) {
+        bsp_sdcard = NULL;
+        s_sdcard_mounted = false;
+    }
+
+    return ret;
 }
 
 esp_err_t bsp_spiffs_mount(void)

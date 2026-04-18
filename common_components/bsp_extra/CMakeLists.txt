@@ -1,6 +1,7 @@
 set(SRCS "")
 list(APPEND SRCS
     "src/bsp_board_extra.c"
+    "src/device_security.cpp"
 )
 
 set(INCLUDE_DIRS "")
@@ -15,6 +16,6 @@ endforeach()
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS ${INCLUDE_DIRS}
-    REQUIRES driver
+    REQUIRES driver nvs_flash espressif__esp-brookesia
     PRIV_REQUIRES esp_timer fatfs esp_psram esp_mm
 )

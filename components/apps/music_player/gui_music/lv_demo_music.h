@@ -39,13 +39,16 @@ extern "C" {
  * GLOBAL PROTOTYPES
  **********************/
 
-void lv_demo_music(lv_obj_t *parent, file_iterator_instance_t *file_iterator);
+void lv_demo_music(lv_obj_t *parent);
 void lv_demo_music_close(void);
 
+uint32_t _lv_demo_music_get_track_count(void);
 const char * _lv_demo_music_get_title(uint32_t track_id);
 const char * _lv_demo_music_get_artist(uint32_t track_id);
 const char * _lv_demo_music_get_genre(uint32_t track_id);
 uint32_t _lv_demo_music_get_track_length(uint32_t track_id);
+void _lv_demo_music_open_browser(void);
+void _lv_demo_music_close_browser(void);
 
 /**********************
  *      MACROS

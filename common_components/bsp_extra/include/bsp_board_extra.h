@@ -225,6 +225,36 @@ bool bsp_extra_player_is_playing_by_path(const char *file_path);
  */
 bool bsp_extra_player_is_playing_by_index(file_iterator_instance_t *instance, int index);
 
+/**
+ * @brief Initialize display idle management.
+ *
+ * Starts the background task that watches LVGL inactivity time and applies
+ * configured adaptive dimming and screen-off behavior.
+ *
+ * @return
+ *     - ESP_OK on success
+ *     - ESP_ERR_NO_MEM if the task cannot be created
+ */
+esp_err_t bsp_extra_display_idle_init(void);
+
+/**
+ * @brief Update the configured user brightness level.
+ *
+ * @param brightness_percent User-selected brightness in percent.
+ */
+void bsp_extra_display_idle_set_base_brightness(int brightness_percent);
+
+/**
+ * @brief Configure display idle behavior.
+ *
+ * @param adaptive_brightness_enabled Enable dim-to-50% behavior after inactivity.
+ * @param screensaver_enabled Reserved for future screensaver behavior.
+ * @param screen_off_timeout_sec Screen-off timeout in seconds. 0 disables timeout.
+ * @param sleep_timeout_sec Deep-sleep timeout in seconds. 0 disables deep sleep.
+ */
+void bsp_extra_display_idle_configure(bool adaptive_brightness_enabled, bool screensaver_enabled,
+									  uint32_t screen_off_timeout_sec, uint32_t sleep_timeout_sec);
+
 #ifdef __cplusplus
 }
 #endif

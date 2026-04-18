@@ -66,6 +66,7 @@ private:
     uint16_t current_score;
     uint16_t best_score;
     uint16_t _weight_max;
+    bool _audio_enabled;
     nvs_handle_t nvs_handle;
     file_iterator_instance_t *_file_iterator;
     cell_weight_t _cells_weight[4][4];

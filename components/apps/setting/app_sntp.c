@@ -16,15 +16,27 @@
 #include "esp_sleep.h"
 #include "esp_sntp.h"
 
-#define TIMEZONE        "CST-8"
 #define SERVER_NAME_0   "ntp.aliyun.com"
 #define SERVER_NAME_1   "time.asia.apple.com"
 #define SERVER_NAME_2   "pool.ntp.org"
 
 static const char *TAG = "sntp";
+static char s_timezone[32] = "UTC0";
 
 static void obtain_time(void);
 static void initialize_sntp(void);
+
+void app_sntp_set_timezone(const char *tz)
+{
+    if ((tz == NULL) || (tz[0] == '\0')) {
+        tz = "UTC0";
+    }
+
+    snprintf(s_timezone, sizeof(s_timezone), "%s", tz);
+    setenv("TZ", s_timezone, 1);
+    tzset();
+    ESP_LOGI(TAG, "Timezone set to %s", s_timezone);
+}
 
 #ifdef CONFIG_SNTP_TIME_SYNC_METHOD_CUSTOM
 void sntp_sync_time(struct timeval *tv)
@@ -54,9 +66,7 @@ void app_sntp_init(void)
     time(&now);
     localtime_r(&now, &timeinfo);
 
-    // Set timezone to China Standard Time
-    setenv("TZ", "CST-8", 1);
-    tzset();
+    app_sntp_set_timezone(s_timezone);
     // Is time set? If not, tm_year will be (1970 - 1900).
     if (timeinfo.tm_year < (2016 - 1900)) {
         ESP_LOGI(TAG, "Time is not set yet. Connecting to WiFi and getting time over NTP.");
@@ -88,7 +98,7 @@ void app_sntp_init(void)
     char strftime_buf[64];
     localtime_r(&now, &timeinfo);
     strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
-    ESP_LOGI(TAG, "The current date/time in Shanghai is: %s", strftime_buf);
+    ESP_LOGI(TAG, "The current local date/time is: %s", strftime_buf);
 
     if (sntp_get_sync_mode() == SNTP_SYNC_MODE_SMOOTH) {
         struct timeval outdelta;

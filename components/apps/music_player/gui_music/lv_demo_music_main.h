@@ -14,14 +14,11 @@ extern "C" {
  *      INCLUDES
  *********************/
 #include "lv_demo_music.h"
-#include "bsp_board_extra.h"
 #if APP_DEMO_MUSIC_ENABLE
 
 /*********************
  *      DEFINES
  *********************/
-#define ACTIVE_TRACK_CNT    5
-
 /**********************
  *      TYPEDEFS
  **********************/
@@ -29,7 +26,7 @@ extern "C" {
 /**********************
  * GLOBAL PROTOTYPES
  **********************/
-lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent, file_iterator_instance_t *iterator);
+lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent);
 void _lv_demo_music_main_close(void);
 
 void _lv_demo_music_play(uint32_t id);

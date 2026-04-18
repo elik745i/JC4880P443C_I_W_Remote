@@ -18,7 +18,7 @@ static constexpr const char *kSpiffsRoot = BSP_SPIFFS_MOUNT_POINT;
 static constexpr intptr_t kDialogModeInfo = 0;
 static constexpr intptr_t kDialogModeDelete = 1;
 
-LV_IMG_DECLARE(img_app_img_display);
+LV_IMG_DECLARE(img_app_file_manager);
 
 namespace {
 
@@ -41,43 +41,72 @@ void set_button_enabled(lv_obj_t *button, bool enabled)
     }
 }
 
-lv_obj_t *create_action_button(lv_obj_t *parent, const char *text, lv_coord_t x, lv_coord_t y)
+lv_obj_t *create_action_button(lv_obj_t *parent, const char *text, lv_coord_t x, lv_coord_t y, lv_coord_t width = 136)
 {
     lv_obj_t *button = lv_btn_create(parent);
-    lv_obj_set_size(button, 130, 42);
+    lv_obj_set_size(button, width, 54);
     lv_obj_set_pos(button, x, y);
+    lv_obj_set_style_radius(button, 18, 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(button, 1, 0);
+    lv_obj_set_style_border_color(button, lv_color_hex(0xD6DEEA), 0);
+    lv_obj_set_style_shadow_width(button, 0, 0);
+    lv_obj_set_style_pad_all(button, 0, 0);
 
     lv_obj_t *label = lv_label_create(button);
     lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(label);
 
     return button;
 }
 
+lv_obj_t *create_card(lv_obj_t *parent, lv_coord_t width, lv_coord_t height, lv_coord_t x, lv_coord_t y, lv_color_t color)
+{
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_set_size(card, width, height);
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_style_radius(card, 24, 0);
+    lv_obj_set_style_bg_color(card, color, 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_shadow_width(card, 24, 0);
+        lv_obj_set_style_shadow_opa(card, LV_OPA_10, 0);
+    lv_obj_set_style_shadow_color(card, lv_color_hex(0x22304A), 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        return card;
+}
+
 } // namespace
 
 FileManager::FileManager()
-    : ESP_Brookesia_PhoneApp("Files", &img_app_img_display, true),
+    : ESP_Brookesia_PhoneApp("Files", &img_app_file_manager, true),
       _screen(nullptr),
       _titleLabel(nullptr),
+            _subtitleLabel(nullptr),
       _pathLabel(nullptr),
-      _statusLabel(nullptr),
+            _statusLabel(nullptr),
       _entryList(nullptr),
       _sdButton(nullptr),
       _spiffsButton(nullptr),
-      _upButton(nullptr),
+            _storageNameLabel(nullptr),
+            _storageMetaLabel(nullptr),
+            _folderMetaLabel(nullptr),
+            _upButton(nullptr),
       _refreshButton(nullptr),
       _openButton(nullptr),
       _newFolderButton(nullptr),
       _renameButton(nullptr),
-      _deleteButton(nullptr),
+            _deleteButton(nullptr),
       _infoButton(nullptr),
       _emptyLabel(nullptr),
       _inputPanel(nullptr),
       _inputTitleLabel(nullptr),
       _inputTextArea(nullptr),
       _keyboard(nullptr),
-      _dialogMessageBox(nullptr),
+            _dialogMessageBox(nullptr),
       _activeRoot(StorageRoot::Spiffs),
       _currentPath(rootPath(StorageRoot::Spiffs)),
       _selectedEntry(nullptr),
@@ -157,37 +186,85 @@ bool FileManager::close()
 bool FileManager::buildUi()
 {
     _screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(_screen, lv_color_hex(0xF4F7FB), 0);
+    lv_obj_set_style_bg_color(_screen, lv_color_hex(0xEEF3F9), 0);
     lv_obj_set_style_bg_opa(_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    _titleLabel = lv_label_create(_screen);
+    lv_obj_t *heroCard = create_card(_screen, 440, 130, 20, 18, lv_color_hex(0x102A43));
+    lv_obj_set_style_bg_grad_color(heroCard, lv_color_hex(0x1D4ED8), 0);
+    lv_obj_set_style_bg_grad_dir(heroCard, LV_GRAD_DIR_HOR, 0);
+
+    _titleLabel = lv_label_create(heroCard);
     lv_label_set_text(_titleLabel, "Files");
-    lv_obj_set_style_text_font(_titleLabel, &lv_font_montserrat_26, 0);
-    lv_obj_set_style_text_color(_titleLabel, lv_color_hex(0x122033), 0);
-    lv_obj_align(_titleLabel, LV_ALIGN_TOP_LEFT, 20, 18);
+    lv_obj_set_style_text_font(_titleLabel, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(_titleLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(_titleLabel, LV_ALIGN_TOP_LEFT, 18, 16);
 
-    _pathLabel = lv_label_create(_screen);
+    _subtitleLabel = lv_label_create(heroCard);
+    lv_label_set_text(_subtitleLabel, "Android-style browser for SD card and SPIFFS");
+    lv_obj_set_style_text_font(_subtitleLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_subtitleLabel, lv_color_hex(0xC7D8FF), 0);
+    lv_obj_align(_subtitleLabel, LV_ALIGN_TOP_LEFT, 18, 52);
+
+    _pathLabel = lv_label_create(heroCard);
     lv_label_set_long_mode(_pathLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_set_width(_pathLabel, 440);
-    lv_obj_set_style_text_color(_pathLabel, lv_color_hex(0x4E5B6B), 0);
-    lv_obj_align(_pathLabel, LV_ALIGN_TOP_LEFT, 20, 58);
+    lv_obj_set_width(_pathLabel, 404);
+    lv_obj_set_style_text_font(_pathLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_pathLabel, lv_color_hex(0xEAF2FF), 0);
+    lv_obj_align(_pathLabel, LV_ALIGN_BOTTOM_LEFT, 18, -18);
 
-    _statusLabel = lv_label_create(_screen);
-    lv_obj_set_width(_statusLabel, 440);
-    lv_label_set_long_mode(_statusLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(_statusLabel, lv_color_hex(0x2A7D46), 0);
-    lv_obj_align(_statusLabel, LV_ALIGN_BOTTOM_LEFT, 20, -12);
+    _sdButton = create_action_button(_screen, LV_SYMBOL_DRIVE "  SD Card", 20, 162, 212);
+    _spiffsButton = create_action_button(_screen, LV_SYMBOL_HOME "  SPIFFS", 248, 162, 212);
 
-    _sdButton = create_action_button(_screen, "SD Card", 20, 94);
-    _spiffsButton = create_action_button(_screen, "SPIFFS", 160, 94);
-    _upButton = create_action_button(_screen, "Up", 300, 94);
-    _refreshButton = create_action_button(_screen, "Refresh", 20, 146);
-    _openButton = create_action_button(_screen, "Open", 160, 146);
-    _newFolderButton = create_action_button(_screen, "New Folder", 300, 146);
-    _renameButton = create_action_button(_screen, "Rename", 20, 198);
-    _deleteButton = create_action_button(_screen, "Delete", 160, 198);
-    _infoButton = create_action_button(_screen, "Info", 300, 198);
+    lv_obj_t *overviewCard = create_card(_screen, 440, 112, 20, 228, lv_color_hex(0xFFFFFF));
+    lv_obj_t *overviewIcon = lv_label_create(overviewCard);
+    lv_label_set_text(overviewIcon, LV_SYMBOL_DIRECTORY);
+    lv_obj_set_style_text_font(overviewIcon, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(overviewIcon, lv_color_hex(0x2563EB), 0);
+    lv_obj_align(overviewIcon, LV_ALIGN_TOP_LEFT, 18, 18);
+
+    _storageNameLabel = lv_label_create(overviewCard);
+    lv_obj_set_style_text_font(_storageNameLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(_storageNameLabel, lv_color_hex(0x102A43), 0);
+    lv_obj_align(_storageNameLabel, LV_ALIGN_TOP_LEFT, 66, 16);
+
+    _storageMetaLabel = lv_label_create(overviewCard);
+    lv_obj_set_style_text_font(_storageMetaLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_storageMetaLabel, lv_color_hex(0x52606D), 0);
+    lv_obj_align(_storageMetaLabel, LV_ALIGN_TOP_LEFT, 66, 48);
+
+    _folderMetaLabel = lv_label_create(overviewCard);
+    lv_obj_set_style_text_font(_folderMetaLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_folderMetaLabel, lv_color_hex(0x1F2937), 0);
+    lv_obj_align(_folderMetaLabel, LV_ALIGN_BOTTOM_LEFT, 18, -18);
+
+    _upButton = create_action_button(_screen, LV_SYMBOL_LEFT " Up", 20, 356, 102);
+    _refreshButton = create_action_button(_screen, LV_SYMBOL_REFRESH " Sync", 132, 356, 102);
+    _openButton = create_action_button(_screen, LV_SYMBOL_RIGHT " Open", 244, 356, 102);
+    _newFolderButton = create_action_button(_screen, LV_SYMBOL_PLUS " New", 356, 356, 104);
+    _renameButton = create_action_button(_screen, LV_SYMBOL_EDIT " Rename", 20, 420, 138);
+    _deleteButton = create_action_button(_screen, LV_SYMBOL_TRASH " Delete", 170, 420, 138);
+    _infoButton = create_action_button(_screen, LV_SYMBOL_LIST " Details", 320, 420, 140);
+
+    lv_obj_t *listCard = create_card(_screen, 440, 246, 20, 486, lv_color_hex(0xFFFFFF));
+    lv_obj_t *listHeader = lv_label_create(listCard);
+    lv_label_set_text(listHeader, "This folder");
+    lv_obj_set_style_text_font(listHeader, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(listHeader, lv_color_hex(0x102A43), 0);
+    lv_obj_align(listHeader, LV_ALIGN_TOP_LEFT, 16, 14);
+
+    _entryList = lv_obj_create(listCard);
+    lv_obj_set_size(_entryList, 408, 190);
+    lv_obj_set_pos(_entryList, 16, 42);
+    lv_obj_set_style_bg_color(_entryList, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(_entryList, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(_entryList, 20, 0);
+    lv_obj_set_style_border_width(_entryList, 0, 0);
+    lv_obj_set_style_pad_all(_entryList, 8, 0);
+    lv_obj_set_style_pad_row(_entryList, 8, 0);
+    lv_obj_set_layout(_entryList, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(_entryList, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(_entryList, LV_SCROLLBAR_MODE_OFF);
 
     lv_obj_add_event_cb(_sdButton, onStorageClicked, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(_spiffsButton, onStorageClicked, LV_EVENT_CLICKED, this);
@@ -199,26 +276,22 @@ bool FileManager::buildUi()
     lv_obj_add_event_cb(_deleteButton, onDeleteClicked, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(_infoButton, onInfoClicked, LV_EVENT_CLICKED, this);
 
-    _entryList = lv_list_create(_screen);
-    lv_obj_set_size(_entryList, 440, 455);
-    lv_obj_set_pos(_entryList, 20, 250);
-    lv_obj_set_style_radius(_entryList, 18, 0);
-    lv_obj_set_style_bg_color(_entryList, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_border_width(_entryList, 0, 0);
-    lv_obj_set_style_pad_all(_entryList, 8, 0);
-
     _emptyLabel = lv_label_create(_entryList);
-    lv_label_set_text(_emptyLabel, "No files in this folder");
+    lv_label_set_text(_emptyLabel, "No files in this folder yet");
+    lv_obj_set_style_text_font(_emptyLabel, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_emptyLabel, lv_color_hex(0x7D8996), 0);
-    lv_obj_center(_emptyLabel);
+    lv_obj_set_width(_emptyLabel, 360);
+    lv_obj_set_style_text_align(_emptyLabel, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_add_flag(_emptyLabel, LV_OBJ_FLAG_HIDDEN);
 
     _inputPanel = lv_obj_create(_screen);
-    lv_obj_set_size(_inputPanel, 430, 230);
+    lv_obj_set_size(_inputPanel, 430, 240);
     lv_obj_align(_inputPanel, LV_ALIGN_CENTER, 0, -60);
-    lv_obj_set_style_radius(_inputPanel, 18, 0);
+    lv_obj_set_style_radius(_inputPanel, 24, 0);
     lv_obj_set_style_bg_color(_inputPanel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_border_width(_inputPanel, 0, 0);
+    lv_obj_set_style_shadow_width(_inputPanel, 24, 0);
+    lv_obj_set_style_shadow_opa(_inputPanel, LV_OPA_20, 0);
     lv_obj_add_flag(_inputPanel, LV_OBJ_FLAG_HIDDEN);
 
     _inputTitleLabel = lv_label_create(_inputPanel);
@@ -231,8 +304,8 @@ bool FileManager::buildUi()
     lv_textarea_set_one_line(_inputTextArea, true);
     lv_textarea_set_placeholder_text(_inputTextArea, "Enter name");
 
-    lv_obj_t *cancelButton = create_action_button(_inputPanel, "Cancel", 16, 128);
-    lv_obj_t *confirmButton = create_action_button(_inputPanel, "Confirm", 284, 128);
+    lv_obj_t *cancelButton = create_action_button(_inputPanel, "Cancel", 16, 140, 130);
+    lv_obj_t *confirmButton = create_action_button(_inputPanel, LV_SYMBOL_OK " Confirm", 284, 140, 130);
     lv_obj_add_event_cb(cancelButton, onInputCancelClicked, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(confirmButton, onInputConfirmClicked, LV_EVENT_CLICKED, this);
 
@@ -244,7 +317,15 @@ bool FileManager::buildUi()
     lv_obj_add_event_cb(_keyboard, onKeyboardDone, LV_EVENT_CANCEL, this);
     lv_obj_add_flag(_keyboard, LV_OBJ_FLAG_HIDDEN);
 
+    _statusLabel = lv_label_create(_screen);
+    lv_obj_set_width(_statusLabel, 440);
+    lv_label_set_long_mode(_statusLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_statusLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_statusLabel, lv_color_hex(0x2A7D46), 0);
+    lv_obj_align(_statusLabel, LV_ALIGN_BOTTOM_LEFT, 20, -14);
+
     updateActionButtons();
+    updateOverviewCard();
     setStatus("Ready");
     return true;
 }
@@ -258,14 +339,17 @@ bool FileManager::refreshEntries()
     _entries.clear();
     _selectedEntry = nullptr;
     lv_obj_clean(_entryList);
+    _emptyLabel = nullptr;
 
     DIR *dir = opendir(_currentPath.c_str());
     if (dir == nullptr) {
         setStatus(std::string("Cannot open ") + _currentPath + ": " + strerror(errno), true);
-        lv_obj_t *label = lv_label_create(_entryList);
-        lv_label_set_text(label, "Unable to read this folder");
-        lv_obj_center(label);
+        _emptyLabel = lv_label_create(_entryList);
+        lv_label_set_text(_emptyLabel, "Unable to read this folder");
+        lv_obj_set_width(_emptyLabel, 360);
+        lv_obj_set_style_text_align(_emptyLabel, LV_TEXT_ALIGN_CENTER, 0);
         updatePathLabel();
+        updateOverviewCard();
         updateActionButtons();
         return false;
     }
@@ -299,26 +383,60 @@ bool FileManager::refreshEntries()
     });
 
     if (_entries.empty()) {
-        lv_obj_t *label = lv_label_create(_entryList);
-        lv_label_set_text(label, "No files in this folder");
-        lv_obj_center(label);
+        _emptyLabel = lv_label_create(_entryList);
+        lv_label_set_text(_emptyLabel, "No files in this folder yet");
+        lv_obj_set_width(_emptyLabel, 360);
+        lv_obj_set_style_text_font(_emptyLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_emptyLabel, lv_color_hex(0x7D8996), 0);
+        lv_obj_set_style_text_align(_emptyLabel, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_top(_emptyLabel, 56, 0);
     } else {
         for (size_t index = 0; index < _entries.size(); ++index) {
             EntryInfo &info = _entries[index];
-            const char *icon = info.isDirectory ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE;
-            std::string label = info.name;
-            if (!info.isDirectory) {
-                label += "\n";
-                label += formatSize(info.size);
-            }
-            info.button = lv_list_add_btn(_entryList, icon, label.c_str());
-            lv_obj_set_height(info.button, 58);
-            lv_obj_set_style_radius(info.button, 12, 0);
+            info.button = lv_btn_create(_entryList);
+            lv_obj_set_width(info.button, lv_pct(100));
+            lv_obj_set_height(info.button, 72);
+            lv_obj_set_style_radius(info.button, 18, 0);
+            lv_obj_set_style_bg_color(info.button, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_style_bg_opa(info.button, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(info.button, 1, 0);
+            lv_obj_set_style_border_color(info.button, lv_color_hex(0xE2E8F0), 0);
+            lv_obj_set_style_shadow_width(info.button, 0, 0);
+            lv_obj_clear_flag(info.button, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t *iconLabel = lv_label_create(info.button);
+            lv_label_set_text(iconLabel, info.isDirectory ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE);
+            lv_obj_set_style_text_font(iconLabel, &lv_font_montserrat_22, 0);
+            lv_obj_set_style_text_color(iconLabel, info.isDirectory ? lv_color_hex(0x2563EB) : lv_color_hex(0x64748B), 0);
+            lv_obj_align(iconLabel, LV_ALIGN_LEFT_MID, 12, -10);
+
+            lv_obj_t *nameLabel = lv_label_create(info.button);
+            lv_label_set_text(nameLabel, info.name.c_str());
+            lv_label_set_long_mode(nameLabel, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(nameLabel, 250);
+            lv_obj_set_style_text_font(nameLabel, &lv_font_montserrat_18, 0);
+            lv_obj_set_style_text_color(nameLabel, lv_color_hex(0x102A43), 0);
+            lv_obj_align(nameLabel, LV_ALIGN_LEFT_MID, 52, -14);
+
+            lv_obj_t *metaLabel = lv_label_create(info.button);
+            const std::string meta = info.isDirectory ? std::string("Folder") : formatSize(info.size);
+            lv_label_set_text(metaLabel, meta.c_str());
+            lv_obj_set_style_text_font(metaLabel, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(metaLabel, lv_color_hex(0x52606D), 0);
+            lv_obj_align(metaLabel, LV_ALIGN_LEFT_MID, 52, 12);
+
+            lv_obj_t *chevronLabel = lv_label_create(info.button);
+            lv_label_set_text(chevronLabel, LV_SYMBOL_RIGHT);
+            lv_obj_set_style_text_font(chevronLabel, &lv_font_montserrat_16, 0);
+            lv_obj_set_style_text_color(chevronLabel, lv_color_hex(0x94A3B8), 0);
+            lv_obj_align(chevronLabel, LV_ALIGN_RIGHT_MID, -14, 0);
+
             lv_obj_add_event_cb(info.button, onEntryClicked, LV_EVENT_CLICKED, this);
         }
     }
 
     updatePathLabel();
+    updateOverviewCard();
     updateActionButtons();
     setStatus(std::string("Loaded ") + std::to_string(_entries.size()) + " entries");
     return true;
@@ -332,14 +450,18 @@ bool FileManager::switchStorage(StorageRoot root)
 
     if (!rootAvailable(root)) {
         lv_obj_clean(_entryList);
+        _emptyLabel = nullptr;
         _entries.clear();
         _selectedEntry = nullptr;
         updateActionButtons();
         updatePathLabel();
+        updateOverviewCard();
         setStatus(rootLabel(root) + " is not available", true);
-        lv_obj_t *label = lv_label_create(_entryList);
-        lv_label_set_text_fmt(label, "%s is not mounted", rootLabel(root).c_str());
-        lv_obj_center(label);
+        _emptyLabel = lv_label_create(_entryList);
+        lv_label_set_text_fmt(_emptyLabel, "%s is not mounted", rootLabel(root).c_str());
+        lv_obj_set_width(_emptyLabel, 360);
+        lv_obj_set_style_text_align(_emptyLabel, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_top(_emptyLabel, 56, 0);
         return false;
     }
 
@@ -512,6 +634,22 @@ std::string FileManager::formatSize(uint64_t size) const
     return buffer;
 }
 
+std::string FileManager::formatEntrySummary() const
+{
+    size_t directoryCount = 0;
+    size_t fileCount = 0;
+
+    for (const EntryInfo &entry : _entries) {
+        if (entry.isDirectory) {
+            ++directoryCount;
+        } else {
+            ++fileCount;
+        }
+    }
+
+    return std::to_string(directoryCount) + " folders  •  " + std::to_string(fileCount) + " files";
+}
+
 void FileManager::setStatus(const std::string &message, bool isError)
 {
     if (_statusLabel == nullptr) {
@@ -525,15 +663,29 @@ void FileManager::setStatus(const std::string &message, bool isError)
 void FileManager::updatePathLabel()
 {
     if (_pathLabel != nullptr) {
-        lv_label_set_text_fmt(_pathLabel, "%s: %s", rootLabel(_activeRoot).c_str(), _currentPath.c_str());
+        lv_label_set_text_fmt(_pathLabel, "%s  •  %s", rootLabel(_activeRoot).c_str(), _currentPath.c_str());
     }
+}
+
+void FileManager::updateOverviewCard()
+{
+    if ((_storageNameLabel == nullptr) || (_storageMetaLabel == nullptr) || (_folderMetaLabel == nullptr)) {
+        return;
+    }
+
+    const bool available = rootAvailable(_activeRoot);
+    lv_label_set_text(_storageNameLabel, rootLabel(_activeRoot).c_str());
+    lv_label_set_text_fmt(_storageMetaLabel, "%s root: %s", available ? "Mounted" : "Offline", rootPath(_activeRoot).c_str());
+    lv_label_set_text(_folderMetaLabel, formatEntrySummary().c_str());
 }
 
 void FileManager::updateStorageButtons()
 {
     const bool sdActive = (_activeRoot == StorageRoot::SdCard);
-    lv_obj_set_style_bg_color(_sdButton, sdActive ? lv_color_hex(0x1F6FEB) : lv_color_hex(0xD9E2F2), 0);
-    lv_obj_set_style_bg_color(_spiffsButton, sdActive ? lv_color_hex(0xD9E2F2) : lv_color_hex(0x1F6FEB), 0);
+    lv_obj_set_style_bg_color(_sdButton, sdActive ? lv_color_hex(0x2563EB) : lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_color(_spiffsButton, sdActive ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x2563EB), 0);
+    lv_obj_set_style_border_color(_sdButton, sdActive ? lv_color_hex(0x2563EB) : lv_color_hex(0xD6DEEA), 0);
+    lv_obj_set_style_border_color(_spiffsButton, sdActive ? lv_color_hex(0xD6DEEA) : lv_color_hex(0x2563EB), 0);
     lv_obj_set_style_text_color(_sdButton, sdActive ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x122033), 0);
     lv_obj_set_style_text_color(_spiffsButton, sdActive ? lv_color_hex(0x122033) : lv_color_hex(0xFFFFFF), 0);
 }
@@ -552,13 +704,18 @@ void FileManager::selectEntry(EntryInfo *entry)
 {
     if ((_selectedEntry != nullptr) && (_selectedEntry->button != nullptr)) {
         lv_obj_set_style_bg_color(_selectedEntry->button, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_border_color(_selectedEntry->button, lv_color_hex(0xE2E8F0), 0);
     }
 
+    const bool selectedSameEntry = (_selectedEntry == entry) && (entry != nullptr);
     _selectedEntry = entry;
 
     if ((_selectedEntry != nullptr) && (_selectedEntry->button != nullptr)) {
-        lv_obj_set_style_bg_color(_selectedEntry->button, lv_color_hex(0xDCEBFF), 0);
+        lv_obj_set_style_bg_color(_selectedEntry->button, lv_color_hex(0xDBEAFE), 0);
+        lv_obj_set_style_border_color(_selectedEntry->button, lv_color_hex(0x60A5FA), 0);
         setStatus(std::string("Selected ") + _selectedEntry->name);
+    } else if (!selectedSameEntry) {
+        setStatus("Ready");
     }
 
     updateActionButtons();
@@ -643,6 +800,10 @@ void FileManager::onEntryClicked(lv_event_t *event)
     lv_obj_t *target = lv_event_get_target(event);
     for (EntryInfo &entry : app->_entries) {
         if (entry.button == target) {
+            if (app->_selectedEntry == &entry) {
+                app->openSelectedEntry();
+                return;
+            }
             app->selectEntry(&entry);
             return;
         }

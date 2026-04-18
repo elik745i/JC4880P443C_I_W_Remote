@@ -8,6 +8,7 @@
 #include <array>
 #include <map>
 #include <string>
+#include <vector>
 #include "esp_adc/adc_oneshot.h"
 #include "esp_adc/adc_cali.h"
 #include "esp_adc/adc_cali_scheme.h"
@@ -16,6 +17,7 @@
 #include "esp_wifi.h"
 #include "lvgl.h"
 #include "esp_brookesia.hpp"
+#include "device_security.hpp"
 
 class AppSettings: public ESP_Brookesia_PhoneApp {
 public:
@@ -38,9 +40,22 @@ private:
         UI_BLUETOOTH_SETTING_INDEX,
         UI_VOLUME_SETTING_INDEX,
         UI_BRIGHTNESS_SETTING_INDEX,
+        UI_FIRMWARE_SETTING_INDEX,
         UI_ABOUT_SETTING_INDEX,
         UI_MAX_INDEX,
     } SettingScreenIndex_t;
+
+    typedef struct {
+        std::string label;
+        std::string version;
+        std::string path_or_url;
+        std::string project_name;
+        std::string notes;
+        size_t size_bytes;
+        bool is_current;
+        bool is_newer;
+        bool is_valid;
+    } FirmwareEntry_t;
 
     typedef enum {
         WIFI_SIGNAL_STRENGTH_NONE = 0,
@@ -63,12 +78,38 @@ private:
     void initWifiListButton(lv_obj_t* lv_label_ssid, lv_obj_t* lv_img_wifi_lock, lv_obj_t* lv_wifi_img,
                               lv_obj_t *lv_wifi_connect, uint8_t* ssid, bool psk, WifiSignalStrengthLevel_t signal_strength);
     void deinitWifiListButton(void);
+    void refreshSavedWifiUi(void);
+    void refreshDisplayIdleUi(void);
+    void refreshTimezoneUi(void);
+    void refreshSecurityUi(void);
+    void refreshFirmwareUi(void);
+    void applyDisplayIdleSettings(void);
+    void applyManualTimezonePreference(void);
+    bool syncAutoTimezoneFromInternet(void);
+    void initializeDefaultNvsParams(void);
+    bool factoryResetPreferences(void);
+    void setWifiKeyboardVisible(bool visible);
+    void updateWifiPasswordVisibility(bool visible);
+    void handleSecurityToggleResult(device_security::LockType type, bool success);
+    void setFirmwareStatus(const std::string &status, bool is_error = false);
+    void populateFirmwareDropdown(lv_obj_t *dropdown, const std::vector<FirmwareEntry_t> &entries, const char *empty_label);
+    bool scanSdFirmwareEntries(void);
+    bool fetchGithubFirmwareEntries(void);
+    bool probeFirmwareFile(const std::string &path, FirmwareEntry_t &entry);
+    bool hasOtaFlashSupport(void) const;
+    std::string getCurrentFirmwareVersion(void) const;
+    std::string formatFirmwareLabel(const FirmwareEntry_t &entry) const;
+    static int compareVersionStrings(const std::string &lhs, const std::string &rhs);
     // NVS Parameters
     bool loadNvsParam(void);
     bool setNvsParam(std::string key, int value);
+    bool loadNvsStringParam(const char *key, char *buffer, size_t buffer_size);
+    bool setNvsStringParam(const char *key, const char *value);
+    bool clearSavedWifiCredentials(void);
     void updateUiByNvsParam(void);
     // WiFi
     esp_err_t initWifi(void);
+    bool restoreWifiCredentials(void);
     void startWifiScan(void);
     void stopWifiScan(void);
     void scanWifiAndUpdateUi(void);
@@ -92,12 +133,30 @@ private:
     static void onSwitchPanelScreenSettingWiFiSwitchValueChangeEventCallback( lv_event_t * e);
     static void onButtonWifiListClickedEventCallback(lv_event_t * e);
     static void onKeyboardScreenSettingVerificationClickedEventCallback(lv_event_t *e);
+    static void onWifiPasswordFieldEventCallback(lv_event_t *e);
+    static void onWifiPasswordToggleClickedEventCallback(lv_event_t *e);
+    static void onForgetSavedWifiClickedEventCallback(lv_event_t *e);
     // Bluetooth
     static void onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback( lv_event_t * e);
+    static void onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback(lv_event_t *e);
+    static void onSecurityToggleRequestFinished(bool success, void *user_data);
+    static void onFirmwareMenuClickedEventCallback(lv_event_t *e);
+    static void onFirmwareSdRefreshClickedEventCallback(lv_event_t *e);
+    static void onFirmwareOtaCheckClickedEventCallback(lv_event_t *e);
+    static void onFirmwareSdFlashClickedEventCallback(lv_event_t *e);
+    static void onFirmwareOtaFlashClickedEventCallback(lv_event_t *e);
+    static void onFirmwareFactoryResetClickedEventCallback(lv_event_t *e);
+    static void onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e);
     // Audio
     static void onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e);
     // Brightness
     static void onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t * e);
+    static void onSwitchPanelScreenSettingAdaptiveBrightnessValueChangeEventCallback(lv_event_t *e);
+    static void onSwitchPanelScreenSettingScreensaverValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingTimeoffIntervalValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback(lv_event_t *e);
+    static void onSwitchPanelScreenSettingAutoTimezoneValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingTimezoneValueChangeEventCallback(lv_event_t *e);
 
     bool _is_ui_resumed;
     bool _is_ui_del;
@@ -106,8 +165,42 @@ private:
     lv_obj_t *_panel_wifi_connect;
     lv_obj_t *_spinner_wifi_connect;
     lv_obj_t *_img_wifi_connect;
+    lv_obj_t *_savedWifiPanel;
+    lv_obj_t *_savedWifiValueLabel;
+    lv_obj_t *_savedWifiForgetButton;
+    lv_obj_t *_wifiPasswordToggleButton;
+    lv_obj_t *_wifiPasswordToggleLabel;
+    lv_obj_t *_displayAdaptiveBrightnessSwitch;
+    lv_obj_t *_displayScreensaverSwitch;
+    lv_obj_t *_displayTimeoffDropdown;
+    lv_obj_t *_displaySleepDropdown;
+    lv_obj_t *_displayAutoTimezoneSwitch;
+    lv_obj_t *_displayTimezoneDropdown;
+    lv_obj_t *_displayTimezoneInfoLabel;
+    lv_obj_t *_securitySettingsLockSwitch;
+    lv_obj_t *_securityInfoLabel;
+    lv_obj_t *_firmwareMenuItem;
+    lv_obj_t *_firmwareScreen;
+    lv_obj_t *_firmwareSdDropdown;
+    lv_obj_t *_firmwareSdFlashButton;
+    lv_obj_t *_firmwareOtaDropdown;
+    lv_obj_t *_firmwareOtaFlashButton;
+    lv_obj_t *_firmwareStatusLabel;
+    bool _isWifiPasswordVisible;
+    struct SecurityToggleContext {
+        AppSettings *app;
+        device_security::LockType type;
+    };
+    SecurityToggleContext _deviceLockToggleContext;
+    SecurityToggleContext _settingsLockToggleContext;
     std::array<lv_obj_t *, UI_MAX_INDEX> _screen_list;
+    std::vector<FirmwareEntry_t> _sdFirmwareEntries;
+    std::vector<FirmwareEntry_t> _otaFirmwareEntries;
     std::map<std::string, int32_t> _nvs_param_map;
+    bool _autoTimezoneRefreshPending;
+    bool _hasAutoDetectedTimezone;
+    int32_t _autoDetectedTimezoneOffsetMinutes;
+    std::string _autoTimezoneStatus;
     const ESP_Brookesia_StatusBar *status_bar; 
     const ESP_Brookesia_RecentsScreen *backstage;
 

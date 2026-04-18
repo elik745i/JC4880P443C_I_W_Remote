@@ -153,11 +153,15 @@ bool AppImageDisplay::init(void)
      xEventGroupClearBits(image_event_group, IMAGE_EVENT_DIR);
 
     if (bsp_extra_file_instance_init(IMAGE_DIR, &_image_file_iterator) != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_extra_file_instance_init failed");
+        ESP_LOGW(TAG, "Built-in sample image directory is missing, skipping image viewer app");
         return false;
     }
 
     image_count = file_iterator_get_count(_image_file_iterator);
+    if (image_count <= 0) {
+        ESP_LOGW(TAG, "No built-in sample images found, skipping image viewer app");
+        return false;
+    }
     ESP_LOGI(TAG,"image file count = %d",image_count);
 
     xTaskCreatePinnedToCore((TaskFunction_t)image_delay_change, "Image Init", 2048, this, 3, NULL, 0);

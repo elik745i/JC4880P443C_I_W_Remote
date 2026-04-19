@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "psram_alloc.h"
 #include "sega_emulator/gwenesis/gwenesis.h"
 
 extern unsigned char *VRAM;
@@ -153,7 +154,7 @@ bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t frame
         return false;
     }
 
-    rom_buffer = malloc((size_t)rom_size_long);
+    rom_buffer = sega_psram_malloc((size_t)rom_size_long);
     if (rom_buffer == NULL) {
         fclose(file);
         return false;
@@ -166,7 +167,7 @@ bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t frame
     }
     fclose(file);
 
-    VRAM = malloc(VRAM_MAX_SIZE);
+    VRAM = sega_psram_malloc(VRAM_MAX_SIZE);
     if (VRAM == NULL) {
         free(rom_buffer);
         return false;

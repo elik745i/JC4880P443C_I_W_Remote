@@ -219,6 +219,7 @@ private:
     lv_obj_t *_firmwareSdFlashButton;
     lv_obj_t *_firmwareOtaDropdown;
     lv_obj_t *_firmwareOtaFlashButton;
+    lv_obj_t *_firmwareCurrentVersionLabel;
     lv_obj_t *_firmwareStatusLabel;
     lv_obj_t *_firmwareProgressBar;
     lv_obj_t *_firmwareProgressLabel;

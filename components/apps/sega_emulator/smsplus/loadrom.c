@@ -22,6 +22,7 @@
 
 #include "coleco_bios.h"
 #include "shared.h"
+#include "../psram_alloc.h"
 
 
 #define GAME_DATABASE_CNT 93
@@ -372,7 +373,7 @@ int load_rom(void *data, int size, int crc_size)
 
   cart.rom = data;
   cart.size = size;
-  cart.sram = calloc(1, 0x8000);
+  cart.sram = sega_psram_calloc(1, 0x8000);
   if (!cart.sram) abort();
   cart.crc = crc32_le(0, cart.rom, crc_size ?: size);
   cart.pages = cart.size / 0x4000;
@@ -406,7 +407,7 @@ int load_rom_file(const char *filename)
   }
 
   buf_size = file_size < 0x4000 ? 0x4000 : file_size;
-  buf = calloc(1, buf_size);
+  buf = sega_psram_calloc(1, buf_size);
   if (!buf) abort();
 
   fread(buf, file_size, 1, fd);

@@ -24,6 +24,7 @@
 
 #include "shared.h"
 #include "hvc.h"
+#include "../psram_alloc.h"
 
 struct
 {
@@ -211,7 +212,8 @@ void render_init(void)
   make_tms_tables();
 
   /* Generate 64k of data for the look up table */
-  uint8 *_lut = malloc(0x10000);
+  uint8 *_lut = sega_psram_malloc(0x10000);
+  if(!_lut) abort();
 
   for(bx = 0; bx < 0x100; bx++)
   {
@@ -282,7 +284,8 @@ void render_init(void)
 
 
   /* Make bitplane to pixel lookup table */
-  uint32 *_bp_lut = malloc(0x10000 * 4);
+  uint32 *_bp_lut = sega_psram_malloc(0x10000 * 4);
+  if(!_bp_lut) abort();
 
   for(i = 0; i < 0x100; i++)
   for(j = 0; j < 0x100; j++)

@@ -1,4 +1,5 @@
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <cctype>
@@ -51,6 +52,35 @@ static SemaphoreHandle_t s_sdcardMutex = nullptr;
 static bool s_sdcardMounted = false;
 static SdcardRuntimeApps s_sdcardRuntimeApps;
 static InternetRadio *s_internetRadioApp = nullptr;
+
+static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
+                                                      const char *name,
+                                                      const uint32_t stack_depth,
+                                                      void *arg,
+                                                      const UBaseType_t priority,
+                                                      const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        nullptr,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        ESP_LOGI(TAG, "Started %s with a PSRAM-backed stack", name);
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, nullptr, core_id);
+}
 
 static std::string trim_copy(const std::string &value)
 {
@@ -196,7 +226,14 @@ static void init_serial_command_console(void)
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
 
-    xTaskCreatePinnedToCore(serial_command_task, "serial_cmd", kSerialCommandTaskStack, nullptr, 2, nullptr, 0);
+    if (create_background_task_prefer_psram(serial_command_task,
+                                            "serial_cmd",
+                                            kSerialCommandTaskStack,
+                                            nullptr,
+                                            2,
+                                            0) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to start serial command console task");
+    }
 }
 
 template <typename T>
@@ -555,5 +592,12 @@ extern "C" void app_main(void)
     init_serial_command_console();
     device_security::promptBootUnlockIfNeeded();
     schedule_pending_release_notes_popup();
-    xTaskCreatePinnedToCore(sdcard_monitor_task, "sdcard_monitor", 4096, nullptr, 1, nullptr, 0);
+    if (create_background_task_prefer_psram(sdcard_monitor_task,
+                                            "sdcard_monitor",
+                                            4096,
+                                            nullptr,
+                                            1,
+                                            0) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to start SD card monitor task");
+    }
 }

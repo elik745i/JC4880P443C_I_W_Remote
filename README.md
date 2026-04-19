@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.1 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.2 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, and a local factory reset flow.
 
@@ -16,7 +16,7 @@ Battery and speaker case v1:
 ![Case render 1](3D/r3.jpg)
 ![Case render 2](3D/r4.jpg)
 
-Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including `JC4880P443C_I_W_V1.stl` and `JC4880P443C_I_W_V1_case.stl`.
+Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including `JC4880P443C_I_W_V1.stl`, `JC4880P443C_I_W_V1_case.stl`, and the updated `JC4880P443C_I_W_V1.1_case.stl`.
 
 ## What Changed Versus The Vendor Base
 
@@ -30,8 +30,10 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Display timezone dropdown in GMT format with saved preference storage.
 - Auto timezone detection from the internet after Wi-Fi connects.
 - Firmware screen factory reset button with confirmation and settings wipe.
+- Firmware releases now publish OTA-detectable `.bin` assets directly instead of ZIP-only packages.
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
+- Additional low-risk PSRAM placement for radio preview workers, background service stacks, and emulator lookup / ROM buffers to preserve internal SRAM for time-sensitive work.
 
 ## Feature Summary
 
@@ -77,7 +79,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash size is configured for 16 MB.
 - Partition table provides two enlarged OTA app slots of `0x7B0000` each.
 - SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
-- Current validated application image size should now have roughly `0x4EB80` bytes free in each OTA slot based on the recent `0x761480` build.
+- Version 1.1.2 validates at `0x7616C0`, leaving `0x4E940` bytes free in the smallest OTA app slot.
 
 ## SD Card Layout
 

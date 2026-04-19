@@ -122,6 +122,7 @@
  *****************************************************************************/
 #include "shared.h"
 #include "z80.h"
+#include "../../psram_alloc.h"
 
 /* Show debugging messages */
 #define VERBOSE 0
@@ -2050,8 +2051,8 @@ void z80_init(int index, int clock, const void *config, int (*irq_callback)(int)
     int oldval, newval, val;
     UINT8 *padd, *padc, *psub, *psbc;
     /* allocate big flag arrays once */
-    SZHVC_add = (UINT8 *)malloc(2*256*256);
-    SZHVC_sub = (UINT8 *)malloc(2*256*256);
+    SZHVC_add = (UINT8 *)sega_psram_malloc(2*256*256);
+    SZHVC_sub = (UINT8 *)sega_psram_malloc(2*256*256);
     if( !SZHVC_add || !SZHVC_sub )
     {
       return;

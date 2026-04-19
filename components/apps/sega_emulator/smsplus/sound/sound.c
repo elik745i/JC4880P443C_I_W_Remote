@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "shared.h"
+#include "../../psram_alloc.h"
 
 snd_t snd;
 // static int16 **fm_buffer;
@@ -88,15 +89,15 @@ int sound_init(void)
   /* Allocate emulated sound streams */
   for(i = 0; i < STREAM_MAX; i++)
   {
-    snd.stream[i] = calloc(snd.buffer_size, 1);
+    snd.stream[i] = sega_psram_calloc(snd.buffer_size, 1);
     if(!snd.stream[i]) abort();
   }
 
   /* Allocate sound output streams for the generic mixer */
   if (snd.mixer_callback == sound_mixer_callback)
   {
-    snd.output[0] = calloc(snd.buffer_size, 1);
-    snd.output[1] = calloc(snd.buffer_size, 1);
+    snd.output[0] = sega_psram_calloc(snd.buffer_size, 1);
+    snd.output[1] = sega_psram_calloc(snd.buffer_size, 1);
     if(!snd.output[0] || !snd.output[1]) abort();
   }
 

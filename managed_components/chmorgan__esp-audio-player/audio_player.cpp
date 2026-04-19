@@ -581,6 +581,7 @@ static esp_err_t aplay_mp3_stream(audio_instance_t *i, audio_player_stream_t *st
                 ESP_LOGE(TAG, "to write %d != written %d", bytes_to_write, i2s_bytes_written);
             }
         } else if (decode_status == DECODE_STATUS_NO_DATA_CONTINUE) {
+            vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         } else {
             break;

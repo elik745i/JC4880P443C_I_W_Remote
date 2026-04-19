@@ -360,6 +360,7 @@ AppSettings::AppSettings():
     _firmwareSdFlashButton(nullptr),
     _firmwareOtaDropdown(nullptr),
     _firmwareOtaFlashButton(nullptr),
+    _firmwareCurrentVersionLabel(nullptr),
     _firmwareStatusLabel(nullptr),
     _firmwareProgressBar(nullptr),
     _firmwareProgressLabel(nullptr),
@@ -619,6 +620,13 @@ void AppSettings::extraUiInit(void)
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
         return row;
     };
+
+    lv_obj_t *currentSection = createFirmwareSection(firmwarePanel, "Installed Firmware");
+    _firmwareCurrentVersionLabel = lv_label_create(currentSection);
+    lv_obj_set_width(_firmwareCurrentVersionLabel, lv_pct(100));
+    lv_label_set_long_mode(_firmwareCurrentVersionLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_firmwareCurrentVersionLabel, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(_firmwareCurrentVersionLabel, lv_color_hex(0x0F172A), 0);
 
     lv_obj_t *sdSection = createFirmwareSection(firmwarePanel, "Flash from SD Card");
     lv_obj_t *sdHint = lv_label_create(sdSection);
@@ -1850,6 +1858,19 @@ void AppSettings::refreshFirmwareUi(void)
     populateFirmwareDropdown(_firmwareSdDropdown, _sdFirmwareEntries, "No SD firmware found");
     populateFirmwareDropdown(_firmwareOtaDropdown, _otaFirmwareEntries, "Run OTA check first");
 
+    if (_firmwareCurrentVersionLabel != nullptr) {
+        const std::string current_version = getCurrentFirmwareVersion();
+        const esp_app_desc_t *app_desc = esp_app_get_description();
+        const std::string project_name = ((app_desc != nullptr) && (app_desc->project_name[0] != '\0'))
+                                             ? trim_copy(app_desc->project_name)
+                                             : std::string("unknown project");
+        std::string installed_text = "Current firmware: " + current_version;
+        if (!project_name.empty()) {
+            installed_text += "\nProject: " + project_name;
+        }
+        lv_label_set_text(_firmwareCurrentVersionLabel, installed_text.c_str());
+    }
+
     const bool ota_supported = hasOtaFlashSupport();
     const uint16_t sd_index = (_firmwareSdDropdown != nullptr) ? lv_dropdown_get_selected(_firmwareSdDropdown) : 0;
     const uint16_t ota_index = (_firmwareOtaDropdown != nullptr) ? lv_dropdown_get_selected(_firmwareOtaDropdown) : 0;
@@ -1886,7 +1907,7 @@ void AppSettings::refreshFirmwareUi(void)
         setFirmwareStatus(_sdFirmwareEntries[sd_index].notes);
         setFirmwareProgress(0, "Ready to flash selected SD firmware image.");
     } else {
-        setFirmwareStatus("Firmware screen ready. Scan SD or check GitHub releases.");
+        setFirmwareStatus("Firmware screen ready. Scan SD or check GitHub releases for OTA .bin assets.");
         setFirmwareProgress(0, "Idle");
     }
 }
@@ -2990,7 +3011,7 @@ void AppSettings::onFirmwareOtaCheckClickedEventCallback(lv_event_t *e)
     app->setFirmwareProgress(0, "Querying GitHub releases...");
     if (!app->fetchGithubFirmwareEntries()) {
         app->refreshFirmwareUi();
-        app->setFirmwareStatus("No GitHub firmware releases found or the request failed.", true);
+        app->setFirmwareStatus("No OTA .bin assets were found in GitHub releases, or the request failed.", true);
         goto end;
     }
 

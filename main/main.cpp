@@ -1,10 +1,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <dirent.h>
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -25,6 +30,7 @@
  
 static const char *TAG = "main";
 static constexpr TickType_t kSdcardMonitorPeriod = pdMS_TO_TICKS(2000);
+static constexpr uint32_t kSerialCommandTaskStack = 6144;
 static constexpr const char *kNvsStorageNamespace = "storage";
 static constexpr const char *kNvsKeyOtaPendingVersion = "ota_ver";
 static constexpr const char *kNvsKeyOtaPendingNotes = "ota_notes";
@@ -44,6 +50,154 @@ struct SdcardRuntimeApps {
 static SemaphoreHandle_t s_sdcardMutex = nullptr;
 static bool s_sdcardMounted = false;
 static SdcardRuntimeApps s_sdcardRuntimeApps;
+static InternetRadio *s_internetRadioApp = nullptr;
+
+static std::string trim_copy(const std::string &value)
+{
+    size_t begin = 0;
+    while ((begin < value.size()) && std::isspace(static_cast<unsigned char>(value[begin]))) {
+        ++begin;
+    }
+
+    size_t end = value.size();
+    while ((end > begin) && std::isspace(static_cast<unsigned char>(value[end - 1]))) {
+        --end;
+    }
+
+    return value.substr(begin, end - begin);
+}
+
+static void print_serial_command_help(void)
+{
+    printf("[serial] Commands:\r\n");
+    printf("[serial]   help\r\n");
+    printf("[serial]   radio.status\r\n");
+    printf("[serial]   radio.stop\r\n");
+    printf("[serial]   radio.play Country|Station\r\n");
+    printf("[serial] Example: radio.play Azerbaijan|AVTO FM\r\n");
+}
+
+static void handle_serial_command(const std::string &raw_command)
+{
+    const std::string command = trim_copy(raw_command);
+    if (command.empty()) {
+        return;
+    }
+
+    printf("[serial] cmd=%s\r\n", command.c_str());
+    if ((command == "help") || (command == "?")) {
+        print_serial_command_help();
+        return;
+    }
+
+    if (command == "radio.status") {
+        if (s_internetRadioApp == nullptr) {
+            printf("[radio] app unavailable\r\n");
+            return;
+        }
+        printf("[radio] %s\r\n", s_internetRadioApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "radio.stop") {
+        if (s_internetRadioApp == nullptr) {
+            printf("[radio] app unavailable\r\n");
+            return;
+        }
+        printf("[radio] stop requested\r\n");
+        printf("[radio] stop %s\r\n", s_internetRadioApp->debugStopPlayback() ? "queued" : "failed");
+        return;
+    }
+
+    static constexpr const char *kPlayPrefix = "radio.play ";
+    if (command.rfind(kPlayPrefix, 0) == 0) {
+        if (s_internetRadioApp == nullptr) {
+            printf("[radio] app unavailable\r\n");
+            return;
+        }
+
+        const std::string arguments = trim_copy(command.substr(std::strlen(kPlayPrefix)));
+        const size_t separator = arguments.find('|');
+        if (separator == std::string::npos) {
+            printf("[radio] usage: radio.play Country|Station\r\n");
+            return;
+        }
+
+        const std::string country = trim_copy(arguments.substr(0, separator));
+        const std::string station = trim_copy(arguments.substr(separator + 1));
+        if (country.empty() || station.empty()) {
+            printf("[radio] usage: radio.play Country|Station\r\n");
+            return;
+        }
+
+        printf("[radio] play requested country='%s' station='%s'\r\n", country.c_str(), station.c_str());
+        printf("[radio] play %s\r\n", s_internetRadioApp->debugPlayStation(country, station) ? "queued" : "failed");
+        return;
+    }
+
+    printf("[serial] Unknown command. Type 'help'.\r\n");
+}
+
+static void serial_command_task(void *parameter)
+{
+    (void)parameter;
+
+    std::string line;
+    line.reserve(256);
+    printf("[serial] USB serial radio debug ready\r\n");
+    print_serial_command_help();
+    printf("> ");
+    fflush(stdout);
+
+    for (;;) {
+        uint8_t byte = 0;
+        const int read = usb_serial_jtag_read_bytes(&byte, sizeof(byte), pdMS_TO_TICKS(20));
+        if (read <= 0) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        if (byte == '\r') {
+            continue;
+        }
+
+        if (byte == '\n') {
+            if (!line.empty()) {
+                handle_serial_command(line);
+                line.clear();
+            }
+
+            printf("> ");
+            fflush(stdout);
+            continue;
+        }
+
+        if (((byte == '\b') || (byte == 0x7F)) && !line.empty()) {
+            line.pop_back();
+            continue;
+        }
+
+        if (line.size() < 255) {
+            line.push_back(static_cast<char>(byte));
+        }
+    }
+}
+
+static void init_serial_command_console(void)
+{
+    usb_serial_jtag_driver_config_t config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    esp_err_t ret = usb_serial_jtag_driver_install(&config);
+    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
+        ESP_LOGW(TAG, "USB Serial/JTAG driver install failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    usb_serial_jtag_vfs_use_driver();
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+
+    xTaskCreatePinnedToCore(serial_command_task, "serial_cmd", kSerialCommandTaskStack, nullptr, 2, nullptr, 0);
+}
 
 template <typename T>
 static T *install_app_or_delete(ESP_Brookesia_Phone &phone, T *app, const char *app_name)
@@ -369,7 +523,7 @@ extern "C" void app_main(void)
         
     install_app_or_delete(*phone, new AppImageDisplay(), "image viewer");
 
-    install_app_or_delete(*phone, new InternetRadio(), "internet radio");
+    s_internetRadioApp = install_app_or_delete(*phone, new InternetRadio(), "internet radio");
 
     install_app_or_delete(*phone, new NewApp(480, 800), "new app");
 
@@ -398,6 +552,7 @@ extern "C" void app_main(void)
     
     ESP_LOGI(TAG,"setup done");
     bsp_display_unlock();
+    init_serial_command_console();
     device_security::promptBootUnlockIfNeeded();
     schedule_pending_release_notes_popup();
     xTaskCreatePinnedToCore(sdcard_monitor_task, "sdcard_monitor", 4096, nullptr, 1, nullptr, 0);

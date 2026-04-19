@@ -10,6 +10,7 @@
 #include "esp_err.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "esp_brookesia.hpp"
 
@@ -24,6 +25,10 @@ public:
     bool close(void) override;
     bool pause(void) override;
     bool resume(void) override;
+
+    bool debugPlayStation(const std::string &country, const std::string &station_name);
+    bool debugStopPlayback(void);
+    std::string debugDescribeState(void) const;
 
 private:
     enum class ViewMode {
@@ -74,11 +79,16 @@ private:
     void showPlayerDialog(size_t index);
     void closePlayerDialog(void);
     void playStationPreview(size_t index);
+    bool ensurePreviewWorkerReady(void);
+    void destroyPreviewWorker(void);
+    bool queuePreviewPlayback(const ListEntry &entry, bool from_task);
     bool startPreviewPlayback(const ListEntry &entry);
     void handleEntrySelection(size_t index);
     const char *entrySymbol(void) const;
     const char *entrySymbol(const ListEntry &entry) const;
     void stopPreviewPlayback(void);
+    bool stopPreviewPlaybackInternal(bool from_task);
+    void setStatusForContext(const std::string &text, bool from_task);
 
     static std::string percentEncode(const std::string &value);
     bool fetchEntries(const std::string &url, ViewMode next_mode, StationSource next_source, const std::string &status_text,
@@ -97,6 +107,8 @@ private:
     std::string _activeFilterDisplay;
     std::string _activeFilterValue;
     TaskHandle_t _previewTaskHandle;
+    QueueHandle_t _previewCommandQueue;
+    bool _previewTaskUsesCapsStack;
     std::atomic<bool> _previewStartInProgress;
     lv_obj_t *_playerDialog;
     lv_obj_t *_playerDialogTitleLabel;

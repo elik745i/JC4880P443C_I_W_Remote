@@ -455,8 +455,10 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
         pInstance->bytes_in_data_buf = unread_bytes + nRead;
         pInstance->read_ptr = pInstance->data_buf;
 
-        if ((nRead == 0) || is_eof) {
+        if (is_eof) {
             pInstance->eof_reached = true;
+        } else if (nRead == 0) {
+            return DECODE_STATUS_NO_DATA_CONTINUE;
         }
 
         unread_bytes = pInstance->bytes_in_data_buf;

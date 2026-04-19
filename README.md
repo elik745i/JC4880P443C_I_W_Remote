@@ -61,9 +61,9 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ## Storage And OTA Layout
 
 - Flash size is configured for 16 MB.
-- Partition table provides two 7 MiB OTA app slots.
-- SPIFFS storage partition is reduced to `0x140000` to keep enough headroom for OTA-safe builds.
-- Current validated application image size is about `0x744190`, leaving about `0xBE70` bytes free in the smallest OTA slot.
+- Partition table provides two enlarged OTA app slots of `0x7B0000` each.
+- SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
+- Current validated application image size should now have roughly `0x4EB80` bytes free in each OTA slot based on the recent `0x761480` build.
 
 ## SD Card Layout
 
@@ -81,7 +81,7 @@ ffmpeg -i input.mp4 -vcodec mjpeg -q:v 2 -vf "scale=1024:600" -acodec copy outpu
 
 ## Build
 
-This project targets ESP-IDF 5.4.x and `esp32p4`.
+This project targets ESP-IDF 5.5.x and `esp32p4`.
 
 ```bash
 idf.py set-target esp32p4

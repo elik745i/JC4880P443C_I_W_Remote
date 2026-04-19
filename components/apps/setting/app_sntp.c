@@ -34,6 +34,10 @@ void app_sntp_set_timezone(const char *tz)
         tz = "UTC0";
     }
 
+    if (strncmp(s_timezone, tz, sizeof(s_timezone)) == 0) {
+        return;
+    }
+
     snprintf(s_timezone, sizeof(s_timezone), "%s", tz);
     setenv("TZ", s_timezone, 1);
     tzset();
@@ -62,8 +66,6 @@ void app_sntp_init(void)
 
     time(&now);
     localtime_r(&now, &timeinfo);
-
-    app_sntp_set_timezone(s_timezone);
 
     if (s_sntp_initialized || s_sntp_initializing) {
         return;

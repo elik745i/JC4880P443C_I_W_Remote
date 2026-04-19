@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,8 @@ private:
     static void onRefreshClicked(lv_event_t *event);
     static void onControlButtonEvent(lv_event_t *event);
     static void emulatorTaskEntry(void *context);
+    static void presentFrameAsync(void *context);
+    static void finishEmulationAsync(void *context);
 
     void createBrowserScreen();
     void createPlayerScreen();
@@ -56,6 +59,8 @@ private:
     void setBrowserStatus(const char *text);
     void setPlayerStatus(const char *text);
     void renderCurrentFrame();
+    void presentFrameOnUiThread();
+    void finishEmulationOnUiThread();
     void updateSmsInputState();
     bool setupAudio(int sampleRate);
     void teardownAudio();
@@ -94,6 +99,11 @@ private:
     std::string _activeRomName;
     EmulatorCore _currentCore = EmulatorCore::SmsPlus;
 
-    lv_color_t *_canvasBuffer = nullptr;
+    lv_color_t *_canvasFrontBuffer = nullptr;
+    lv_color_t *_canvasBackBuffer = nullptr;
     uint8_t *_emulatorBuffer = nullptr;
+    std::atomic<bool> _framePresentationQueued{false};
+    std::mutex _frameBufferMutex;
+    std::string _pendingBrowserStatus;
+    std::atomic<bool> _finishUiQueued{false};
 };

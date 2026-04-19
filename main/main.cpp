@@ -2,6 +2,8 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include <cstring>
+#include <memory>
+#include <string>
 #include <dirent.h>
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -23,6 +25,15 @@
  
 static const char *TAG = "main";
 static constexpr TickType_t kSdcardMonitorPeriod = pdMS_TO_TICKS(2000);
+static constexpr const char *kNvsStorageNamespace = "storage";
+static constexpr const char *kNvsKeyOtaPendingVersion = "ota_ver";
+static constexpr const char *kNvsKeyOtaPendingNotes = "ota_notes";
+static constexpr const char *kNvsKeyOtaPendingShow = "ota_show";
+
+struct PendingReleaseNotesContext {
+    std::string version;
+    std::string notes;
+};
 
 struct SdcardRuntimeApps {
     ESP_Brookesia_Phone *phone = nullptr;
@@ -182,6 +193,112 @@ static void sdcard_monitor_task(void *parameter)
     }
 }
 
+static bool load_nvs_string(const char *key, std::string &value)
+{
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    size_t required_size = 0;
+    esp_err_t err = nvs_get_str(handle, key, nullptr, &required_size);
+    if ((err != ESP_OK) || (required_size == 0)) {
+        nvs_close(handle);
+        return false;
+    }
+
+    std::string buffer(required_size, '\0');
+    err = nvs_get_str(handle, key, buffer.data(), &required_size);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    if (!buffer.empty() && (buffer.back() == '\0')) {
+        buffer.pop_back();
+    }
+    value = buffer;
+    return !value.empty();
+}
+
+static void clear_pending_release_notes(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+
+    nvs_set_i32(handle, kNvsKeyOtaPendingShow, 0);
+    nvs_set_str(handle, kNvsKeyOtaPendingVersion, "");
+    nvs_set_str(handle, kNvsKeyOtaPendingNotes, "");
+    nvs_commit(handle);
+    nvs_close(handle);
+}
+
+static void close_release_notes_popup(lv_event_t *event)
+{
+    lv_obj_t *target = lv_event_get_target(event);
+    if (target != nullptr) {
+        lv_msgbox_close(target);
+    }
+}
+
+static void show_pending_release_notes_popup(void *context)
+{
+    std::unique_ptr<PendingReleaseNotesContext> notes(static_cast<PendingReleaseNotesContext *>(context));
+    if ((notes == nullptr) || notes->notes.empty()) {
+        return;
+    }
+
+    clear_pending_release_notes();
+
+    static const char *buttons[] = {"OK", ""};
+    const std::string title = notes->version.empty() ? std::string("What's New") : (std::string("What's New in ") + notes->version);
+    lv_obj_t *msgbox = lv_msgbox_create(nullptr, title.c_str(), notes->notes.c_str(), buttons, false);
+    if (msgbox == nullptr) {
+        return;
+    }
+
+    lv_obj_set_width(msgbox, 420);
+    lv_obj_center(msgbox);
+    lv_obj_add_event_cb(msgbox, close_release_notes_popup, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+static void schedule_pending_release_notes_popup(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return;
+    }
+
+    int32_t should_show = 0;
+    if ((nvs_get_i32(handle, kNvsKeyOtaPendingShow, &should_show) != ESP_OK) || (should_show == 0)) {
+        nvs_close(handle);
+        return;
+    }
+    nvs_close(handle);
+
+    auto *context = new PendingReleaseNotesContext();
+    if (context == nullptr) {
+        return;
+    }
+
+    if (!load_nvs_string(kNvsKeyOtaPendingNotes, context->notes)) {
+        delete context;
+        clear_pending_release_notes();
+        return;
+    }
+    load_nvs_string(kNvsKeyOtaPendingVersion, context->version);
+
+    bsp_display_lock(0);
+    if (lv_async_call(show_pending_release_notes_popup, context) != LV_RES_OK) {
+        bsp_display_unlock();
+        delete context;
+        return;
+    }
+    bsp_display_unlock();
+}
+
 extern "C" void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -282,5 +399,6 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG,"setup done");
     bsp_display_unlock();
     device_security::promptBootUnlockIfNeeded();
+    schedule_pending_release_notes_popup();
     xTaskCreatePinnedToCore(sdcard_monitor_task, "sdcard_monitor", 4096, nullptr, 1, nullptr, 0);
 }

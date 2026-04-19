@@ -26,6 +26,7 @@
 #include "esp_app_format.h"
 #include "esp_crt_bundle.h"
 #include "esp_ota_ops.h"
+#include "esp_system.h"
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 #include "cJSON.h"
@@ -55,6 +56,9 @@
 #define WIFI_CONNECT_RET_WAIT_TIME_MS   (10 * 1000)
 #define WIFI_RECONNECT_RETRY_PERIOD_MS  (5 * 1000)
 
+#define FIRMWARE_UPDATE_TASK_STACK_SIZE  (1024 * 10)
+#define FIRMWARE_UPDATE_TASK_PRIORITY    (4)
+
 #define SCREEN_BRIGHTNESS_MIN           (20)
 #define SCREEN_BRIGHTNESS_MAX           (BSP_LCD_BACKLIGHT_BRIGHTNESS_MAX)
 
@@ -74,6 +78,9 @@
 #define NVS_KEY_DISPLAY_SLEEP           "disp_sleep"
 #define NVS_KEY_DISPLAY_TIMEZONE        "disp_tz_min"
 #define NVS_KEY_DISPLAY_TZ_AUTO         "disp_tz_auto"
+#define NVS_KEY_OTA_PENDING_VERSION     "ota_ver"
+#define NVS_KEY_OTA_PENDING_NOTES       "ota_notes"
+#define NVS_KEY_OTA_PENDING_SHOW        "ota_show"
 
 #define UI_MAIN_ITEM_LEFT_OFFSET        (20)
 #define UI_WIFI_LIST_UP_OFFSET          (20)
@@ -354,6 +361,9 @@ AppSettings::AppSettings():
     _firmwareOtaDropdown(nullptr),
     _firmwareOtaFlashButton(nullptr),
     _firmwareStatusLabel(nullptr),
+    _firmwareProgressBar(nullptr),
+    _firmwareProgressLabel(nullptr),
+    _firmwareUpdateInProgress(false),
     _isWifiPasswordVisible(false),
     _deviceLockToggleContext{this, device_security::LockType::Device},
     _settingsLockToggleContext{this, device_security::LockType::Settings},
@@ -623,6 +633,7 @@ void AppSettings::extraUiInit(void)
     _firmwareSdDropdown = lv_dropdown_create(sdControlsRow);
     lv_obj_set_size(_firmwareSdDropdown, 220, 48);
     lv_obj_set_flex_grow(_firmwareSdDropdown, 1);
+    lv_obj_add_event_cb(_firmwareSdDropdown, onFirmwareSelectionChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
 
     lv_obj_t *sdRefreshButton = lv_btn_create(sdControlsRow);
     lv_obj_set_size(sdRefreshButton, 92, 48);
@@ -665,6 +676,7 @@ void AppSettings::extraUiInit(void)
     _firmwareOtaDropdown = lv_dropdown_create(otaControlsRow);
     lv_obj_set_size(_firmwareOtaDropdown, 190, 48);
     lv_obj_set_flex_grow(_firmwareOtaDropdown, 1);
+    lv_obj_add_event_cb(_firmwareOtaDropdown, onFirmwareSelectionChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
 
     _firmwareOtaFlashButton = lv_btn_create(otaControlsRow);
     lv_obj_set_size(_firmwareOtaFlashButton, 92, 48);
@@ -680,6 +692,24 @@ void AppSettings::extraUiInit(void)
     lv_label_set_long_mode(_firmwareStatusLabel, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(_firmwareStatusLabel, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_firmwareStatusLabel, lv_color_hex(0x334155), 0);
+
+    _firmwareProgressBar = lv_bar_create(firmwarePanel);
+    lv_obj_set_width(_firmwareProgressBar, lv_pct(100));
+    lv_obj_set_height(_firmwareProgressBar, 18);
+    lv_bar_set_range(_firmwareProgressBar, 0, 100);
+    lv_bar_set_value(_firmwareProgressBar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(_firmwareProgressBar, 9, 0);
+    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0xCBD5E1), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_INDICATOR);
+
+    _firmwareProgressLabel = lv_label_create(firmwarePanel);
+    lv_obj_set_width(_firmwareProgressLabel, lv_pct(100));
+    lv_label_set_long_mode(_firmwareProgressLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(_firmwareProgressLabel, "Idle");
+    lv_obj_set_style_text_font(_firmwareProgressLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_firmwareProgressLabel, lv_color_hex(0x64748B), 0);
 
     lv_obj_t *dangerSection = createFirmwareSection(firmwarePanel, "Danger Zone");
     lv_obj_t *dangerHint = lv_label_create(dangerSection);
@@ -919,7 +949,7 @@ void AppSettings::extraUiInit(void)
     lv_obj_align(ui_SliderPanelScreenSettingLightSwitch1, LV_ALIGN_RIGHT_MID, -12, 0);
     lv_obj_clear_flag(ui_PanelScreenSettingLightList, LV_OBJ_FLAG_HIDDEN);
     lv_obj_align_to(ui_PanelScreenSettingLightList, ui_PanelScreenSettingLightSwitch, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
-    lv_obj_set_size(ui_PanelScreenSettingLightList, lv_pct(90), 340);
+    lv_obj_set_size(ui_PanelScreenSettingLightList, lv_pct(90), 430);
     lv_obj_set_style_pad_all(ui_PanelScreenSettingLightList, 0, 0);
     lv_obj_set_style_pad_row(ui_PanelScreenSettingLightList, 12, 0);
     lv_obj_set_style_bg_opa(ui_PanelScreenSettingLightList, LV_OPA_TRANSP, 0);
@@ -962,6 +992,20 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_event_cb(_displayScreensaverSwitch, onSwitchPanelScreenSettingScreensaverValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
 
+    lv_obj_t *timezoneRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Timezone");
+    _displayTimezoneDropdown = lv_dropdown_create(timezoneRow);
+    lv_dropdown_set_options_static(_displayTimezoneDropdown, kTimezoneOptionsText);
+    lv_obj_set_width(_displayTimezoneDropdown, 156);
+    lv_obj_align(_displayTimezoneDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayTimezoneDropdown, onDropdownPanelScreenSettingTimezoneValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *autoTimezoneRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Auto Timezone");
+    _displayAutoTimezoneSwitch = lv_switch_create(autoTimezoneRow);
+    lv_obj_align(_displayAutoTimezoneSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayAutoTimezoneSwitch, onSwitchPanelScreenSettingAutoTimezoneValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
     lv_obj_t *timeoffRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Timeoff Interval");
     _displayTimeoffDropdown = lv_dropdown_create(timeoffRow);
     lv_dropdown_set_options_static(_displayTimeoffDropdown, kDisplayTimeoffOptionsText);
@@ -976,20 +1020,6 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_width(_displaySleepDropdown, 132);
     lv_obj_align(_displaySleepDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_add_event_cb(_displaySleepDropdown, onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *timezoneRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Timezone");
-    _displayTimezoneDropdown = lv_dropdown_create(timezoneRow);
-    lv_dropdown_set_options_static(_displayTimezoneDropdown, kTimezoneOptionsText);
-    lv_obj_set_width(_displayTimezoneDropdown, 156);
-    lv_obj_align(_displayTimezoneDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_displayTimezoneDropdown, onDropdownPanelScreenSettingTimezoneValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *autoTimezoneRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Auto Timezone");
-    _displayAutoTimezoneSwitch = lv_switch_create(autoTimezoneRow);
-    lv_obj_align(_displayAutoTimezoneSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_displayAutoTimezoneSwitch, onSwitchPanelScreenSettingAutoTimezoneValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
 
     _displayTimezoneInfoLabel = lv_label_create(ui_PanelScreenSettingLightList);
@@ -1476,6 +1506,51 @@ void AppSettings::setFirmwareStatus(const std::string &status, bool is_error)
     lv_obj_set_style_text_color(_firmwareStatusLabel, is_error ? lv_color_hex(0xB91C1C) : lv_color_hex(0x334155), 0);
 }
 
+void AppSettings::setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error)
+{
+    if (_firmwareProgressBar != nullptr) {
+        const int32_t clamped = std::max<int32_t>(0, std::min<int32_t>(100, percent));
+        lv_bar_set_value(_firmwareProgressBar, clamped, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(_firmwareProgressBar,
+                                  is_error ? lv_color_hex(0xFECACA) : lv_color_hex(0xCBD5E1),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_color(_firmwareProgressBar,
+                                  is_error ? lv_color_hex(0xDC2626) : lv_color_hex(0x2563EB),
+                                  LV_PART_INDICATOR);
+    }
+
+    if (_firmwareProgressLabel != nullptr) {
+        lv_label_set_text(_firmwareProgressLabel, phase.c_str());
+        lv_obj_set_style_text_color(_firmwareProgressLabel,
+                                    is_error ? lv_color_hex(0xB91C1C) : lv_color_hex(0x64748B),
+                                    0);
+    }
+}
+
+void AppSettings::queueFirmwareUiUpdate(const char *status, int32_t percent, bool busy, bool is_error)
+{
+    auto *context = new AsyncFirmwareUiContext{};
+    if (context == nullptr) {
+        ESP_LOGW(TAG, "Failed to allocate firmware UI context");
+        return;
+    }
+
+    context->app = this;
+    context->percent = percent;
+    context->busy = busy;
+    context->is_error = is_error;
+    snprintf(context->status, sizeof(context->status), "%s", (status != nullptr) ? status : "");
+
+    bsp_display_lock(0);
+    if (lv_async_call(applyAsyncFirmwareUiUpdate, context) != LV_RES_OK) {
+        bsp_display_unlock();
+        delete context;
+        ESP_LOGW(TAG, "Failed to queue firmware UI update");
+        return;
+    }
+    bsp_display_unlock();
+}
+
 std::string AppSettings::getCurrentFirmwareVersion(void) const
 {
     const esp_app_desc_t *app_desc = esp_app_get_description();
@@ -1714,6 +1789,7 @@ bool AppSettings::fetchGithubFirmwareEntries(void)
 
                 const std::string release_name = trim_copy(safe_json_string(release, "name"));
                 const std::string tag_name = trim_copy(safe_json_string(release, "tag_name"));
+                const std::string release_body = trim_copy(safe_json_string(release, "body"));
                 cJSON *assets = cJSON_GetObjectItemCaseSensitive(release, "assets");
                 if (!cJSON_IsArray(assets)) {
                     continue;
@@ -1742,6 +1818,7 @@ bool AppSettings::fetchGithubFirmwareEntries(void)
                     entry.size_bytes = static_cast<size_t>(cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(asset, "size")) ?
                                                               cJSON_GetObjectItemCaseSensitive(asset, "size")->valuedouble : 0);
                     entry.notes = release_name.empty() ? std::string("GitHub release") : release_name;
+                    entry.release_notes = release_body;
                     entry.is_valid = true;
                     entry.is_current = compareVersionStrings(entry.version, current_version) == 0;
                     entry.is_newer = compareVersionStrings(entry.version, current_version) > 0;
@@ -1774,8 +1851,10 @@ void AppSettings::refreshFirmwareUi(void)
     populateFirmwareDropdown(_firmwareOtaDropdown, _otaFirmwareEntries, "Run OTA check first");
 
     const bool ota_supported = hasOtaFlashSupport();
-    const bool sd_ready = ota_supported && !_sdFirmwareEntries.empty() && _sdFirmwareEntries.front().is_valid;
-    const bool ota_ready = ota_supported && !_otaFirmwareEntries.empty() && _otaFirmwareEntries.front().is_valid;
+    const uint16_t sd_index = (_firmwareSdDropdown != nullptr) ? lv_dropdown_get_selected(_firmwareSdDropdown) : 0;
+    const uint16_t ota_index = (_firmwareOtaDropdown != nullptr) ? lv_dropdown_get_selected(_firmwareOtaDropdown) : 0;
+    const bool sd_ready = ota_supported && !_firmwareUpdateInProgress && (sd_index < _sdFirmwareEntries.size()) && _sdFirmwareEntries[sd_index].is_valid;
+    const bool ota_ready = ota_supported && !_firmwareUpdateInProgress && (ota_index < _otaFirmwareEntries.size()) && _otaFirmwareEntries[ota_index].is_valid;
 
     auto update_button = [](lv_obj_t *button, bool enabled) {
         if (button == nullptr) {
@@ -1794,13 +1873,348 @@ void AppSettings::refreshFirmwareUi(void)
     update_button(_firmwareSdFlashButton, sd_ready);
     update_button(_firmwareOtaFlashButton, ota_ready);
 
+    if (_firmwareUpdateInProgress) {
+        return;
+    }
+
     if (!ota_supported) {
         setFirmwareStatus("Flash buttons are disabled because this build has only a factory app partition. Safe in-app updates require OTA partitions.");
-    } else if (!_sdFirmwareEntries.empty()) {
-        setFirmwareStatus(_sdFirmwareEntries.front().notes);
+    } else if ((ota_index < _otaFirmwareEntries.size()) && !_otaFirmwareEntries.empty()) {
+        setFirmwareStatus(_otaFirmwareEntries[ota_index].notes);
+        setFirmwareProgress(0, _otaFirmwareEntries[ota_index].release_notes.empty() ? "Ready to download and flash selected release." : "Release notes available for selected update.");
+    } else if ((sd_index < _sdFirmwareEntries.size()) && !_sdFirmwareEntries.empty()) {
+        setFirmwareStatus(_sdFirmwareEntries[sd_index].notes);
+        setFirmwareProgress(0, "Ready to flash selected SD firmware image.");
     } else {
         setFirmwareStatus("Firmware screen ready. Scan SD or check GitHub releases.");
+        setFirmwareProgress(0, "Idle");
     }
+}
+
+void AppSettings::applyAsyncFirmwareUiUpdate(void *arg)
+{
+    auto *context = static_cast<AsyncFirmwareUiContext *>(arg);
+    if ((context == nullptr) || (context->app == nullptr)) {
+        delete context;
+        return;
+    }
+
+    context->app->_firmwareUpdateInProgress = context->busy;
+    context->app->setFirmwareStatus(context->status, context->is_error);
+    context->app->setFirmwareProgress(context->percent, context->status, context->is_error);
+    context->app->refreshFirmwareUi();
+    delete context;
+}
+
+bool AppSettings::validateFirmwareImageHeader(const uint8_t *data, size_t data_len, const std::string &source_label,
+                                             std::string &error_message, bool &header_checked)
+{
+    if (header_checked) {
+        return true;
+    }
+
+    const size_t required_bytes = sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t);
+    if (data_len < required_bytes) {
+        return true;
+    }
+
+    auto *image_header = reinterpret_cast<const esp_image_header_t *>(data);
+    if (image_header->magic != ESP_IMAGE_HEADER_MAGIC) {
+        error_message = source_label + " is not a valid ESP firmware image.";
+        return false;
+    }
+
+    auto *app_desc = reinterpret_cast<const esp_app_desc_t *>(data + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t));
+    const esp_app_desc_t *current_app = esp_app_get_description();
+    const std::string current_project = (current_app != nullptr) ? trim_copy(current_app->project_name) : std::string();
+    const std::string incoming_project = trim_copy(app_desc->project_name);
+    if (!current_project.empty() && !incoming_project.empty() && (incoming_project != current_project)) {
+        error_message = "Firmware project mismatch: " + incoming_project;
+        return false;
+    }
+
+    header_checked = true;
+    return true;
+}
+
+void AppSettings::persistPendingReleaseNotes(const FirmwareEntry_t &entry)
+{
+    setNvsStringParam(NVS_KEY_OTA_PENDING_VERSION, entry.version.empty() ? kFirmwareUnknownVersion : entry.version.c_str());
+    setNvsStringParam(NVS_KEY_OTA_PENDING_NOTES,
+                      entry.release_notes.empty() ? entry.notes.c_str() : entry.release_notes.c_str());
+    setNvsParam(NVS_KEY_OTA_PENDING_SHOW, 1);
+}
+
+bool AppSettings::flashFirmwareFromFile(const FirmwareEntry_t &entry, std::string &error_message)
+{
+    FILE *file = fopen(entry.path_or_url.c_str(), "rb");
+    if (file == nullptr) {
+        error_message = "Unable to open selected firmware file.";
+        return false;
+    }
+
+    const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
+    if (partition == nullptr) {
+        fclose(file);
+        error_message = "No OTA partition is available.";
+        return false;
+    }
+
+    esp_ota_handle_t ota_handle = 0;
+    esp_err_t err = esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &ota_handle);
+    if (err != ESP_OK) {
+        fclose(file);
+        error_message = std::string("esp_ota_begin failed: ") + esp_err_to_name(err);
+        return false;
+    }
+
+    std::vector<uint8_t> buffer(4096);
+    std::vector<uint8_t> header_buffer;
+    header_buffer.reserve(512);
+    bool header_checked = false;
+    size_t written_total = 0;
+    int last_percent = -1;
+    bool success = false;
+
+    while (true) {
+        const size_t read_bytes = fread(buffer.data(), 1, buffer.size(), file);
+        if (read_bytes == 0) {
+            if (feof(file)) {
+                break;
+            }
+            error_message = "Reading firmware file failed.";
+            goto cleanup;
+        }
+
+        if (!header_checked && (header_buffer.size() < 512)) {
+            const size_t copy_bytes = std::min<size_t>(512 - header_buffer.size(), read_bytes);
+            header_buffer.insert(header_buffer.end(), buffer.begin(), buffer.begin() + copy_bytes);
+            if (!validateFirmwareImageHeader(header_buffer.data(), header_buffer.size(), entry.label, error_message, header_checked)) {
+                goto cleanup;
+            }
+        }
+
+        err = esp_ota_write(ota_handle, buffer.data(), read_bytes);
+        if (err != ESP_OK) {
+            error_message = std::string("esp_ota_write failed: ") + esp_err_to_name(err);
+            goto cleanup;
+        }
+
+        written_total += read_bytes;
+        if (entry.size_bytes > 0) {
+            const int percent = static_cast<int>((written_total * 100U) / entry.size_bytes);
+            if (percent != last_percent) {
+                last_percent = percent;
+                char phase[128] = {};
+                snprintf(phase, sizeof(phase), "Flashing from SD... %d%%", percent);
+                queueFirmwareUiUpdate(phase, percent, true, false);
+            }
+        }
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        error_message = std::string("esp_ota_end failed: ") + esp_err_to_name(err);
+        goto cleanup_no_abort;
+    }
+
+    err = esp_ota_set_boot_partition(partition);
+    if (err != ESP_OK) {
+        error_message = std::string("esp_ota_set_boot_partition failed: ") + esp_err_to_name(err);
+        goto cleanup_no_abort;
+    }
+
+    success = true;
+
+cleanup_no_abort:
+    fclose(file);
+    if (!success) {
+        return false;
+    }
+    return true;
+
+cleanup:
+    esp_ota_abort(ota_handle);
+    fclose(file);
+    return false;
+}
+
+bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string &error_message)
+{
+    const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
+    if (partition == nullptr) {
+        error_message = "No OTA partition is available.";
+        return false;
+    }
+
+    esp_http_client_config_t config = {};
+    config.url = entry.path_or_url.c_str();
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = 15000;
+    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.disable_auto_redirect = false;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        error_message = "Failed to create HTTP client.";
+        return false;
+    }
+
+    esp_http_client_set_header(client, "Accept", "application/octet-stream");
+    esp_http_client_set_header(client, "User-Agent", "JC4880P443C-IW-Remote");
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        error_message = std::string("Failed to open release asset: ") + esp_err_to_name(err);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    const int status_code = esp_http_client_fetch_headers(client);
+    if ((status_code < 0) || ((esp_http_client_get_status_code(client) / 100) != 2)) {
+        error_message = "GitHub asset download request failed.";
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    const int64_t content_length = esp_http_client_get_content_length(client);
+    esp_ota_handle_t ota_handle = 0;
+    err = esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &ota_handle);
+    if (err != ESP_OK) {
+        error_message = std::string("esp_ota_begin failed: ") + esp_err_to_name(err);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    std::vector<uint8_t> buffer(4096);
+    std::vector<uint8_t> header_buffer;
+    header_buffer.reserve(512);
+    bool header_checked = false;
+    int last_percent = -1;
+    size_t written_total = 0;
+    bool success = false;
+
+    while (true) {
+        const int read_bytes = esp_http_client_read(client, reinterpret_cast<char *>(buffer.data()), buffer.size());
+        if (read_bytes < 0) {
+            error_message = "Release asset download failed.";
+            goto ota_cleanup;
+        }
+        if (read_bytes == 0) {
+            break;
+        }
+
+        if (!header_checked && (header_buffer.size() < 512)) {
+            const size_t copy_bytes = std::min<size_t>(512 - header_buffer.size(), static_cast<size_t>(read_bytes));
+            header_buffer.insert(header_buffer.end(), buffer.begin(), buffer.begin() + copy_bytes);
+            if (!validateFirmwareImageHeader(header_buffer.data(), header_buffer.size(), entry.label, error_message, header_checked)) {
+                goto ota_cleanup;
+            }
+        }
+
+        err = esp_ota_write(ota_handle, buffer.data(), static_cast<size_t>(read_bytes));
+        if (err != ESP_OK) {
+            error_message = std::string("esp_ota_write failed: ") + esp_err_to_name(err);
+            goto ota_cleanup;
+        }
+
+        written_total += static_cast<size_t>(read_bytes);
+        if (content_length > 0) {
+            const int percent = static_cast<int>((written_total * 100ULL) / static_cast<uint64_t>(content_length));
+            if (percent != last_percent) {
+                last_percent = percent;
+                char phase[128] = {};
+                snprintf(phase, sizeof(phase), "Downloading and flashing... %d%%", percent);
+                queueFirmwareUiUpdate(phase, percent, true, false);
+            }
+        }
+    }
+
+    err = esp_ota_end(ota_handle);
+    if (err != ESP_OK) {
+        error_message = std::string("esp_ota_end failed: ") + esp_err_to_name(err);
+        goto ota_cleanup_no_abort;
+    }
+
+    err = esp_ota_set_boot_partition(partition);
+    if (err != ESP_OK) {
+        error_message = std::string("esp_ota_set_boot_partition failed: ") + esp_err_to_name(err);
+        goto ota_cleanup_no_abort;
+    }
+
+    success = true;
+
+ota_cleanup_no_abort:
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    if (!success) {
+        return false;
+    }
+    return true;
+
+ota_cleanup:
+    esp_ota_abort(ota_handle);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+}
+
+bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdateSource_t source)
+{
+    auto *context = new FirmwareUpdateTaskContext{this, entry, source};
+    if (context == nullptr) {
+        setFirmwareStatus("Failed to allocate firmware update task.", true);
+        return false;
+    }
+
+    _firmwareUpdateInProgress = true;
+    refreshFirmwareUi();
+    setFirmwareProgress(0, source == FIRMWARE_UPDATE_SOURCE_OTA ? "Preparing OTA update..." : "Preparing SD flash...");
+    setFirmwareStatus(source == FIRMWARE_UPDATE_SOURCE_OTA ? "Starting OTA update..." : "Starting SD flash...");
+
+    if (xTaskCreatePinnedToCore(firmwareUpdateTask, "firmware_update", FIRMWARE_UPDATE_TASK_STACK_SIZE,
+                                context, FIRMWARE_UPDATE_TASK_PRIORITY, nullptr, 1) != pdPASS) {
+        delete context;
+        _firmwareUpdateInProgress = false;
+        refreshFirmwareUi();
+        setFirmwareStatus("Failed to start firmware update task.", true);
+        return false;
+    }
+
+    return true;
+}
+
+void AppSettings::firmwareUpdateTask(void *arg)
+{
+    auto *context = static_cast<FirmwareUpdateTaskContext *>(arg);
+    if ((context == nullptr) || (context->app == nullptr)) {
+        delete context;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    AppSettings *app = context->app;
+    const FirmwareEntry_t entry = context->entry;
+    const FirmwareUpdateSource_t source = context->source;
+    delete context;
+
+    std::string error_message;
+    const bool ok = (source == FIRMWARE_UPDATE_SOURCE_OTA)
+                        ? app->flashFirmwareFromUrl(entry, error_message)
+                        : app->flashFirmwareFromFile(entry, error_message);
+
+    if (!ok) {
+        app->queueFirmwareUiUpdate(error_message.empty() ? "Firmware update failed." : error_message.c_str(), 0, false, true);
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    app->persistPendingReleaseNotes(entry);
+    app->queueFirmwareUiUpdate("Firmware update complete. Rebooting...", 100, false, false);
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
 }
 
 void AppSettings::applyDisplayIdleSettings(void)
@@ -2567,7 +2981,13 @@ void AppSettings::onFirmwareOtaCheckClickedEventCallback(lv_event_t *e)
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
+    if (app->_firmwareUpdateInProgress) {
+        app->setFirmwareStatus("A firmware update is already running.", true);
+        goto end;
+    }
+
     app->setFirmwareStatus("Checking GitHub releases...");
+    app->setFirmwareProgress(0, "Querying GitHub releases...");
     if (!app->fetchGithubFirmwareEntries()) {
         app->refreshFirmwareUi();
         app->setFirmwareStatus("No GitHub firmware releases found or the request failed.", true);
@@ -2583,30 +3003,63 @@ end:
 void AppSettings::onFirmwareSdFlashClickedEventCallback(lv_event_t *e)
 {
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+    if (app == nullptr) {
+        ESP_LOGE(TAG, "Invalid app pointer");
+        return;
+    }
+
+    if (app->_firmwareUpdateInProgress) {
+        app->setFirmwareStatus("A firmware update is already running.", true);
+        return;
+    }
 
     if (!app->hasOtaFlashSupport()) {
         app->setFirmwareStatus("In-app flashing is blocked because the current partition table has no OTA slot.", true);
-        goto end;
+        return;
     }
 
-    app->setFirmwareStatus("Flashing is only enabled when OTA partitions are provisioned. This build keeps it blocked for safety.", true);
+    const uint16_t selected = (app->_firmwareSdDropdown != nullptr) ? lv_dropdown_get_selected(app->_firmwareSdDropdown) : 0;
+    if ((selected >= app->_sdFirmwareEntries.size()) || !app->_sdFirmwareEntries[selected].is_valid) {
+        app->setFirmwareStatus("Select a valid SD firmware image first.", true);
+        return;
+    }
 
-end:
-    return;
+    app->flashFirmwareEntry(app->_sdFirmwareEntries[selected], FIRMWARE_UPDATE_SOURCE_SD);
 }
 
 void AppSettings::onFirmwareOtaFlashClickedEventCallback(lv_event_t *e)
 {
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+    if (app == nullptr) {
+        ESP_LOGE(TAG, "Invalid app pointer");
+        return;
+    }
+
+    if (app->_firmwareUpdateInProgress) {
+        app->setFirmwareStatus("A firmware update is already running.", true);
+        return;
+    }
 
     if (!app->hasOtaFlashSupport()) {
         app->setFirmwareStatus("OTA flashing is blocked because the current partition table has no OTA slot.", true);
-        goto end;
+        return;
     }
 
-    app->setFirmwareStatus("Flashing is only enabled when OTA partitions are provisioned. This build keeps it blocked for safety.", true);
+    const uint16_t selected = (app->_firmwareOtaDropdown != nullptr) ? lv_dropdown_get_selected(app->_firmwareOtaDropdown) : 0;
+    if ((selected >= app->_otaFirmwareEntries.size()) || !app->_otaFirmwareEntries[selected].is_valid) {
+        app->setFirmwareStatus("Select a valid GitHub release asset first.", true);
+        return;
+    }
+
+    app->flashFirmwareEntry(app->_otaFirmwareEntries[selected], FIRMWARE_UPDATE_SOURCE_OTA);
+}
+
+void AppSettings::onFirmwareSelectionChangedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    app->refreshFirmwareUi();
 
 end:
     return;

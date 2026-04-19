@@ -4,10 +4,12 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
 #include <iomanip>
 #include <sstream>
 
 #include "audio_player.h"
+#include "bsp/esp-bsp.h"
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -25,8 +27,10 @@ static constexpr const char *kApiBaseUrl = "http://de1.api.radio-browser.info/js
 static constexpr int kListLimit = 40;
 static constexpr uint32_t kPreviewTaskStackSize = 32 * 1024;
 static constexpr UBaseType_t kPreviewTaskPriority = 3;
-static constexpr TickType_t kPreviewStopWait = pdMS_TO_TICKS(1500);
+static constexpr TickType_t kPreviewStopWait = pdMS_TO_TICKS(5000);
 static constexpr int kStreamTimeoutMs = 500;
+static constexpr size_t kStreamBufferSize = 64 * 1024;
+static constexpr size_t kAsyncStatusTextCapacity = 192;
 
 struct PreviewTaskContext {
     InternetRadio *app = nullptr;
@@ -37,17 +41,70 @@ struct PreviewTaskContext {
 
 struct AsyncStatusContext {
     InternetRadio *app = nullptr;
-    std::string text;
+    char text[kAsyncStatusTextCapacity] = {};
 };
 
 struct HttpMp3StreamContext {
     esp_http_client_handle_t client = nullptr;
+    uint8_t *buffer = nullptr;
+    size_t capacity = 0;
+    size_t read_offset = 0;
+    size_t bytes_buffered = 0;
+    bool eof_reached = false;
+    bool using_psram = false;
 };
 
 BaseType_t create_preview_task(TaskFunction_t task, void *context, TaskHandle_t *handle)
 {
     return xTaskCreatePinnedToCore(task, "radio_preview", kPreviewTaskStackSize, context,
                                    kPreviewTaskPriority, handle, 1);
+}
+
+void log_preview_task_memory_failure()
+{
+    ESP_LOGW(TAG,
+             "Failed to create radio preview task. Internal RAM free=%u, largest block=%u, PSRAM free=%u",
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+}
+
+uint8_t *allocate_stream_buffer(size_t size, bool &using_psram)
+{
+    uint8_t *buffer = static_cast<uint8_t *>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (buffer != nullptr) {
+        using_psram = true;
+        return buffer;
+    }
+
+    buffer = static_cast<uint8_t *>(heap_caps_malloc(size, MALLOC_CAP_8BIT));
+    using_psram = false;
+    return buffer;
+}
+
+int refill_http_mp3_stream_buffer(HttpMp3StreamContext *context)
+{
+    if ((context == nullptr) || (context->client == nullptr) || (context->buffer == nullptr) || (context->capacity == 0) || context->eof_reached) {
+        return 0;
+    }
+
+    const int bytes_read = esp_http_client_read(context->client,
+                                                reinterpret_cast<char *>(context->buffer),
+                                                static_cast<int>(context->capacity));
+    if (bytes_read > 0) {
+        context->read_offset = 0;
+        context->bytes_buffered = static_cast<size_t>(bytes_read);
+        return bytes_read;
+    }
+
+    context->read_offset = 0;
+    context->bytes_buffered = 0;
+    context->eof_reached = esp_http_client_is_complete_data_received(context->client);
+    if ((bytes_read < 0) && !context->eof_reached) {
+        ESP_LOGW(TAG, "HTTP stream read yielded %d while refilling radio buffer", bytes_read);
+    }
+
+    return 0;
 }
 
 int http_mp3_stream_read(void *user_ctx, uint8_t *buffer, size_t len, bool *is_eof)
@@ -60,24 +117,26 @@ int http_mp3_stream_read(void *user_ctx, uint8_t *buffer, size_t len, bool *is_e
         return 0;
     }
 
-    const int bytes_read = esp_http_client_read(context->client, reinterpret_cast<char *>(buffer), static_cast<int>(len));
-    if (bytes_read > 0) {
-        if (is_eof != nullptr) {
-            *is_eof = false;
+    size_t total_copied = 0;
+    while (total_copied < len) {
+        if (context->read_offset >= context->bytes_buffered) {
+            if (refill_http_mp3_stream_buffer(context) <= 0) {
+                break;
+            }
         }
-        return bytes_read;
+
+        const size_t available = context->bytes_buffered - context->read_offset;
+        const size_t chunk = std::min(len - total_copied, available);
+        memcpy(buffer + total_copied, context->buffer + context->read_offset, chunk);
+        context->read_offset += chunk;
+        total_copied += chunk;
     }
 
-    const bool complete = esp_http_client_is_complete_data_received(context->client);
     if (is_eof != nullptr) {
-        *is_eof = complete;
+        *is_eof = context->eof_reached && (context->read_offset >= context->bytes_buffered);
     }
 
-    if ((bytes_read < 0) && !complete) {
-        ESP_LOGW(TAG, "HTTP stream read yielded %d, retrying", bytes_read);
-    }
-
-    return 0;
+    return static_cast<int>(total_copied);
 }
 
 void http_mp3_stream_close(void *user_ctx)
@@ -93,17 +152,36 @@ void http_mp3_stream_close(void *user_ctx)
         context->client = nullptr;
     }
 
+    if (context->buffer != nullptr) {
+        heap_caps_free(context->buffer);
+        context->buffer = nullptr;
+    }
+
     delete context;
 }
 
-bool wait_for_audio_player_state(audio_player_state_t expected_state, TickType_t timeout)
+bool ensure_audio_player_idle(TickType_t timeout)
 {
     TickType_t start = xTaskGetTickCount();
-    while (audio_player_get_state() != expected_state) {
+    bool stop_requested = false;
+
+    while (audio_player_get_state() != AUDIO_PLAYER_STATE_IDLE) {
+        const esp_err_t stop_result = audio_player_stop();
+        if (stop_result == ESP_OK) {
+            stop_requested = true;
+        } else if (stop_result != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "audio_player_stop failed while waiting for idle: %s", esp_err_to_name(stop_result));
+        }
+
         if ((xTaskGetTickCount() - start) >= timeout) {
+            ESP_LOGW(TAG,
+                     "Audio player failed to reach idle. state=%d stop_requested=%d",
+                     static_cast<int>(audio_player_get_state()),
+                     stop_requested ? 1 : 0);
             return false;
         }
-        vTaskDelay(pdMS_TO_TICKS(20));
+
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     return true;
@@ -292,7 +370,15 @@ InternetRadio::InternetRadio()
       _activeFilterDisplay(),
     _activeFilterValue(),
     _previewTaskHandle(nullptr),
-    _previewStartInProgress(false)
+        _previewStartInProgress(false),
+        _playerDialog(nullptr),
+        _playerDialogTitleLabel(nullptr),
+        _playerDialogDetailLabel(nullptr),
+        _playerDialogStatusLabel(nullptr),
+        _playerDialogPlayButton(nullptr),
+        _playerDialogStopButton(nullptr),
+        _selectedStationIndex(0),
+        _activeStationTitle()
 {
 }
 
@@ -312,6 +398,7 @@ bool InternetRadio::run(void)
         return false;
     }
 
+    audio_player_callback_register(radioAudioCallback, this);
     lv_scr_load(_screen);
     return true;
 }
@@ -350,18 +437,21 @@ bool InternetRadio::back(void)
 
 bool InternetRadio::close(void)
 {
+    closePlayerDialog();
     stopPreviewPlayback();
     return notifyCoreClosed();
 }
 
 bool InternetRadio::pause(void)
 {
+    closePlayerDialog();
     stopPreviewPlayback();
     return true;
 }
 
 bool InternetRadio::resume(void)
 {
+    audio_player_callback_register(radioAudioCallback, this);
     return true;
 }
 
@@ -415,23 +505,45 @@ bool InternetRadio::buildUi(void)
 
 void InternetRadio::setStatus(const std::string &text)
 {
+    bsp_display_lock(0);
+    applyStatusText(text.c_str());
+    bsp_display_unlock();
+}
+
+void InternetRadio::applyStatusText(const char *text)
+{
+    if (text == nullptr) {
+        text = "";
+    }
+
     if (_statusLabel != nullptr) {
-        lv_label_set_text(_statusLabel, text.c_str());
+        lv_label_set_text(_statusLabel, text);
+    }
+
+    if (_playerDialogStatusLabel != nullptr) {
+        lv_label_set_text(_playerDialogStatusLabel, text);
     }
 }
 
-void InternetRadio::setStatusFromTask(const std::string &text)
+void InternetRadio::setStatusFromTask(const char *text)
 {
-    auto *context = new AsyncStatusContext{this, text};
+    auto *context = new AsyncStatusContext{};
     if (context == nullptr) {
         ESP_LOGW(TAG, "Failed to allocate async status context");
         return;
     }
 
+    context->app = this;
+    snprintf(context->text, sizeof(context->text), "%s", (text != nullptr) ? text : "");
+
+    bsp_display_lock(0);
     if (lv_async_call(applyAsyncStatus, context) != LV_RES_OK) {
+        bsp_display_unlock();
         delete context;
         ESP_LOGW(TAG, "Failed to queue async radio status update");
+        return;
     }
+    bsp_display_unlock();
 }
 
 void InternetRadio::applyAsyncStatus(void *context)
@@ -439,7 +551,7 @@ void InternetRadio::applyAsyncStatus(void *context)
     auto *status_context = static_cast<AsyncStatusContext *>(context);
     if (status_context != nullptr) {
         if (status_context->app != nullptr) {
-            status_context->app->setStatus(status_context->text);
+            status_context->app->applyStatusText(status_context->text);
         }
         delete status_context;
     }
@@ -620,6 +732,136 @@ void InternetRadio::showEntryDetails(size_t index)
     lv_obj_center(box);
 }
 
+void InternetRadio::showPlayerDialog(size_t index)
+{
+    if ((_screen == nullptr) || (index >= _entries.size())) {
+        return;
+    }
+
+    _selectedStationIndex = index;
+    const ListEntry &entry = _entries[index];
+
+    if (_playerDialog != nullptr) {
+        lv_obj_del(_playerDialog);
+        _playerDialog = nullptr;
+        _playerDialogTitleLabel = nullptr;
+        _playerDialogDetailLabel = nullptr;
+        _playerDialogStatusLabel = nullptr;
+        _playerDialogPlayButton = nullptr;
+        _playerDialogStopButton = nullptr;
+    }
+
+    _playerDialog = lv_obj_create(_screen);
+    if (_playerDialog == nullptr) {
+        return;
+    }
+
+    lv_obj_set_size(_playerDialog, 420, 320);
+    lv_obj_center(_playerDialog);
+    lv_obj_set_style_radius(_playerDialog, 24, 0);
+    lv_obj_set_style_bg_color(_playerDialog, lv_color_hex(0x101A2D), 0);
+    lv_obj_set_style_bg_opa(_playerDialog, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(_playerDialog, 2, 0);
+    lv_obj_set_style_border_color(_playerDialog, lv_color_hex(0x2D425F), 0);
+    lv_obj_set_style_pad_all(_playerDialog, 18, 0);
+    lv_obj_clear_flag(_playerDialog, LV_OBJ_FLAG_SCROLLABLE);
+
+    _playerDialogTitleLabel = lv_label_create(_playerDialog);
+    lv_label_set_text(_playerDialogTitleLabel, entry.title.c_str());
+    lv_obj_set_width(_playerDialogTitleLabel, 320);
+    lv_label_set_long_mode(_playerDialogTitleLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_playerDialogTitleLabel, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(_playerDialogTitleLabel, lv_color_hex(0xF7FAFC), 0);
+    lv_obj_align(_playerDialogTitleLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *close_button = lv_btn_create(_playerDialog);
+    lv_obj_set_size(close_button, 44, 44);
+    lv_obj_align(close_button, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_style_radius(close_button, 22, 0);
+    lv_obj_set_style_bg_color(close_button, lv_color_hex(0x25354F), 0);
+    lv_obj_add_event_cb(close_button, onPlayerDialogButtonClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t *close_label = lv_label_create(close_button);
+    lv_label_set_text(close_label, LV_SYMBOL_CLOSE);
+    lv_obj_center(close_label);
+
+    _playerDialogDetailLabel = lv_label_create(_playerDialog);
+    std::string detail = entry.subtitle.empty() ? entry.detail : entry.subtitle;
+    if (!entry.detail.empty() && (detail != entry.detail)) {
+        detail += "\n" + entry.detail;
+    }
+    if (!entry.codec.empty()) {
+        if (!detail.empty()) {
+            detail += "\n";
+        }
+        detail += std::string("Codec: ") + entry.codec;
+    }
+    if (detail.empty()) {
+        detail = entry.canPreview ? "MP3 stream candidate." : "Stream format may be unsupported.";
+    }
+    lv_label_set_text(_playerDialogDetailLabel, detail.c_str());
+    lv_obj_set_width(_playerDialogDetailLabel, 380);
+    lv_label_set_long_mode(_playerDialogDetailLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_playerDialogDetailLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_playerDialogDetailLabel, lv_color_hex(0x9BB0CC), 0);
+    lv_obj_align_to(_playerDialogDetailLabel, _playerDialogTitleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 14);
+
+    lv_obj_t *status_header = lv_label_create(_playerDialog);
+    lv_label_set_text(status_header, "Status");
+    lv_obj_set_style_text_font(status_header, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(status_header, lv_color_hex(0xFFD166), 0);
+    lv_obj_align_to(status_header, _playerDialogDetailLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 18);
+
+    _playerDialogStatusLabel = lv_label_create(_playerDialog);
+    lv_label_set_text(_playerDialogStatusLabel, "Ready to start stream");
+    lv_obj_set_width(_playerDialogStatusLabel, 380);
+    lv_label_set_long_mode(_playerDialogStatusLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_playerDialogStatusLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_playerDialogStatusLabel, lv_color_hex(0xF7FAFC), 0);
+    lv_obj_align_to(_playerDialogStatusLabel, status_header, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+    _playerDialogPlayButton = lv_btn_create(_playerDialog);
+    lv_obj_set_size(_playerDialogPlayButton, 150, 50);
+    lv_obj_align(_playerDialogPlayButton, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_radius(_playerDialogPlayButton, 20, 0);
+    lv_obj_set_style_bg_color(_playerDialogPlayButton, lv_color_hex(0x0E9F6E), 0);
+    lv_obj_add_event_cb(_playerDialogPlayButton, onPlayerDialogButtonClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t *play_label = lv_label_create(_playerDialogPlayButton);
+    lv_label_set_text(play_label, "Play");
+    lv_obj_center(play_label);
+
+    _playerDialogStopButton = lv_btn_create(_playerDialog);
+    lv_obj_set_size(_playerDialogStopButton, 150, 50);
+    lv_obj_align(_playerDialogStopButton, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_radius(_playerDialogStopButton, 20, 0);
+    lv_obj_set_style_bg_color(_playerDialogStopButton, lv_color_hex(0xD64545), 0);
+    lv_obj_add_event_cb(_playerDialogStopButton, onPlayerDialogButtonClicked, LV_EVENT_CLICKED, this);
+    lv_obj_t *stop_label = lv_label_create(_playerDialogStopButton);
+    lv_label_set_text(stop_label, "Stop");
+    lv_obj_center(stop_label);
+
+    if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {
+        setStatus(std::string("Playing: ") + _activeStationTitle);
+    } else if (_previewStartInProgress.load()) {
+        setStatus(std::string("Opening stream: ") + entry.title);
+    } else {
+        setStatus(std::string("Selected station: ") + entry.title);
+    }
+}
+
+void InternetRadio::closePlayerDialog(void)
+{
+    if (_playerDialog != nullptr) {
+        lv_obj_del(_playerDialog);
+        _playerDialog = nullptr;
+    }
+
+    _playerDialogTitleLabel = nullptr;
+    _playerDialogDetailLabel = nullptr;
+    _playerDialogStatusLabel = nullptr;
+    _playerDialogPlayButton = nullptr;
+    _playerDialogStopButton = nullptr;
+}
+
 void InternetRadio::playStationPreview(size_t index)
 {
     if (index >= _entries.size()) {
@@ -627,6 +869,7 @@ void InternetRadio::playStationPreview(size_t index)
     }
 
     const ListEntry &entry = _entries[index];
+    _activeStationTitle = entry.title;
     if (entry.value.empty()) {
         setStatus("Station does not provide a playable stream URL.");
         return;
@@ -643,6 +886,7 @@ void InternetRadio::playStationPreview(size_t index)
         delete task_context;
         _previewTaskHandle = nullptr;
         _previewStartInProgress.store(false);
+        log_preview_task_memory_failure();
         setStatus("Failed to start station preview task.");
         return;
     }
@@ -653,23 +897,34 @@ void InternetRadio::playStationPreview(size_t index)
 bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
 {
     if (entry.value.empty()) {
-        setStatus("Station does not provide a stream URL.");
+        setStatusFromTask("Station does not provide a stream URL.");
         return false;
     }
 
     if (audio_player_get_state() != AUDIO_PLAYER_STATE_IDLE) {
-        audio_player_stop();
-        if (!wait_for_audio_player_state(AUDIO_PLAYER_STATE_IDLE, kPreviewStopWait)) {
-            setStatus("Audio player is still stopping. Please try again.");
+        if (!ensure_audio_player_idle(kPreviewStopWait)) {
+            setStatusFromTask("Audio player is still stopping. Please try again.");
             return false;
         }
     }
 
     auto *stream_context = new HttpMp3StreamContext();
     if (stream_context == nullptr) {
-        setStatus("Unable to allocate stream context.");
+        setStatusFromTask("Unable to allocate stream context.");
         return false;
     }
+
+    stream_context->capacity = kStreamBufferSize;
+    stream_context->buffer = allocate_stream_buffer(stream_context->capacity, stream_context->using_psram);
+    if (stream_context->buffer == nullptr) {
+        delete stream_context;
+        setStatusFromTask("Unable to allocate radio stream buffer.");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Radio stream buffer allocated in %s (%u bytes)",
+             stream_context->using_psram ? "PSRAM" : "internal RAM fallback",
+             static_cast<unsigned>(stream_context->capacity));
 
     esp_http_client_config_t config = {};
     config.url = entry.value.c_str();
@@ -681,13 +936,13 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
     stream_context->client = esp_http_client_init(&config);
     if (stream_context->client == nullptr) {
         delete stream_context;
-        setStatus("Failed to open station stream.");
+        setStatusFromTask("Failed to open station stream.");
         return false;
     }
 
     if (esp_http_client_open(stream_context->client, 0) != ESP_OK) {
         http_mp3_stream_close(stream_context);
-        setStatus("Failed to connect to station stream.");
+        setStatusFromTask("Failed to connect to station stream.");
         return false;
     }
 
@@ -699,7 +954,7 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
 
     if (audio_player_play_mp3_stream(stream) != ESP_OK) {
         http_mp3_stream_close(stream_context);
-        setStatus("Stream playback failed to start.");
+        setStatusFromTask("Stream playback failed to start.");
         return false;
     }
 
@@ -723,19 +978,24 @@ void InternetRadio::previewPlaybackTask(void *context)
     entry.canPreview = task_context->can_preview;
     delete task_context;
 
+    char status_text[kAsyncStatusTextCapacity] = {};
     if (entry.canPreview) {
-        app->setStatusFromTask(std::string("Starting stream: ") + entry.title);
+        snprintf(status_text, sizeof(status_text), "Starting stream: %s", entry.title.c_str());
     } else {
-        app->setStatusFromTask(std::string("Trying stream: ") + entry.title + " (MP3 streams work best)");
+        snprintf(status_text, sizeof(status_text), "Trying stream: %s (MP3 streams work best)", entry.title.c_str());
     }
+    app->setStatusFromTask(status_text);
 
     const bool started = app->startPreviewPlayback(entry);
     if (started) {
-        app->setStatusFromTask(std::string("Playing: ") + entry.title);
+        snprintf(status_text, sizeof(status_text), "Playing: %s", entry.title.c_str());
+        app->setStatusFromTask(status_text);
     } else if (!entry.canPreview) {
-        app->setStatusFromTask(std::string("Playback failed for ") + entry.title + ". This stream may use an unsupported codec.");
+        snprintf(status_text, sizeof(status_text), "Playback failed for %s. This stream may use an unsupported codec.", entry.title.c_str());
+        app->setStatusFromTask(status_text);
     } else {
-        app->setStatusFromTask(std::string("Failed to start streaming ") + entry.title + ". Try another station.");
+        snprintf(status_text, sizeof(status_text), "Failed to start streaming %s. Try another station.", entry.title.c_str());
+        app->setStatusFromTask(status_text);
     }
 
     app->_previewTaskHandle = nullptr;
@@ -746,18 +1006,22 @@ void InternetRadio::previewPlaybackTask(void *context)
 void InternetRadio::stopPreviewPlayback(void)
 {
     _previewStartInProgress.store(false);
+    if (_activeStationTitle.empty()) {
+        setStatus("Playback stopped.");
+    } else {
+        setStatus(std::string("Stopping: ") + _activeStationTitle);
+    }
 
     if (audio_player_get_state() != AUDIO_PLAYER_STATE_IDLE) {
-        if (audio_player_stop() != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to stop audio player before releasing preview buffer");
-            return;
-        }
-
-        if (!wait_for_audio_player_state(AUDIO_PLAYER_STATE_IDLE, kPreviewStopWait)) {
+        if (!ensure_audio_player_idle(kPreviewStopWait)) {
+            setStatus("Timed out while stopping playback.");
             ESP_LOGW(TAG, "Timed out waiting for audio player to go idle");
             return;
         }
     }
+
+    _activeStationTitle.clear();
+    setStatus("Playback stopped.");
 }
 
 void InternetRadio::handleEntrySelection(size_t index)
@@ -790,7 +1054,71 @@ void InternetRadio::handleEntrySelection(size_t index)
         loadStationsForFilter(StationSource::Tag, entry.title, entry.value);
         break;
     case ViewMode::Stations:
-        playStationPreview(index);
+        showPlayerDialog(index);
+        break;
+    }
+}
+
+void InternetRadio::onPlayerDialogButtonClicked(lv_event_t *event)
+{
+    if (event == nullptr) {
+        return;
+    }
+
+    auto *self = static_cast<InternetRadio *>(lv_event_get_user_data(event));
+    if (self == nullptr) {
+        return;
+    }
+
+    lv_obj_t *target = lv_event_get_target(event);
+    if (target == self->_playerDialogPlayButton) {
+        self->playStationPreview(self->_selectedStationIndex);
+        return;
+    }
+
+    if (target == self->_playerDialogStopButton) {
+        self->stopPreviewPlayback();
+        return;
+    }
+
+    self->closePlayerDialog();
+}
+
+void InternetRadio::radioAudioCallback(audio_player_cb_ctx_t *ctx)
+{
+    if ((ctx == nullptr) || (ctx->user_ctx == nullptr)) {
+        return;
+    }
+
+    auto *self = static_cast<InternetRadio *>(ctx->user_ctx);
+    char status_text[kAsyncStatusTextCapacity] = {};
+    switch (ctx->audio_event) {
+    case AUDIO_PLAYER_CALLBACK_EVENT_PLAYING:
+        if (!self->_activeStationTitle.empty()) {
+            snprintf(status_text, sizeof(status_text), "Playing: %s", self->_activeStationTitle.c_str());
+            self->setStatusFromTask(status_text);
+        } else {
+            self->setStatusFromTask("Playing stream");
+        }
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_PAUSE:
+        self->setStatusFromTask("Playback paused");
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_IDLE:
+        if (!self->_activeStationTitle.empty()) {
+            snprintf(status_text, sizeof(status_text), "Stopped: %s", self->_activeStationTitle.c_str());
+            self->setStatusFromTask(status_text);
+            self->_activeStationTitle.clear();
+        } else {
+            self->setStatusFromTask("Playback stopped");
+        }
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE:
+        self->setStatusFromTask("Stream codec is unsupported");
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_COMPLETED_PLAYING_NEXT:
+    case AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN:
+    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN:
         break;
     }
 }

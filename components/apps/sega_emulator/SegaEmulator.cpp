@@ -91,9 +91,13 @@ SegaEmulator::~SegaEmulator()
     }
     _controlBindings.clear();
 
-    if (_canvasBuffer != nullptr) {
-        heap_caps_free(_canvasBuffer);
-        _canvasBuffer = nullptr;
+    if (_canvasFrontBuffer != nullptr) {
+        heap_caps_free(_canvasFrontBuffer);
+        _canvasFrontBuffer = nullptr;
+    }
+    if (_canvasBackBuffer != nullptr) {
+        heap_caps_free(_canvasBackBuffer);
+        _canvasBackBuffer = nullptr;
     }
     if (_emulatorBuffer != nullptr) {
         heap_caps_free(_emulatorBuffer);
@@ -103,17 +107,20 @@ SegaEmulator::~SegaEmulator()
 
 bool SegaEmulator::init()
 {
-    _canvasBuffer = static_cast<lv_color_t *>(
+    _canvasFrontBuffer = static_cast<lv_color_t *>(
+        heap_caps_malloc(sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    _canvasBackBuffer = static_cast<lv_color_t *>(
         heap_caps_malloc(sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     _emulatorBuffer = static_cast<uint8_t *>(
         heap_caps_malloc(std::max(kSmsFrameBufferSize, kGenesisFrameBufferSize), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 
-    if ((_canvasBuffer == nullptr) || (_emulatorBuffer == nullptr)) {
+    if ((_canvasFrontBuffer == nullptr) || (_canvasBackBuffer == nullptr) || (_emulatorBuffer == nullptr)) {
         ESP_LOGE(kTag, "Failed to allocate emulator frame buffers");
         return false;
     }
 
-    memset(_canvasBuffer, 0, sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight);
+    memset(_canvasFrontBuffer, 0, sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight);
+    memset(_canvasBackBuffer, 0, sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight);
     memset(_emulatorBuffer, 0, std::max(kSmsFrameBufferSize, kGenesisFrameBufferSize));
 
     createBrowserScreen();
@@ -235,7 +242,7 @@ void SegaEmulator::createPlayerScreen()
     lv_obj_clear_flag(frame, LV_OBJ_FLAG_SCROLLABLE);
 
     _canvas = lv_canvas_create(frame);
-    lv_canvas_set_buffer(_canvas, _canvasBuffer, kCanvasWidth, kCanvasHeight, LV_IMG_CF_TRUE_COLOR);
+    lv_canvas_set_buffer(_canvas, _canvasFrontBuffer, kCanvasWidth, kCanvasHeight, LV_IMG_CF_TRUE_COLOR);
     lv_canvas_fill_bg(_canvas, lv_color_black(), LV_OPA_COVER);
     lv_obj_center(_canvas);
 
@@ -446,9 +453,9 @@ void SegaEmulator::emulatorTask()
         _running.store(false);
         _stopRequested.store(false);
         _emulatorTask = nullptr;
-        setBrowserStatus(browserStatus);
-        if (lv_scr_act() == _playerScreen) {
-            lv_scr_load(_browserScreen);
+        _pendingBrowserStatus = browserStatus;
+        if (!_finishUiQueued.exchange(true)) {
+            lv_async_call(finishEmulationAsync, this);
         }
         vTaskDelete(nullptr);
     };
@@ -549,7 +556,7 @@ void SegaEmulator::emulatorTask()
                 mixbuffer[i * 2 + 1] = static_cast<int16_t>(right);
             }
             size_t written = 0;
-            bsp_extra_i2s_write(mixbuffer.data(), mixbuffer.size() * sizeof(int16_t), &written, 0);
+            bsp_extra_i2s_write(mixbuffer.data(), sampleCount * 2 * sizeof(int16_t), &written, 0);
         }
 
         vTaskDelayUntil(&lastWakeTime, frameInterval);
@@ -581,6 +588,12 @@ void SegaEmulator::setPlayerStatus(const char *text)
 
 void SegaEmulator::renderCurrentFrame()
 {
+    std::lock_guard<std::mutex> guard(_frameBufferMutex);
+    lv_color_t *targetBuffer = _canvasBackBuffer;
+    if (targetBuffer == nullptr) {
+        return;
+    }
+
     if (_currentCore == EmulatorCore::Gwenesis) {
         const int srcWidth = std::max(1, sega_gwenesis_get_screen_width());
         const int srcHeight = std::max(1, sega_gwenesis_get_screen_height());
@@ -597,7 +610,7 @@ void SegaEmulator::renderCurrentFrame()
         const int dstOffsetY = (kCanvasHeight - dstHeight) / 2;
 
         for (int i = 0; i < (kCanvasWidth * kCanvasHeight); ++i) {
-            _canvasBuffer[i].full = 0;
+            targetBuffer[i].full = 0;
         }
 
         for (int y = 0; y < dstHeight; ++y) {
@@ -605,13 +618,13 @@ void SegaEmulator::renderCurrentFrame()
             for (int x = 0; x < dstWidth; ++x) {
                 const int srcX = (x * srcWidth) / dstWidth;
                 const uint8_t index = src[srcY * SEGA_GWENESIS_FRAME_STRIDE + srcX];
-                _canvasBuffer[(dstOffsetY + y) * kCanvasWidth + dstOffsetX + x].full = palette[index];
+                targetBuffer[(dstOffsetY + y) * kCanvasWidth + dstOffsetX + x].full = palette[index];
             }
         }
 
-        bsp_display_lock(0);
-        lv_obj_invalidate(_canvas);
-        bsp_display_unlock();
+        if (!_framePresentationQueued.exchange(true)) {
+            lv_async_call(presentFrameAsync, this);
+        }
         return;
     }
 
@@ -634,7 +647,7 @@ void SegaEmulator::renderCurrentFrame()
     const int dstOffsetY = (kCanvasHeight - dstHeight) / 2;
 
     for (int i = 0; i < kCanvasWidth * kCanvasHeight; ++i) {
-        _canvasBuffer[i].full = 0;
+        targetBuffer[i].full = 0;
     }
 
     for (int y = 0; y < dstHeight; ++y) {
@@ -642,13 +655,58 @@ void SegaEmulator::renderCurrentFrame()
         for (int x = 0; x < dstWidth; ++x) {
             const int srcX = (x * srcWidth) / dstWidth;
             const uint8_t index = src[srcY * bitmap.pitch + srcX];
-            _canvasBuffer[(dstOffsetY + y) * kCanvasWidth + dstOffsetX + x].full = palette[index & PIXEL_MASK];
+            targetBuffer[(dstOffsetY + y) * kCanvasWidth + dstOffsetX + x].full = palette[index & PIXEL_MASK];
         }
     }
 
+    if (!_framePresentationQueued.exchange(true)) {
+        lv_async_call(presentFrameAsync, this);
+    }
+}
+
+void SegaEmulator::presentFrameAsync(void *context)
+{
+    auto *app = static_cast<SegaEmulator *>(context);
+    if (app != nullptr) {
+        app->presentFrameOnUiThread();
+    }
+}
+
+void SegaEmulator::presentFrameOnUiThread()
+{
+    std::lock_guard<std::mutex> guard(_frameBufferMutex);
+    if ((_canvas == nullptr) || (_canvasFrontBuffer == nullptr) || (_canvasBackBuffer == nullptr)) {
+        _framePresentationQueued.store(false);
+        return;
+    }
+
+    std::swap(_canvasFrontBuffer, _canvasBackBuffer);
+
     bsp_display_lock(0);
+    lv_canvas_set_buffer(_canvas, _canvasFrontBuffer, kCanvasWidth, kCanvasHeight, LV_IMG_CF_TRUE_COLOR);
     lv_obj_invalidate(_canvas);
     bsp_display_unlock();
+
+    _framePresentationQueued.store(false);
+}
+
+void SegaEmulator::finishEmulationAsync(void *context)
+{
+    auto *app = static_cast<SegaEmulator *>(context);
+    if (app != nullptr) {
+        app->finishEmulationOnUiThread();
+    }
+}
+
+void SegaEmulator::finishEmulationOnUiThread()
+{
+    if (!_pendingBrowserStatus.empty()) {
+        setBrowserStatus(_pendingBrowserStatus.c_str());
+    }
+    if (lv_scr_act() == _playerScreen) {
+        lv_scr_load(_browserScreen);
+    }
+    _finishUiQueued.store(false);
 }
 
 void SegaEmulator::updateSmsInputState()
@@ -692,9 +750,6 @@ bool SegaEmulator::setupAudio(int sampleRate)
     vTaskDelay(pdMS_TO_TICKS(50));
 
     if (bsp_extra_codec_init() != ESP_OK) {
-        return false;
-    }
-    if (bsp_extra_player_init() != ESP_OK) {
         return false;
     }
     if (bsp_extra_codec_set_fs_play(sampleRate, 16, I2S_SLOT_MODE_STEREO) != ESP_OK) {

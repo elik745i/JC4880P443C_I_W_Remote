@@ -51,11 +51,31 @@ private:
         std::string path_or_url;
         std::string project_name;
         std::string notes;
+        std::string release_notes;
         size_t size_bytes;
         bool is_current;
         bool is_newer;
         bool is_valid;
     } FirmwareEntry_t;
+
+    typedef enum {
+        FIRMWARE_UPDATE_SOURCE_SD = 0,
+        FIRMWARE_UPDATE_SOURCE_OTA,
+    } FirmwareUpdateSource_t;
+
+    struct FirmwareUpdateTaskContext {
+        AppSettings *app;
+        FirmwareEntry_t entry;
+        FirmwareUpdateSource_t source;
+    };
+
+    struct AsyncFirmwareUiContext {
+        AppSettings *app;
+        char status[224];
+        int32_t percent;
+        bool busy;
+        bool is_error;
+    };
 
     typedef enum {
         WIFI_SIGNAL_STRENGTH_NONE = 0,
@@ -92,6 +112,8 @@ private:
     void updateWifiPasswordVisibility(bool visible);
     void handleSecurityToggleResult(device_security::LockType type, bool success);
     void setFirmwareStatus(const std::string &status, bool is_error = false);
+    void setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error = false);
+    void queueFirmwareUiUpdate(const char *status, int32_t percent, bool busy, bool is_error);
     void populateFirmwareDropdown(lv_obj_t *dropdown, const std::vector<FirmwareEntry_t> &entries, const char *empty_label);
     bool scanSdFirmwareEntries(void);
     bool fetchGithubFirmwareEntries(void);
@@ -100,6 +122,14 @@ private:
     std::string getCurrentFirmwareVersion(void) const;
     std::string formatFirmwareLabel(const FirmwareEntry_t &entry) const;
     static int compareVersionStrings(const std::string &lhs, const std::string &rhs);
+    bool flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdateSource_t source);
+    bool flashFirmwareFromFile(const FirmwareEntry_t &entry, std::string &error_message);
+    bool flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string &error_message);
+    bool validateFirmwareImageHeader(const uint8_t *data, size_t data_len, const std::string &source_label,
+                                     std::string &error_message, bool &header_checked);
+    void persistPendingReleaseNotes(const FirmwareEntry_t &entry);
+    static void firmwareUpdateTask(void *arg);
+    static void applyAsyncFirmwareUiUpdate(void *arg);
     // NVS Parameters
     bool loadNvsParam(void);
     bool setNvsParam(std::string key, int value);
@@ -148,6 +178,7 @@ private:
     static void onFirmwareOtaCheckClickedEventCallback(lv_event_t *e);
     static void onFirmwareSdFlashClickedEventCallback(lv_event_t *e);
     static void onFirmwareOtaFlashClickedEventCallback(lv_event_t *e);
+    static void onFirmwareSelectionChangedEventCallback(lv_event_t *e);
     static void onFirmwareFactoryResetClickedEventCallback(lv_event_t *e);
     static void onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e);
     // Audio
@@ -189,6 +220,9 @@ private:
     lv_obj_t *_firmwareOtaDropdown;
     lv_obj_t *_firmwareOtaFlashButton;
     lv_obj_t *_firmwareStatusLabel;
+    lv_obj_t *_firmwareProgressBar;
+    lv_obj_t *_firmwareProgressLabel;
+    bool _firmwareUpdateInProgress;
     bool _isWifiPasswordVisible;
     struct SecurityToggleContext {
         AppSettings *app;

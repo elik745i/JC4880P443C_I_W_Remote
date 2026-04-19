@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "lvgl.h"
+#include "audio_player.h"
 #include "esp_err.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
@@ -52,13 +53,16 @@ private:
     };
 
     static void onListButtonClicked(lv_event_t *event);
+    static void onPlayerDialogButtonClicked(lv_event_t *event);
     static esp_err_t httpEventHandler(esp_http_client_event_t *event);
     static void applyAsyncStatus(void *context);
     static void previewPlaybackTask(void *context);
+    static void radioAudioCallback(audio_player_cb_ctx_t *ctx);
 
     bool buildUi(void);
+    void applyStatusText(const char *text);
     void setStatus(const std::string &text);
-    void setStatusFromTask(const std::string &text);
+    void setStatusFromTask(const char *text);
     void showRootMenu(void);
     void loadCountries(void);
     void loadLanguages(void);
@@ -67,6 +71,8 @@ private:
     void loadStationsForFilter(StationSource source, const std::string &display_name, const std::string &value);
     void renderEntries(void);
     void showEntryDetails(size_t index);
+    void showPlayerDialog(size_t index);
+    void closePlayerDialog(void);
     void playStationPreview(size_t index);
     bool startPreviewPlayback(const ListEntry &entry);
     void handleEntrySelection(size_t index);
@@ -92,4 +98,12 @@ private:
     std::string _activeFilterValue;
     TaskHandle_t _previewTaskHandle;
     std::atomic<bool> _previewStartInProgress;
+    lv_obj_t *_playerDialog;
+    lv_obj_t *_playerDialogTitleLabel;
+    lv_obj_t *_playerDialogDetailLabel;
+    lv_obj_t *_playerDialogStatusLabel;
+    lv_obj_t *_playerDialogPlayButton;
+    lv_obj_t *_playerDialogStopButton;
+    size_t _selectedStationIndex;
+    std::string _activeStationTitle;
 };

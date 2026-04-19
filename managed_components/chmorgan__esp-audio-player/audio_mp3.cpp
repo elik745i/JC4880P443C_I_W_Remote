@@ -4,6 +4,63 @@
 
 static const char *TAG = "mp3";
 
+static const char *mp3_error_to_string(int error)
+{
+    switch (error) {
+    case ERR_MP3_NONE:
+        return "no error";
+    case ERR_MP3_INDATA_UNDERFLOW:
+        return "input underflow";
+    case ERR_MP3_MAINDATA_UNDERFLOW:
+        return "main data underflow";
+    case ERR_MP3_FREE_BITRATE_SYNC:
+        return "free bitrate sync";
+    case ERR_MP3_OUT_OF_MEMORY:
+        return "out of memory";
+    case ERR_MP3_NULL_POINTER:
+        return "null pointer";
+    case ERR_MP3_INVALID_FRAMEHEADER:
+        return "invalid frame header";
+    case ERR_MP3_INVALID_SIDEINFO:
+        return "invalid side info";
+    case ERR_MP3_INVALID_SCALEFACT:
+        return "invalid scalefactor";
+    case ERR_MP3_INVALID_HUFFCODES:
+        return "invalid huffman codes";
+    case ERR_MP3_INVALID_DEQUANTIZE:
+        return "invalid dequantize";
+    case ERR_MP3_INVALID_IMDCT:
+        return "invalid IMDCT";
+    case ERR_MP3_INVALID_SUBBAND:
+        return "invalid subband";
+    default:
+        return "unknown";
+    }
+}
+
+static bool probe_mp3_frame(FILE *fp, long start_offset)
+{
+    constexpr size_t kProbeBytes = 2048;
+    uint8_t probe[kProbeBytes] = {};
+
+    if (fseek(fp, start_offset, SEEK_SET) != 0) {
+        return false;
+    }
+
+    const size_t bytes_read = fread(probe, 1, sizeof(probe), fp);
+    if (bytes_read < 4) {
+        return false;
+    }
+
+    const int sync_offset = MP3FindSyncWord(probe, static_cast<int>(bytes_read));
+    if (sync_offset < 0) {
+        return false;
+    }
+
+    MP3FrameInfo frame_info = {};
+    return MP3GetNextFrameInfo(nullptr, &frame_info, probe + sync_offset) == ERR_MP3_NONE;
+}
+
 bool is_mp3(FILE *fp) {
     bool is_mp3_file = false;
 
@@ -34,10 +91,20 @@ bool is_mp3(FILE *fp) {
             mp3_id3_header_v2_t tag;
             if (sizeof(mp3_id3_header_v2_t) == fread(&tag, 1, sizeof(mp3_id3_header_v2_t), fp)) {
                 if (memcmp("ID3", (const void *) &tag, sizeof(tag.header)) == 0) {
-                    is_mp3_file = true;
+                    const long tag_size =
+                        ((tag.size[0] & 0x7F) << 21) |
+                        ((tag.size[1] & 0x7F) << 14) |
+                        ((tag.size[2] & 0x7F) << 7) |
+                        (tag.size[3] & 0x7F);
+                    is_mp3_file = probe_mp3_frame(fp, static_cast<long>(sizeof(mp3_id3_header_v2_t)) + tag_size);
                 }
             }
         }
+    }
+
+    if (!is_mp3_file &&
+        (magic[0] == 0xFF) && ((magic[1] == 0xFB) || (magic[1] == 0xF3) || (magic[1] == 0xF2))) {
+        is_mp3_file = probe_mp3_frame(fp, 0);
     }
 
     // seek back to the start of the file to avoid
@@ -93,7 +160,8 @@ DECODE_STATUS decode_mp3(HMP3Decoder mp3_decoder, FILE *fp, decode_data *pData, 
 
     if (offset >= 0) {
         COMPILE_3(int starting_unread_bytes = unread_bytes);
-        uint8_t *read_ptr = pInstance->read_ptr + offset; /*!< Data start point */
+        uint8_t *frame_ptr = pInstance->read_ptr + offset; /*!< Data start point */
+        uint8_t *read_ptr = frame_ptr;
         unread_bytes -= offset;
         LOGI_3("read 0x%p, unread %d", read_ptr, unread_bytes);
         int mp3_dec_err = MP3Decode(mp3_decoder, &read_ptr, (int*)&unread_bytes, reinterpret_cast<int16_t *>(pData->samples), 
@@ -119,27 +187,18 @@ DECODE_STATUS decode_mp3(HMP3Decoder mp3_decoder, FILE *fp, decode_data *pData, 
                 starting_unread_bytes - unread_bytes);
         } else {
             if (pInstance->eof_reached) {
-                ESP_LOGE(TAG, "status error %d, but EOF", mp3_dec_err);
+                ESP_LOGW(TAG, "decode ended at EOF after %s (%d)", mp3_error_to_string(mp3_dec_err), mp3_dec_err);
                 return DECODE_STATUS_DONE;
             } else if (mp3_dec_err == ERR_MP3_MAINDATA_UNDERFLOW) {
                 // underflow indicates MP3Decode should be called again
                 LOGI_1("underflow read ptr is 0x%p", read_ptr);
                 return DECODE_STATUS_NO_DATA_CONTINUE;
             } else {
-                // NOTE: some mp3 files result in misdetection of mp3 frame headers
-                // and during decode these misdetected frames cannot be
-                // decoded
-                //
-                // Rather than give up on the file by returning
-                // DECODE_STATUS_ERROR, we ask the caller
-                // to continue to call us, by returning DECODE_STATUS_NO_DATA_CONTINUE.
-                //
-                // The invalid frame data is skipped over as a search for the next frame
-                // on the subsequent call to this function will start searching
-                // AFTER the misdetected frmame header, dropping the invalid data.
-                //
-                // We may want to consider a more sophisticated approach here at a later time.
-                ESP_LOGE(TAG, "status error %d", mp3_dec_err);
+                size_t bytes_consumed = static_cast<size_t>(read_ptr - frame_ptr);
+                size_t bytes_to_skip = (bytes_consumed > 0) ? bytes_consumed : 1;
+                pInstance->read_ptr = frame_ptr + bytes_to_skip;
+                ESP_LOGW(TAG, "skipping %u byte after %s (%d)",
+                         (unsigned)bytes_to_skip, mp3_error_to_string(mp3_dec_err), mp3_dec_err);
                 return DECODE_STATUS_NO_DATA_CONTINUE;
             }
         }

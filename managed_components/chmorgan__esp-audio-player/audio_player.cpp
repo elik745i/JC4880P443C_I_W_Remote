@@ -470,7 +470,8 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
 
     int offset = MP3FindSyncWord(pInstance->read_ptr, unread_bytes);
     if (offset >= 0) {
-        uint8_t *read_ptr = pInstance->read_ptr + offset;
+        uint8_t *frame_ptr = pInstance->read_ptr + offset;
+        uint8_t *read_ptr = frame_ptr;
         unread_bytes -= offset;
         int mp3_dec_err = MP3Decode(mp3_decoder, &read_ptr, (int*)&unread_bytes,
             reinterpret_cast<int16_t *>(pData->samples), 0);
@@ -491,7 +492,11 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
             if (mp3_dec_err == ERR_MP3_MAINDATA_UNDERFLOW) {
                 return DECODE_STATUS_NO_DATA_CONTINUE;
             }
-            ESP_LOGE(TAG, "stream decode error %d", mp3_dec_err);
+            size_t bytes_consumed = static_cast<size_t>(read_ptr - frame_ptr);
+            size_t bytes_to_skip = (bytes_consumed > 0) ? bytes_consumed : 1;
+            pInstance->read_ptr = frame_ptr + bytes_to_skip;
+            ESP_LOGW(TAG, "stream skipping %u byte after MP3 decode error %d",
+                     (unsigned)bytes_to_skip, mp3_dec_err);
             return DECODE_STATUS_NO_DATA_CONTINUE;
         }
     } else {

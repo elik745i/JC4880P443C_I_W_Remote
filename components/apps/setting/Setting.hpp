@@ -40,6 +40,7 @@ private:
         UI_BLUETOOTH_SETTING_INDEX,
         UI_VOLUME_SETTING_INDEX,
         UI_BRIGHTNESS_SETTING_INDEX,
+        UI_HARDWARE_SETTING_INDEX,
         UI_FIRMWARE_SETTING_INDEX,
         UI_ABOUT_SETTING_INDEX,
         UI_MAX_INDEX,
@@ -103,6 +104,7 @@ private:
     void refreshTimezoneUi(void);
     void refreshSecurityUi(void);
     void refreshFirmwareUi(void);
+    void refreshHardwareMonitorUi(void);
     void applyDisplayIdleSettings(void);
     void applyManualTimezonePreference(void);
     bool syncAutoTimezoneFromInternet(void);
@@ -173,6 +175,7 @@ private:
     static void onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback( lv_event_t * e);
     static void onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback(lv_event_t *e);
     static void onSecurityToggleRequestFinished(bool success, void *user_data);
+    static void onMainMenuItemClickedEventCallback(lv_event_t *e);
     static void onFirmwareMenuClickedEventCallback(lv_event_t *e);
     static void onFirmwareSdRefreshClickedEventCallback(lv_event_t *e);
     static void onFirmwareOtaCheckClickedEventCallback(lv_event_t *e);
@@ -211,10 +214,35 @@ private:
     lv_obj_t *_displayAutoTimezoneSwitch;
     lv_obj_t *_displayTimezoneDropdown;
     lv_obj_t *_displayTimezoneInfoLabel;
+    lv_obj_t *_wifiMenuItem;
+    lv_obj_t *_audioMenuItem;
+    lv_obj_t *_displayMenuItem;
+    lv_obj_t *_hardwareMenuItem;
+    lv_obj_t *_securityMenuItem;
+    lv_obj_t *_aboutMenuItem;
     lv_obj_t *_securitySettingsLockSwitch;
     lv_obj_t *_securityInfoLabel;
     lv_obj_t *_firmwareMenuItem;
     lv_obj_t *_firmwareScreen;
+    lv_obj_t *_hardwareScreen;
+    lv_obj_t *_hardwareCpuSpeedValueLabel;
+    lv_obj_t *_hardwareCpuSpeedDetailLabel;
+    lv_obj_t *_hardwareCpuSpeedBar;
+    lv_obj_t *_hardwareCpuTempValueLabel;
+    lv_obj_t *_hardwareCpuTempDetailLabel;
+    lv_obj_t *_hardwareCpuTempBar;
+    lv_obj_t *_hardwareSramValueLabel;
+    lv_obj_t *_hardwareSramDetailLabel;
+    lv_obj_t *_hardwareSramBar;
+    lv_obj_t *_hardwarePsramValueLabel;
+    lv_obj_t *_hardwarePsramDetailLabel;
+    lv_obj_t *_hardwarePsramBar;
+    lv_obj_t *_hardwareSdValueLabel;
+    lv_obj_t *_hardwareSdDetailLabel;
+    lv_obj_t *_hardwareSdBar;
+    lv_obj_t *_hardwareWifiValueLabel;
+    lv_obj_t *_hardwareWifiDetailLabel;
+    lv_obj_t *_hardwareWifiBar;
     lv_obj_t *_firmwareSdDropdown;
     lv_obj_t *_firmwareSdFlashButton;
     lv_obj_t *_firmwareOtaDropdown;

@@ -41,7 +41,24 @@ void set_button_enabled(lv_obj_t *button, bool enabled)
     }
 }
 
-lv_obj_t *create_action_button(lv_obj_t *parent, const char *text, lv_coord_t x, lv_coord_t y, lv_coord_t width = 136)
+void set_button_labels_color(lv_obj_t *button, lv_color_t color)
+{
+    if (button == nullptr) {
+        return;
+    }
+
+    const uint32_t childCount = lv_obj_get_child_cnt(button);
+    for (uint32_t index = 0; index < childCount; ++index) {
+        lv_obj_t *child = lv_obj_get_child(button, index);
+        if (child != nullptr) {
+            lv_obj_set_style_text_color(child, color, 0);
+        }
+    }
+}
+
+lv_obj_t *create_action_button(
+    lv_obj_t *parent, const char *text, lv_coord_t x, lv_coord_t y, lv_coord_t width = 136, const char *icon = nullptr
+)
 {
     lv_obj_t *button = lv_btn_create(parent);
     lv_obj_set_size(button, width, 54);
@@ -53,12 +70,30 @@ lv_obj_t *create_action_button(lv_obj_t *parent, const char *text, lv_coord_t x,
     lv_obj_set_style_border_color(button, lv_color_hex(0xD6DEEA), 0);
     lv_obj_set_style_shadow_width(button, 0, 0);
     lv_obj_set_style_pad_all(button, 0, 0);
+    lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *label = lv_label_create(button);
-    lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_center(label);
+    if ((icon != nullptr) && (icon[0] != '\0')) {
+        lv_obj_t *iconLabel = lv_label_create(button);
+        lv_label_set_text(iconLabel, icon);
+        lv_obj_set_style_text_font(iconLabel, &lv_font_montserrat_16, 0);
+        lv_obj_align(iconLabel, LV_ALIGN_LEFT_MID, 12, 0);
+
+        lv_obj_t *label = lv_label_create(button);
+        lv_label_set_text(label, text);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(label, width - 44);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, 0);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 32, 0);
+    } else {
+        lv_obj_t *label = lv_label_create(button);
+        lv_label_set_text(label, text);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(label);
+    }
+
+    set_button_labels_color(button, lv_color_hex(0x122033));
 
     return button;
 }
@@ -190,63 +225,53 @@ bool FileManager::buildUi()
     lv_obj_set_style_bg_opa(_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *heroCard = create_card(_screen, 440, 130, 20, 18, lv_color_hex(0x102A43));
-    lv_obj_set_style_bg_grad_color(heroCard, lv_color_hex(0x1D4ED8), 0);
-    lv_obj_set_style_bg_grad_dir(heroCard, LV_GRAD_DIR_HOR, 0);
+    _sdButton = create_action_button(_screen, "SD Card", 20, 20, 212, LV_SYMBOL_DRIVE);
+    _spiffsButton = create_action_button(_screen, "SPIFFS", 248, 20, 212, LV_SYMBOL_HOME);
 
-    _titleLabel = lv_label_create(heroCard);
-    lv_label_set_text(_titleLabel, "Files");
-    lv_obj_set_style_text_font(_titleLabel, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(_titleLabel, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(_titleLabel, LV_ALIGN_TOP_LEFT, 18, 16);
-
-    _subtitleLabel = lv_label_create(heroCard);
-    lv_label_set_text(_subtitleLabel, "Android-style browser for SD card and SPIFFS");
-    lv_obj_set_style_text_font(_subtitleLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(_subtitleLabel, lv_color_hex(0xC7D8FF), 0);
-    lv_obj_align(_subtitleLabel, LV_ALIGN_TOP_LEFT, 18, 52);
-
-    _pathLabel = lv_label_create(heroCard);
-    lv_label_set_long_mode(_pathLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_set_width(_pathLabel, 404);
-    lv_obj_set_style_text_font(_pathLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(_pathLabel, lv_color_hex(0xEAF2FF), 0);
-    lv_obj_align(_pathLabel, LV_ALIGN_BOTTOM_LEFT, 18, -18);
-
-    _sdButton = create_action_button(_screen, LV_SYMBOL_DRIVE "  SD Card", 20, 162, 212);
-    _spiffsButton = create_action_button(_screen, LV_SYMBOL_HOME "  SPIFFS", 248, 162, 212);
-
-    lv_obj_t *overviewCard = create_card(_screen, 440, 112, 20, 228, lv_color_hex(0xFFFFFF));
+    lv_obj_t *overviewCard = create_card(_screen, 440, 146, 20, 92, lv_color_hex(0xFFFFFF));
     lv_obj_t *overviewIcon = lv_label_create(overviewCard);
     lv_label_set_text(overviewIcon, LV_SYMBOL_DIRECTORY);
     lv_obj_set_style_text_font(overviewIcon, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(overviewIcon, lv_color_hex(0x2563EB), 0);
-    lv_obj_align(overviewIcon, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_align(overviewIcon, LV_ALIGN_TOP_LEFT, 18, 16);
 
     _storageNameLabel = lv_label_create(overviewCard);
+    lv_obj_set_width(_storageNameLabel, 340);
+    lv_label_set_long_mode(_storageNameLabel, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(_storageNameLabel, &lv_font_montserrat_22, 0);
     lv_obj_set_style_text_color(_storageNameLabel, lv_color_hex(0x102A43), 0);
-    lv_obj_align(_storageNameLabel, LV_ALIGN_TOP_LEFT, 66, 16);
+    lv_obj_align(_storageNameLabel, LV_ALIGN_TOP_LEFT, 66, 14);
 
     _storageMetaLabel = lv_label_create(overviewCard);
+    lv_obj_set_width(_storageMetaLabel, 340);
+    lv_label_set_long_mode(_storageMetaLabel, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(_storageMetaLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_storageMetaLabel, lv_color_hex(0x52606D), 0);
-    lv_obj_align(_storageMetaLabel, LV_ALIGN_TOP_LEFT, 66, 48);
+    lv_obj_align(_storageMetaLabel, LV_ALIGN_TOP_LEFT, 66, 44);
+
+    _pathLabel = lv_label_create(overviewCard);
+    lv_obj_set_width(_pathLabel, 404);
+    lv_label_set_long_mode(_pathLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_font(_pathLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_pathLabel, lv_color_hex(0x334155), 0);
+    lv_obj_align(_pathLabel, LV_ALIGN_TOP_LEFT, 18, 78);
 
     _folderMetaLabel = lv_label_create(overviewCard);
+    lv_obj_set_width(_folderMetaLabel, 404);
+    lv_label_set_long_mode(_folderMetaLabel, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(_folderMetaLabel, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_folderMetaLabel, lv_color_hex(0x1F2937), 0);
-    lv_obj_align(_folderMetaLabel, LV_ALIGN_BOTTOM_LEFT, 18, -18);
+    lv_obj_align(_folderMetaLabel, LV_ALIGN_BOTTOM_LEFT, 18, -14);
 
-    _upButton = create_action_button(_screen, LV_SYMBOL_LEFT " Up", 20, 356, 102);
-    _refreshButton = create_action_button(_screen, LV_SYMBOL_REFRESH " Sync", 132, 356, 102);
-    _openButton = create_action_button(_screen, LV_SYMBOL_RIGHT " Open", 244, 356, 102);
-    _newFolderButton = create_action_button(_screen, LV_SYMBOL_PLUS " New", 356, 356, 104);
-    _renameButton = create_action_button(_screen, LV_SYMBOL_EDIT " Rename", 20, 420, 138);
-    _deleteButton = create_action_button(_screen, LV_SYMBOL_TRASH " Delete", 170, 420, 138);
-    _infoButton = create_action_button(_screen, LV_SYMBOL_LIST " Details", 320, 420, 140);
+    _upButton = create_action_button(_screen, "Up", 20, 254, 102, LV_SYMBOL_LEFT);
+    _refreshButton = create_action_button(_screen, "Sync", 132, 254, 102, LV_SYMBOL_REFRESH);
+    _openButton = create_action_button(_screen, "Open", 244, 254, 102, LV_SYMBOL_RIGHT);
+    _newFolderButton = create_action_button(_screen, "New", 356, 254, 104, LV_SYMBOL_PLUS);
+    _renameButton = create_action_button(_screen, "Rename", 20, 318, 138, LV_SYMBOL_EDIT);
+    _deleteButton = create_action_button(_screen, "Delete", 170, 318, 138, LV_SYMBOL_TRASH);
+    _infoButton = create_action_button(_screen, "Details", 320, 318, 140, LV_SYMBOL_LIST);
 
-    lv_obj_t *listCard = create_card(_screen, 440, 246, 20, 486, lv_color_hex(0xFFFFFF));
+    lv_obj_t *listCard = create_card(_screen, 440, 358, 20, 382, lv_color_hex(0xFFFFFF));
     lv_obj_t *listHeader = lv_label_create(listCard);
     lv_label_set_text(listHeader, "This folder");
     lv_obj_set_style_text_font(listHeader, &lv_font_montserrat_18, 0);
@@ -254,7 +279,7 @@ bool FileManager::buildUi()
     lv_obj_align(listHeader, LV_ALIGN_TOP_LEFT, 16, 14);
 
     _entryList = lv_obj_create(listCard);
-    lv_obj_set_size(_entryList, 408, 190);
+    lv_obj_set_size(_entryList, 408, 302);
     lv_obj_set_pos(_entryList, 16, 42);
     lv_obj_set_style_bg_color(_entryList, lv_color_hex(0xF8FAFC), 0);
     lv_obj_set_style_bg_opa(_entryList, LV_OPA_COVER, 0);
@@ -663,7 +688,7 @@ void FileManager::setStatus(const std::string &message, bool isError)
 void FileManager::updatePathLabel()
 {
     if (_pathLabel != nullptr) {
-        lv_label_set_text_fmt(_pathLabel, "%s  •  %s", rootLabel(_activeRoot).c_str(), _currentPath.c_str());
+        lv_label_set_text_fmt(_pathLabel, "Path: %s", _currentPath.c_str());
     }
 }
 
@@ -675,7 +700,7 @@ void FileManager::updateOverviewCard()
 
     const bool available = rootAvailable(_activeRoot);
     lv_label_set_text(_storageNameLabel, rootLabel(_activeRoot).c_str());
-    lv_label_set_text_fmt(_storageMetaLabel, "%s root: %s", available ? "Mounted" : "Offline", rootPath(_activeRoot).c_str());
+    lv_label_set_text(_storageMetaLabel, available ? "Mounted storage" : "Storage offline");
     lv_label_set_text(_folderMetaLabel, formatEntrySummary().c_str());
 }
 
@@ -686,8 +711,8 @@ void FileManager::updateStorageButtons()
     lv_obj_set_style_bg_color(_spiffsButton, sdActive ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x2563EB), 0);
     lv_obj_set_style_border_color(_sdButton, sdActive ? lv_color_hex(0x2563EB) : lv_color_hex(0xD6DEEA), 0);
     lv_obj_set_style_border_color(_spiffsButton, sdActive ? lv_color_hex(0xD6DEEA) : lv_color_hex(0x2563EB), 0);
-    lv_obj_set_style_text_color(_sdButton, sdActive ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x122033), 0);
-    lv_obj_set_style_text_color(_spiffsButton, sdActive ? lv_color_hex(0x122033) : lv_color_hex(0xFFFFFF), 0);
+    set_button_labels_color(_sdButton, sdActive ? lv_color_hex(0xFFFFFF) : lv_color_hex(0x122033));
+    set_button_labels_color(_spiffsButton, sdActive ? lv_color_hex(0x122033) : lv_color_hex(0xFFFFFF));
 }
 
 void FileManager::updateActionButtons()

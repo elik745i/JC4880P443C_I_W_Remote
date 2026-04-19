@@ -103,7 +103,6 @@ lv_obj_t *ui_SpinnerScreenAboutList;
 void ui_event_ButtonScreenSettingAboutReturn( lv_event_t * e);
 lv_obj_t *ui_ButtonScreenSettingAboutReturn;
 lv_obj_t *ui_ImageScreenSettingAboutReturn;
-lv_obj_t *ui_ImageScreenSettingAbout;
 lv_obj_t *ui_PanelScreenSettingAbout;
 lv_obj_t *ui_PanelPanelScreenSettingAbout;
 lv_obj_t *ui_LabelPanelPanelScreenSettingAboutDevice;

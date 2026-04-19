@@ -54,16 +54,6 @@ lv_obj_clear_flag( ui_ImageScreenSettingAboutReturn, LV_OBJ_FLAG_SCROLLABLE );  
 lv_obj_set_style_img_recolor(ui_ImageScreenSettingAboutReturn, lv_color_hex(0x000000), LV_PART_MAIN| LV_STATE_DEFAULT);
 lv_obj_set_style_img_recolor_opa(ui_ImageScreenSettingAboutReturn, 255, LV_PART_MAIN| LV_STATE_DEFAULT);
 
-ui_ImageScreenSettingAbout = lv_img_create(ui_ScreenSettingAbout);
-lv_img_set_src(ui_ImageScreenSettingAbout, &ui_img_482951309);
-lv_obj_set_width( ui_ImageScreenSettingAbout, LV_SIZE_CONTENT);  /// 1
-lv_obj_set_height( ui_ImageScreenSettingAbout, LV_SIZE_CONTENT);   /// 1
-lv_obj_set_x( ui_ImageScreenSettingAbout, -21 );
-lv_obj_set_y( ui_ImageScreenSettingAbout, -446 );
-lv_obj_set_align( ui_ImageScreenSettingAbout, LV_ALIGN_CENTER );
-lv_obj_add_flag( ui_ImageScreenSettingAbout, LV_OBJ_FLAG_ADV_HITTEST );   /// Flags
-lv_obj_clear_flag( ui_ImageScreenSettingAbout, LV_OBJ_FLAG_SCROLLABLE );    /// Flags
-
 ui_PanelScreenSettingAbout = lv_obj_create(ui_ScreenSettingAbout);
 lv_obj_set_width( ui_PanelScreenSettingAbout, 752);
 lv_obj_set_height( ui_PanelScreenSettingAbout, 588);

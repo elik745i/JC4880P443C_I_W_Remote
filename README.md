@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.2 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.3 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, and a local factory reset flow.
 
@@ -16,7 +16,7 @@ Battery and speaker case v1:
 ![Case render 1](3D/r3.jpg)
 ![Case render 2](3D/r4.jpg)
 
-Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including `JC4880P443C_I_W_V1.stl`, `JC4880P443C_I_W_V1_case.stl`, and the updated `JC4880P443C_I_W_V1.1_case.stl`.
+Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including `JC4880P443C_I_W_V1.stl`, `JC4880P443C_I_W_V1_case.stl`, the updated `JC4880P443C_I_W_V1.2_case.stl`, and the matching `JC4880P443C_I_W_V1_case.3mf` project export.
 
 ## What Changed Versus The Vendor Base
 
@@ -34,22 +34,23 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
 - Additional low-risk PSRAM placement for radio preview workers, background service stacks, and emulator lookup / ROM buffers to preserve internal SRAM for time-sensitive work.
+- Firmware settings can browse GitHub releases directly and offer OTA updates from attached `.bin` assets.
+- Dead launcher apps and unreachable video-player sources were removed to reduce maintenance surface and keep OTA builds within budget.
+- MP3 probing and decode fallback behavior are more tolerant of malformed frames and stream sync loss.
 
 ## Feature Summary
 
 ### Launcher And Native Apps
 
 - Phone-style launcher UI based on ESP-Brookesia and LVGL.
-- Settings, Calculator, Camera, Files, Music Player, Video Player, Internet Radio, Image Display, and 2048.
+- Settings, Calculator, Camera, Files, Music Player, Internet Radio, Image Display, and 2048.
 - SEGA Emulator app integrated into the launcher instead of living as a separate upstream project.
 
 ### Media And Storage
 
 - Files app can inspect both onboard SPIFFS and the SD card.
 - Music and image sample payloads were removed from SPIFFS to save flash.
-- Video playback is enabled only when `/sdcard/mjpeg` exists and contains `.mjpeg` files.
-- Standard `.mp4` files are not played directly by the built-in video app.
-- MJPEG playback remains available for SD-card-hosted converted videos.
+- The firmware updater can scan `/sdcard/firmware` for local `.bin` images or check GitHub releases for OTA-ready `.bin` assets.
 
 ### Wi-Fi, Time, And Settings
 
@@ -79,21 +80,14 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash size is configured for 16 MB.
 - Partition table provides two enlarged OTA app slots of `0x7B0000` each.
 - SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
-- Version 1.1.2 validates at `0x7616C0`, leaving `0x4E940` bytes free in the smallest OTA app slot.
+- Version 1.1.3 validates at `0x7159A0`, leaving `0x9A660` bytes free in the smallest OTA app slot.
 
 ## SD Card Layout
 
-- `/sdcard/mjpeg` for MJPEG video files.
 - `/sdcard/music` for music content.
 - `/sdcard/image` for image content.
 - `/sdcard/sega_games` for SEGA ROMs.
 - `/sdcard/firmware` for local `.bin` firmware packages.
-
-Example MJPEG conversion command:
-
-```bash
-ffmpeg -i input.mp4 -vcodec mjpeg -q:v 2 -vf "scale=1024:600" -acodec copy output.mjpeg
-```
 
 ## Build
 

@@ -98,7 +98,6 @@ extern lv_obj_t *ui_SpinnerScreenAboutList;
 void ui_event_ButtonScreenSettingAboutReturn( lv_event_t * e);
 extern lv_obj_t *ui_ButtonScreenSettingAboutReturn;
 extern lv_obj_t *ui_ImageScreenSettingAboutReturn;
-extern lv_obj_t *ui_ImageScreenSettingAbout;
 extern lv_obj_t *ui_PanelScreenSettingAbout;
 extern lv_obj_t *ui_PanelPanelScreenSettingAbout;
 extern lv_obj_t *ui_LabelPanelPanelScreenSettingAboutDevice;
@@ -137,7 +136,6 @@ LV_IMG_DECLARE( ui_img_sound_png);   // assets/Sound.png
 LV_IMG_DECLARE( ui_img_light_png);   // assets/Light.png
 LV_IMG_DECLARE( ui_img_about_png);   // assets/About.png
 LV_IMG_DECLARE( ui_img_return_png);   // assets/return.png
-LV_IMG_DECLARE( ui_img_482951309);   // assets/espressif-logo.png
 
 void ui_setting_init(void);
 

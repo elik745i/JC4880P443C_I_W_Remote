@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdint>
 #include <dirent.h>
 #include <sstream>
 #include <sys/stat.h>
@@ -27,10 +28,20 @@
 #include "esp_crt_bundle.h"
 #include "esp_ota_ops.h"
 #include "esp_system.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+#include "esp_vfs_fat.h"
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 #include "cJSON.h"
 #include "nvs.h"
+
+#if __has_include("driver/temperature_sensor.h")
+#include "driver/temperature_sensor.h"
+#define APP_SETTINGS_HAS_TEMPERATURE_SENSOR 1
+#else
+#define APP_SETTINGS_HAS_TEMPERATURE_SENSOR 0
+#endif
 
 #include "ui/ui.h"
 #include "Setting.hpp"
@@ -132,6 +143,164 @@ static constexpr char kDisplaySleepOptionsText[] = "Off\n30 sec\n1 min\n2 min\n5
 static constexpr const char *kFirmwareGithubReleasesUrl = "https://api.github.com/repos/elik745i/JC4880P443C_I_W_Remote/releases";
 static constexpr const char *kFirmwareSdDirectory = "/sdcard/firmware";
 static constexpr const char *kFirmwareUnknownVersion = "unknown";
+static constexpr const char *kSdCardMountPoint = "/sdcard";
+
+#if APP_SETTINGS_HAS_TEMPERATURE_SENSOR
+static temperature_sensor_handle_t s_temperatureSensor = nullptr;
+static bool s_temperatureSensorInitialized = false;
+static bool s_temperatureSensorFailed = false;
+#endif
+
+static string formatStorageAmount(uint64_t bytes)
+{
+    const uint64_t kib = bytes / 1024ULL;
+    const uint64_t mib = bytes / (1024ULL * 1024ULL);
+    const uint64_t gib = bytes / (1024ULL * 1024ULL * 1024ULL);
+
+    if (gib >= 1ULL) {
+        const uint64_t unit = 1024ULL * 1024ULL * 1024ULL;
+        const uint64_t whole = bytes / unit;
+        const uint64_t fractional = ((bytes % unit) * 100ULL) / unit;
+        string text = std::to_string(static_cast<unsigned long long>(whole));
+        text += ".";
+        if (fractional < 10ULL) {
+            text += "0";
+        }
+        text += std::to_string(static_cast<unsigned long long>(fractional));
+        text += " GB";
+        return text;
+    } else if (mib >= 1ULL) {
+        const uint64_t unit = 1024ULL * 1024ULL;
+        const uint64_t whole = bytes / unit;
+        const uint64_t fractional = ((bytes % unit) * 10ULL) / unit;
+        return std::to_string(static_cast<unsigned long long>(whole)) + "." +
+               std::to_string(static_cast<unsigned long long>(fractional)) + " MB";
+    }
+
+    return std::to_string(static_cast<unsigned long long>(kib)) + " KB";
+}
+
+static int32_t calculatePercent(uint64_t used, uint64_t total)
+{
+    if (total == 0) {
+        return 0;
+    }
+
+    return static_cast<int32_t>(std::min<uint64_t>(100, (used * 100) / total));
+}
+
+static lv_color_t getMonitorBarColor(int32_t percent)
+{
+    if (percent >= 85) {
+        return lv_color_hex(0xDC2626);
+    }
+
+    if (percent >= 65) {
+        return lv_color_hex(0xF59E0B);
+    }
+
+    return lv_color_hex(0x2563EB);
+}
+
+static string formatUptime(uint64_t uptime_seconds)
+{
+    const uint64_t days = uptime_seconds / 86400;
+    const uint64_t hours = (uptime_seconds % 86400) / 3600;
+    const uint64_t minutes = (uptime_seconds % 3600) / 60;
+
+    if (days > 0) {
+        string text = std::to_string(static_cast<unsigned long long>(days)) + "d ";
+        if (hours < 10ULL) {
+            text += "0";
+        }
+        text += std::to_string(static_cast<unsigned long long>(hours)) + "h ";
+        if (minutes < 10ULL) {
+            text += "0";
+        }
+        text += std::to_string(static_cast<unsigned long long>(minutes)) + "m";
+        return text;
+    }
+
+    string text;
+    if (hours < 10ULL) {
+        text += "0";
+    }
+    text += std::to_string(static_cast<unsigned long long>(hours)) + "h ";
+    if (minutes < 10ULL) {
+        text += "0";
+    }
+    text += std::to_string(static_cast<unsigned long long>(minutes)) + "m";
+    return text;
+}
+
+static string formatPercentUsed(int32_t percent)
+{
+    return std::to_string(static_cast<int>(percent)) + "% used";
+}
+
+static string formatSignedWithUnit(int32_t value, const char *unit)
+{
+    string text = std::to_string(static_cast<int>(value));
+    if ((unit != nullptr) && (unit[0] != '\0')) {
+        text += " ";
+        text += unit;
+    }
+    return text;
+}
+
+static string formatTemperatureCelsius(float temperature_celsius)
+{
+    const int32_t temp_tenths = static_cast<int32_t>((temperature_celsius * 10.0f) + ((temperature_celsius >= 0.0f) ? 0.5f : -0.5f));
+    const int32_t whole = temp_tenths / 10;
+    const int32_t fractional = std::abs(temp_tenths % 10);
+    return std::to_string(static_cast<int>(whole)) + "." + std::to_string(static_cast<int>(fractional)) + " C";
+}
+
+#if APP_SETTINGS_HAS_TEMPERATURE_SENSOR
+static bool ensureTemperatureSensorReady(void)
+{
+    if (s_temperatureSensorInitialized) {
+        return true;
+    }
+
+    if (s_temperatureSensorFailed) {
+        return false;
+    }
+
+    temperature_sensor_config_t sensor_config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
+    esp_err_t ret = temperature_sensor_install(&sensor_config, &s_temperatureSensor);
+    if ((ret != ESP_OK) || (s_temperatureSensor == nullptr)) {
+        s_temperatureSensorFailed = true;
+        return false;
+    }
+
+    ret = temperature_sensor_enable(s_temperatureSensor);
+    if (ret != ESP_OK) {
+        temperature_sensor_uninstall(s_temperatureSensor);
+        s_temperatureSensor = nullptr;
+        s_temperatureSensorFailed = true;
+        return false;
+    }
+
+    s_temperatureSensorInitialized = true;
+    return true;
+}
+
+static bool readCpuTemperatureCelsius(float &temperature_celsius)
+{
+    if (!ensureTemperatureSensorReady()) {
+        return false;
+    }
+
+    return temperature_sensor_get_celsius(s_temperatureSensor, &temperature_celsius) == ESP_OK;
+}
+#else
+static bool readCpuTemperatureCelsius(float &temperature_celsius)
+{
+    (void)temperature_celsius;
+    return false;
+}
+#endif
 
 struct TimezoneOption {
     int32_t offset_minutes;
@@ -352,10 +521,35 @@ AppSettings::AppSettings():
     _displayAutoTimezoneSwitch(nullptr),
     _displayTimezoneDropdown(nullptr),
     _displayTimezoneInfoLabel(nullptr),
+    _wifiMenuItem(nullptr),
+    _audioMenuItem(nullptr),
+    _displayMenuItem(nullptr),
+    _hardwareMenuItem(nullptr),
+    _securityMenuItem(nullptr),
+    _aboutMenuItem(nullptr),
     _securitySettingsLockSwitch(nullptr),
     _securityInfoLabel(nullptr),
     _firmwareMenuItem(nullptr),
     _firmwareScreen(nullptr),
+    _hardwareScreen(nullptr),
+    _hardwareCpuSpeedValueLabel(nullptr),
+    _hardwareCpuSpeedDetailLabel(nullptr),
+    _hardwareCpuSpeedBar(nullptr),
+    _hardwareCpuTempValueLabel(nullptr),
+    _hardwareCpuTempDetailLabel(nullptr),
+    _hardwareCpuTempBar(nullptr),
+    _hardwareSramValueLabel(nullptr),
+    _hardwareSramDetailLabel(nullptr),
+    _hardwareSramBar(nullptr),
+    _hardwarePsramValueLabel(nullptr),
+    _hardwarePsramDetailLabel(nullptr),
+    _hardwarePsramBar(nullptr),
+    _hardwareSdValueLabel(nullptr),
+    _hardwareSdDetailLabel(nullptr),
+    _hardwareSdBar(nullptr),
+    _hardwareWifiValueLabel(nullptr),
+    _hardwareWifiDetailLabel(nullptr),
+    _hardwareWifiBar(nullptr),
     _firmwareSdDropdown(nullptr),
     _firmwareSdFlashButton(nullptr),
     _firmwareOtaDropdown(nullptr),
@@ -400,20 +594,14 @@ bool AppSettings::run(void)
 {
     _is_ui_del = false;
 
-    // Initialize Squareline UI
     ui_setting_init();
 
-    // Get MAC
     esp_read_mac(base_mac_addr, ESP_MAC_EFUSE_FACTORY);
     snprintf(mac_str, sizeof(mac_str), "%02X-%02X-%02X-%02X-%02X-%02X",
              base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
              base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
 
-
-    // Initialize custom UI
     extraUiInit();
-
-    // Upate UI by NVS parametres
     updateUiByNvsParam();
 
     xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_UI_INIT_DONE);
@@ -434,7 +622,7 @@ bool AppSettings::back(void)
             ESP_LOGI(TAG, "WiFi is scanning, please wait");
             vTaskDelay(pdMS_TO_TICKS(100));
             stopWifiScan();
-        } 
+        }
         notifyCoreClosed();
     }
 
@@ -512,40 +700,191 @@ bool AppSettings::resume(void)
 
 void AppSettings::extraUiInit(void)
 {
-    /* Main */
-    lv_label_set_text(ui_LabelPanelSettingMainContainer3Volume, "Audio");
-    lv_label_set_text(ui_LabelPanelSettingMainContainer4Light, "Display");
-    lv_label_set_text(ui_LabelPanelSettingMainContainer2Blue, "Security");
-    lv_obj_align_to(ui_LabelPanelSettingMainContainer1WiFi, ui_ImagePanelSettingMainContainer1WiFi, LV_ALIGN_OUT_RIGHT_MID,
-                    UI_MAIN_ITEM_LEFT_OFFSET, 0);
-    lv_obj_align_to(ui_LabelPanelSettingMainContainer2Blue, ui_ImagePanelSettingMainContainer2Blue, LV_ALIGN_OUT_RIGHT_MID,
-                    UI_MAIN_ITEM_LEFT_OFFSET, 0);
-    lv_obj_align_to(ui_LabelPanelSettingMainContainer3Volume, ui_ImagePanelSettingMainContainer3Volume, LV_ALIGN_OUT_RIGHT_MID,
-                    UI_MAIN_ITEM_LEFT_OFFSET, 0);
-    lv_obj_align_to(ui_LabelPanelSettingMainContainer4Light, ui_ImagePanelSettingMainContainer4Light, LV_ALIGN_OUT_RIGHT_MID,
-                    UI_MAIN_ITEM_LEFT_OFFSET, 0);
-    lv_obj_align_to(ui_LabelPanelSettingMainContainer5About, ui_ImagePanelSettingMainContainer5About, LV_ALIGN_OUT_RIGHT_MID,
-                    UI_MAIN_ITEM_LEFT_OFFSET, 0);
+    auto createMainMenuItem = [this](const char *title, const void *icon_src, const char *icon_symbol, lv_obj_t **label_out) {
+        lv_obj_t *item = lv_obj_create(ui_PanelSettingMainContainer);
+        lv_obj_set_size(item, lv_pct(100), 70);
+        lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(item, 0, 0);
+        lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(item, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0xCBCBCB), LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(item, 255, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(item, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(item, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    _firmwareMenuItem = lv_obj_create(ui_PanelSettingMainContainer);
-    lv_obj_set_size(_firmwareMenuItem, lv_pct(100), 70);
-    lv_obj_clear_flag(_firmwareMenuItem, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(_firmwareMenuItem, 0, 0);
-    lv_obj_set_style_border_width(_firmwareMenuItem, 0, 0);
-    lv_obj_set_style_bg_color(_firmwareMenuItem, lv_color_hex(0xCBCBCB), LV_PART_MAIN | LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(_firmwareMenuItem, 255, LV_PART_MAIN | LV_STATE_PRESSED);
-    lv_obj_set_style_border_color(_firmwareMenuItem, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_border_opa(_firmwareMenuItem, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_add_event_cb(_firmwareMenuItem, onFirmwareMenuClickedEventCallback, LV_EVENT_CLICKED, this);
+        lv_obj_t *icon = nullptr;
+        if (icon_src != nullptr) {
+            icon = lv_img_create(item);
+            lv_img_set_src(icon, icon_src);
+            lv_obj_align(icon, LV_ALIGN_LEFT_MID, 24, 0);
+        } else {
+            icon = lv_label_create(item);
+            lv_label_set_text(icon, icon_symbol != nullptr ? icon_symbol : LV_SYMBOL_SETTINGS);
+            lv_obj_set_style_text_font(icon, &lv_font_montserrat_28, 0);
+            lv_obj_set_style_text_color(icon, lv_color_hex(0x0F172A), 0);
+            lv_obj_align(icon, LV_ALIGN_LEFT_MID, 22, 0);
+        }
 
-    lv_obj_t *firmwareLabel = lv_label_create(_firmwareMenuItem);
-    lv_label_set_text(firmwareLabel, "Firmware");
-    lv_obj_set_style_text_font(firmwareLabel, &lv_font_montserrat_30, 0);
-    lv_obj_align(firmwareLabel, LV_ALIGN_LEFT_MID, 40, 0);
+        lv_obj_t *label = lv_label_create(item);
+        lv_label_set_text(label, title);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_30, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x0F172A), 0);
+        lv_obj_align_to(label, icon, LV_ALIGN_OUT_RIGHT_MID, UI_MAIN_ITEM_LEFT_OFFSET, 0);
 
-    lv_obj_t *firmwareArrow = lv_img_create(_firmwareMenuItem);
-    lv_img_set_src(firmwareArrow, &ui_img_arrow_png);
-    lv_obj_align(firmwareArrow, LV_ALIGN_RIGHT_MID, -24, 0);
+        lv_obj_t *arrow = lv_img_create(item);
+        lv_img_set_src(arrow, &ui_img_arrow_png);
+        lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -24, 0);
+
+        if (label_out != nullptr) {
+            *label_out = label;
+        }
+
+        lv_obj_add_event_cb(item, onMainMenuItemClickedEventCallback, LV_EVENT_CLICKED, this);
+        return item;
+    };
+
+    auto createMonitorCard = [](lv_obj_t *parent, const char *title, const char *subtitle, lv_obj_t **value_label,
+                                lv_obj_t **detail_label, lv_obj_t **bar) {
+        lv_obj_t *card = lv_obj_create(parent);
+        lv_obj_set_width(card, lv_pct(100));
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(card, 18, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_left(card, 16, 0);
+        lv_obj_set_style_pad_right(card, 16, 0);
+        lv_obj_set_style_pad_top(card, 14, 0);
+        lv_obj_set_style_pad_bottom(card, 14, 0);
+
+        lv_obj_t *titleLabel = lv_label_create(card);
+        lv_label_set_text(titleLabel, title);
+        lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(titleLabel, lv_color_hex(0x0F172A), 0);
+        lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+
+        lv_obj_t *valueLabel = lv_label_create(card);
+        lv_label_set_text(valueLabel, "--");
+        lv_obj_set_style_text_font(valueLabel, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(valueLabel, lv_color_hex(0x0F172A), 0);
+        lv_obj_align(valueLabel, LV_ALIGN_TOP_RIGHT, 0, 0);
+
+        lv_obj_t *subtitleLabel = lv_label_create(card);
+        lv_obj_set_width(subtitleLabel, lv_pct(100));
+        lv_label_set_long_mode(subtitleLabel, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(subtitleLabel, subtitle);
+        lv_obj_set_style_text_font(subtitleLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(subtitleLabel, lv_color_hex(0x64748B), 0);
+        lv_obj_align_to(subtitleLabel, titleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+        lv_obj_t *barObj = lv_bar_create(card);
+        lv_obj_set_size(barObj, lv_pct(100), 16);
+        lv_bar_set_range(barObj, 0, 100);
+        lv_bar_set_value(barObj, 0, LV_ANIM_OFF);
+        lv_obj_set_style_radius(barObj, 8, 0);
+        lv_obj_set_style_bg_color(barObj, lv_color_hex(0xCBD5E1), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(barObj, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(barObj, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+        lv_obj_set_style_bg_opa(barObj, LV_OPA_COVER, LV_PART_INDICATOR);
+        lv_obj_align_to(barObj, subtitleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
+
+        lv_obj_t *detailLabel = lv_label_create(card);
+        lv_obj_set_width(detailLabel, lv_pct(100));
+        lv_label_set_long_mode(detailLabel, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(detailLabel, "Waiting for telemetry...");
+        lv_obj_set_style_text_font(detailLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(detailLabel, lv_color_hex(0x475569), 0);
+        lv_obj_align_to(detailLabel, barObj, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+        if (value_label != nullptr) {
+            *value_label = valueLabel;
+        }
+        if (detail_label != nullptr) {
+            *detail_label = detailLabel;
+        }
+        if (bar != nullptr) {
+            *bar = barObj;
+        }
+    };
+
+    lv_obj_add_flag(ui_PanelSettingMainContainerItem1, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelSettingMainContainerItem2, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelSettingMainContainerItem3, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelSettingMainContainerItem4, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelSettingMainContainerItem5, LV_OBJ_FLAG_HIDDEN);
+
+    _wifiMenuItem = createMainMenuItem("Wi-Fi", &ui_img_wifi_png, nullptr, nullptr);
+    _audioMenuItem = createMainMenuItem("Audio", &ui_img_sound_png, nullptr, nullptr);
+    _displayMenuItem = createMainMenuItem("Display", &ui_img_light_png, nullptr, nullptr);
+    _hardwareMenuItem = createMainMenuItem("Hardware", nullptr, LV_SYMBOL_SETTINGS, nullptr);
+    _securityMenuItem = createMainMenuItem("Security", &ui_img_bluetooth_png, nullptr, nullptr);
+    _firmwareMenuItem = createMainMenuItem("Firmware OTA", nullptr, LV_SYMBOL_DOWNLOAD, nullptr);
+    _aboutMenuItem = createMainMenuItem("About Device", &ui_img_about_png, nullptr, nullptr);
+
+    _hardwareScreen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(_hardwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(_hardwareScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(_hardwareScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hardwareBackButton = lv_btn_create(_hardwareScreen);
+    lv_obj_set_size(hardwareBackButton, 60, 60);
+    lv_obj_align(hardwareBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_set_style_bg_color(hardwareBackButton, lv_color_hex(0xE5F3FF), 0);
+    lv_obj_set_style_border_width(hardwareBackButton, 0, 0);
+    lv_obj_add_event_cb(hardwareBackButton, [](lv_event_t *e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *hardwareBackImage = lv_img_create(hardwareBackButton);
+    lv_img_set_src(hardwareBackImage, &ui_img_return_png);
+    lv_obj_center(hardwareBackImage);
+    lv_obj_set_style_img_recolor(hardwareBackImage, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_img_recolor_opa(hardwareBackImage, 255, 0);
+
+    lv_obj_t *hardwareTitle = lv_label_create(_hardwareScreen);
+    lv_label_set_text(hardwareTitle, "Hardware Monitor");
+    lv_obj_set_style_text_font(hardwareTitle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(hardwareTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(hardwareTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *hardwarePanel = lv_obj_create(_hardwareScreen);
+    lv_obj_set_size(hardwarePanel, lv_pct(92), 650);
+    lv_obj_align(hardwarePanel, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(hardwarePanel, 20, 0);
+    lv_obj_set_style_border_width(hardwarePanel, 0, 0);
+    lv_obj_set_style_bg_color(hardwarePanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(hardwarePanel, 14, 0);
+    lv_obj_set_style_pad_row(hardwarePanel, 12, 0);
+    lv_obj_set_flex_flow(hardwarePanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(hardwarePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(hardwarePanel, LV_DIR_VER);
+
+    createMonitorCard(hardwarePanel, "CPU Speed", "Configured CPU clock", &_hardwareCpuSpeedValueLabel,
+                      &_hardwareCpuSpeedDetailLabel, &_hardwareCpuSpeedBar);
+    createMonitorCard(hardwarePanel, "CPU Temperature", "On-die sensor reading", &_hardwareCpuTempValueLabel,
+                      &_hardwareCpuTempDetailLabel, &_hardwareCpuTempBar);
+    createMonitorCard(hardwarePanel, "SRAM", "Occupied versus total internal memory", &_hardwareSramValueLabel,
+                      &_hardwareSramDetailLabel, &_hardwareSramBar);
+    createMonitorCard(hardwarePanel, "PSRAM", "Occupied versus total external memory", &_hardwarePsramValueLabel,
+                      &_hardwarePsramDetailLabel, &_hardwarePsramBar);
+    createMonitorCard(hardwarePanel, "SD Card Storage", "Used versus total mounted capacity", &_hardwareSdValueLabel,
+                      &_hardwareSdDetailLabel, &_hardwareSdBar);
+    createMonitorCard(hardwarePanel, "Wi-Fi Signal", "Current station RSSI and quality", &_hardwareWifiValueLabel,
+                      &_hardwareWifiDetailLabel, &_hardwareWifiBar);
+
+    if (_hardwareCpuSpeedDetailLabel != nullptr) {
+        lv_label_set_text(_hardwareCpuSpeedDetailLabel, "Uptime updates live.");
+        lv_obj_set_style_text_font(_hardwareCpuSpeedDetailLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(_hardwareCpuSpeedDetailLabel, lv_color_hex(0x475569), 0);
+    }
+    if (_hardwareCpuSpeedBar != nullptr) {
+        lv_bar_set_value(_hardwareCpuSpeedBar, 100, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(_hardwareCpuSpeedBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+    }
 
     _firmwareScreen = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(_firmwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -1146,6 +1485,9 @@ void AppSettings::extraUiInit(void)
         "https://github.com/elik745i/JC4880P443C_I_W_Remote",
         lv_color_hex(0x2563EB)
     );
+
+    _screen_list[UI_HARDWARE_SETTING_INDEX] = _hardwareScreen;
+    lv_obj_add_event_cb(_hardwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
     _screen_list[UI_FIRMWARE_SETTING_INDEX] = _firmwareScreen;
     lv_obj_add_event_cb(_firmwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
@@ -2478,6 +2820,135 @@ void AppSettings::refreshWifiStatusBar(void)
     bsp_display_unlock();
 }
 
+void AppSettings::refreshHardwareMonitorUi(void)
+{
+    auto setMonitorBar = [](lv_obj_t *bar, int32_t percent, lv_color_t color) {
+        if (bar == nullptr) {
+            return;
+        }
+
+        lv_bar_set_value(bar, std::max<int32_t>(0, std::min<int32_t>(100, percent)), LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(bar, color, LV_PART_INDICATOR);
+    };
+
+    const uint64_t free_sram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const uint64_t total_sram = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    const uint64_t used_sram = (total_sram >= free_sram) ? (total_sram - free_sram) : 0;
+    const int32_t sram_percent = calculatePercent(used_sram, total_sram);
+
+    if (_hardwareSramValueLabel != nullptr) {
+        const string text = formatPercentUsed(sram_percent);
+        lv_label_set_text(_hardwareSramValueLabel, text.c_str());
+    }
+    if (_hardwareSramDetailLabel != nullptr) {
+        const string detail = formatStorageAmount(used_sram) + " / " + formatStorageAmount(total_sram) + " occupied";
+        lv_label_set_text(_hardwareSramDetailLabel, detail.c_str());
+    }
+    setMonitorBar(_hardwareSramBar, sram_percent, getMonitorBarColor(sram_percent));
+
+    const uint64_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    const uint64_t total_psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    const uint64_t used_psram = (total_psram >= free_psram) ? (total_psram - free_psram) : 0;
+    const int32_t psram_percent = calculatePercent(used_psram, total_psram);
+
+    if (_hardwarePsramValueLabel != nullptr) {
+        const string text = formatPercentUsed(psram_percent);
+        lv_label_set_text(_hardwarePsramValueLabel, text.c_str());
+    }
+    if (_hardwarePsramDetailLabel != nullptr) {
+        const string detail = formatStorageAmount(used_psram) + " / " + formatStorageAmount(total_psram) + " occupied";
+        lv_label_set_text(_hardwarePsramDetailLabel, detail.c_str());
+    }
+    setMonitorBar(_hardwarePsramBar, psram_percent, getMonitorBarColor(psram_percent));
+
+    uint64_t sd_total = 0;
+    uint64_t sd_used = 0;
+    bool sd_ready = false;
+    uint64_t sd_total_bytes = 0;
+    uint64_t sd_free_bytes = 0;
+    if ((bsp_sdcard != nullptr) &&
+        (esp_vfs_fat_info(kSdCardMountPoint, &sd_total_bytes, &sd_free_bytes) == ESP_OK)) {
+        sd_total = sd_total_bytes;
+        sd_used = (sd_total >= sd_free_bytes) ? (sd_total - sd_free_bytes) : 0;
+        sd_ready = (sd_total > 0);
+    }
+
+    if (_hardwareSdValueLabel != nullptr) {
+        if (sd_ready) {
+            const string text = formatPercentUsed(calculatePercent(sd_used, sd_total));
+            lv_label_set_text(_hardwareSdValueLabel, text.c_str());
+        } else {
+            lv_label_set_text(_hardwareSdValueLabel, "Not mounted");
+        }
+    }
+    if (_hardwareSdDetailLabel != nullptr) {
+        if (sd_ready) {
+            const string detail = formatStorageAmount(sd_used) + " / " + formatStorageAmount(sd_total) + " occupied";
+            lv_label_set_text(_hardwareSdDetailLabel, detail.c_str());
+        } else {
+            lv_label_set_text(_hardwareSdDetailLabel, "Insert or remount the SD card to monitor storage usage.");
+        }
+    }
+    setMonitorBar(_hardwareSdBar, sd_ready ? calculatePercent(sd_used, sd_total) : 0,
+                  sd_ready ? getMonitorBarColor(calculatePercent(sd_used, sd_total)) : lv_color_hex(0x94A3B8));
+
+    wifi_ap_record_t ap_info = {};
+    const bool wifi_connected = (xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_CONNECTED) &&
+                                (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK);
+    if (_hardwareWifiValueLabel != nullptr) {
+        if (wifi_connected) {
+            const string text = formatSignedWithUnit(static_cast<int32_t>(ap_info.rssi), "dBm");
+            lv_label_set_text(_hardwareWifiValueLabel, text.c_str());
+        } else {
+            lv_label_set_text(_hardwareWifiValueLabel, "Disconnected");
+        }
+    }
+    if (_hardwareWifiDetailLabel != nullptr) {
+        if (wifi_connected) {
+            string detail = "Connected to ";
+            detail += reinterpret_cast<const char *>(ap_info.ssid);
+            lv_label_set_text(_hardwareWifiDetailLabel, detail.c_str());
+        } else {
+            lv_label_set_text(_hardwareWifiDetailLabel, "Join a network to view live signal strength.");
+        }
+    }
+    const int32_t wifi_percent = wifi_connected ? std::max<int32_t>(0, std::min<int32_t>(100, (ap_info.rssi + 100) * 2)) : 0;
+    setMonitorBar(_hardwareWifiBar, wifi_percent, wifi_connected ? getMonitorBarColor(100 - wifi_percent) : lv_color_hex(0x94A3B8));
+
+    if (_hardwareCpuSpeedValueLabel != nullptr) {
+#ifdef CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
+        const string text = formatSignedWithUnit(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, "MHz");
+        lv_label_set_text(_hardwareCpuSpeedValueLabel, text.c_str());
+#else
+        lv_label_set_text(_hardwareCpuSpeedValueLabel, "Unknown");
+#endif
+    }
+
+    if (_hardwareCpuSpeedDetailLabel != nullptr) {
+        const uint64_t uptime_seconds = static_cast<uint64_t>(esp_timer_get_time() / 1000000ULL);
+        const string uptime_text = string("Uptime: ") + formatUptime(uptime_seconds);
+        lv_label_set_text(_hardwareCpuSpeedDetailLabel, uptime_text.c_str());
+    }
+
+    float cpu_temp_celsius = 0.0f;
+    const bool has_cpu_temp = readCpuTemperatureCelsius(cpu_temp_celsius);
+    if (_hardwareCpuTempValueLabel != nullptr) {
+        if (has_cpu_temp) {
+            const string text = formatTemperatureCelsius(cpu_temp_celsius);
+            lv_label_set_text(_hardwareCpuTempValueLabel, text.c_str());
+        } else {
+            lv_label_set_text(_hardwareCpuTempValueLabel, "Unavailable");
+        }
+    }
+    if (_hardwareCpuTempDetailLabel != nullptr) {
+        lv_label_set_text(_hardwareCpuTempDetailLabel,
+                          has_cpu_temp ? "Sensor updates every 2 seconds while this page is open."
+                                       : "Temperature sensor is not available on this build.");
+    }
+    const int32_t temp_percent = has_cpu_temp ? std::max<int32_t>(0, std::min<int32_t>(100, static_cast<int32_t>(cpu_temp_celsius))) : 0;
+    setMonitorBar(_hardwareCpuTempBar, temp_percent, has_cpu_temp ? getMonitorBarColor(temp_percent) : lv_color_hex(0x94A3B8));
+}
+
 void AppSettings::stopWifiScan(void)
 {
     ESP_LOGI(TAG, "Stop Wi-Fi scan");
@@ -2624,6 +3095,12 @@ void AppSettings::euiRefresTask(void *arg)
             if(!app->backstage->setMemoryLabel(free_sram_size_kb, total_sram_size_kb, free_psram_size_kb, total_psram_size_kb)) {
                 ESP_LOGE(TAG, "Update memory usage failed");
             }
+            bsp_display_unlock();
+        }
+
+        if (app->_screen_index == UI_HARDWARE_SETTING_INDEX) {
+            bsp_display_lock(0);
+            app->refreshHardwareMonitorUi();
             bsp_display_unlock();
         }
 
@@ -2965,6 +3442,33 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
 
     if (app->_screen_index == UI_FIRMWARE_SETTING_INDEX) {
         app->refreshFirmwareUi();
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onMainMenuItemClickedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = lv_event_get_target(e);
+
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if (target == app->_wifiMenuItem) {
+        lv_scr_load_anim(ui_ScreenSettingWiFi, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_audioMenuItem) {
+        lv_scr_load_anim(ui_ScreenSettingVolume, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_displayMenuItem) {
+        lv_scr_load_anim(ui_ScreenSettingLight, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_hardwareMenuItem) {
+        lv_scr_load_anim(app->_hardwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_securityMenuItem) {
+        lv_scr_load_anim(ui_ScreenSettingBLE, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_firmwareMenuItem) {
+        lv_scr_load_anim(app->_firmwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_aboutMenuItem) {
+        lv_scr_load_anim(ui_ScreenSettingAbout, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     }
 
 end:

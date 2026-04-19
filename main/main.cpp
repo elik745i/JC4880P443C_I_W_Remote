@@ -562,8 +562,6 @@ extern "C" void app_main(void)
 
     s_internetRadioApp = install_app_or_delete(*phone, new InternetRadio(), "internet radio");
 
-    install_app_or_delete(*phone, new NewApp(480, 800), "new app");
-
     uint16_t free_sram_size_kb = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
     uint16_t total_sram_size_kb = heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024;
     uint16_t free_psram_size_kb = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;

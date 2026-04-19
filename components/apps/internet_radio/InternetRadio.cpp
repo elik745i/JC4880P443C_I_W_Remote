@@ -35,7 +35,7 @@ static constexpr TickType_t kPreviewStopWait = pdMS_TO_TICKS(5000);
 static constexpr TickType_t kCodecResetDelay = pdMS_TO_TICKS(50);
 static constexpr TickType_t kCodecResumeDelay = pdMS_TO_TICKS(100);
 static constexpr int kStreamTimeoutMs = 3000;
-static constexpr size_t kStreamBufferSize = 64 * 1024;
+static constexpr size_t kStreamBufferSize = 128 * 1024;
 static constexpr size_t kAsyncStatusTextCapacity = 192;
 static constexpr const char *kRadioHttpUserAgent = "JC4880P443C-IW-Remote";
 

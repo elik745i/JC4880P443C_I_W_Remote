@@ -1,8 +1,22 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.0 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.1 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, and a local factory reset flow.
+
+## Hardware And Case Renders
+
+Screen module views:
+
+![Screen module render 1](3D/r1.jpg)
+![Screen module render 2](3D/r2.jpg)
+
+Battery and speaker case v1:
+
+![Case render 1](3D/r3.jpg)
+![Case render 2](3D/r4.jpg)
+
+Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including `JC4880P443C_I_W_V1.stl` and `JC4880P443C_I_W_V1_case.stl`.
 
 ## What Changed Versus The Vendor Base
 

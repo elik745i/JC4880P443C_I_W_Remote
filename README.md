@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.4 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.5 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -16,7 +16,7 @@ Battery and speaker case v1:
 ![Case render 1](3D/r3.jpg)
 ![Case render 2](3D/r4.jpg)
 
-Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including `JC4880P443C_I_W_V1.stl`, `JC4880P443C_I_W_V1_case.stl`, the updated `JC4880P443C_I_W_V1.2_case.stl`, and the matching `JC4880P443C_I_W_V1_case.3mf` project export.
+Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including the original V1 files, the updated V2 and V3 case variants, separate lid / ring / fix parts, and editable Max or 3MF source files for the enclosure work.
 
 ## What Changed Versus The Vendor Base
 
@@ -34,11 +34,16 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
 - Additional low-risk PSRAM placement for radio preview workers, background service stacks, and emulator lookup / ROM buffers to preserve internal SRAM for time-sensitive work.
+- Internet radio buffering and MP3 recovery are more tolerant of malformed or slow streams, which reduces playback stalls.
 - Firmware settings can browse GitHub releases directly and offer OTA updates from attached `.bin` assets.
 - Dead launcher apps and unreachable video-player sources were removed to reduce maintenance surface and keep OTA builds within budget.
 - MP3 probing and decode fallback behavior are more tolerant of malformed frames and stream sync loss.
 - BLE and ZigBee features are now enabled through a matching ESP32-C6 coprocessor firmware release.
 - The standalone ESP32-C6 release now includes the fixed ZigBee storage partition layout required for stable bring-up.
+- Wi-Fi status in the top bar now follows real connection state and signal strength updates more reliably.
+- BLE startup, teardown, and disconnect recovery on the ESP-Hosted path were hardened to avoid stuck startup states and disconnect-time crashes.
+- The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
+- Additional enclosure revisions and raw CAD exports are included under `3D/` for the updated hardware fit iterations.
 
 ## Feature Summary
 
@@ -88,7 +93,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash size is configured for 16 MB.
 - Partition table provides two enlarged OTA app slots of `0x7B0000` each.
 - SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
-- Version 1.1.4 validates at `0x743420`, leaving `0x6CBE0` bytes free in the smallest OTA app slot.
+- Version 1.1.5 validates at `0x749790`, leaving `0x66870` bytes free in the smallest OTA app slot.
 
 ## SD Card Layout
 

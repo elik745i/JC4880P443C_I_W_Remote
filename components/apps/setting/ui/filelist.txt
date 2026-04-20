@@ -10,6 +10,8 @@ ui_helpers.c
 images/ui_img_wifi_png.c
 images/ui_img_arrow_png.c
 images/ui_img_bluetooth_png.c
+images/ui_img_bluetooth_status_png.c
+images/ui_img_zigbee_status_png.c
 images/ui_img_sound_png.c
 images/ui_img_light_png.c
 images/ui_img_about_png.c

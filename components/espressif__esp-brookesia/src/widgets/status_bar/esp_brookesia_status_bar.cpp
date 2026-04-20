@@ -124,10 +124,25 @@ bool ESP_Brookesia_StatusBar::addIcon(const ESP_Brookesia_StatusBarIconData_t &d
     ESP_BROOKESIA_LOGD("Add icon(%d) in area(%d)", id, area_index);
     ESP_BROOKESIA_CHECK_FALSE_RETURN(checkMainInitialized(), false, "Not initialized");
 
-    shared_ptr<ESP_Brookesia_StatusBarIcon> icon = make_shared<ESP_Brookesia_StatusBarIcon>(data);
+    ESP_Brookesia_StatusBarIconData_t calibrated_data = data;
+    if ((calibrated_data.size.width == 0) || (calibrated_data.size.height == 0)) {
+        calibrated_data.size = _data.icon_common_size;
+    }
+    ESP_BROOKESIA_CHECK_FALSE_RETURN(
+        calibrateIconData(_data, _core.getCoreHome(), area_index, calibrated_data), false, "Calibrate icon data failed"
+    );
+
+    shared_ptr<ESP_Brookesia_StatusBarIcon> icon = make_shared<ESP_Brookesia_StatusBarIcon>(calibrated_data);
     ESP_BROOKESIA_CHECK_NULL_RETURN(icon, false, "Alloc icon failed");
 
     ESP_BROOKESIA_CHECK_FALSE_RETURN(icon->begin(_core, _area_objs[area_index].get()), false, "Init icon failed");
+
+    if (_data.area.data[area_index].layout_column_align == ESP_BROOKESIA_STATUS_BAR_AREA_ALIGN_END) {
+        lv_obj_t *icon_obj = lv_obj_get_child(_area_objs[area_index].get(), -1);
+        if (icon_obj != nullptr) {
+            lv_obj_move_to_index(icon_obj, 0);
+        }
+    }
 
     auto ret = _id_icon_map.insert(pair <int, shared_ptr<ESP_Brookesia_StatusBarIcon>> (id, icon));
     ESP_BROOKESIA_CHECK_FALSE_RETURN(ret.second, false, "Insert icon failed");
@@ -174,9 +189,10 @@ bool ESP_Brookesia_StatusBar::checkVisible(void) const
 }
 
 bool ESP_Brookesia_StatusBar::calibrateIconData(const ESP_Brookesia_StatusBarData_t &bar_data, const ESP_Brookesia_CoreHome &home,
-        ESP_Brookesia_StatusBarIconData_t &icon_data)
+        uint8_t area_index, ESP_Brookesia_StatusBarIconData_t &icon_data)
 {
-    const ESP_Brookesia_StatusBarAreaData_t &area = bar_data.area.data[bar_data.battery.area_index];
+    ESP_BROOKESIA_CHECK_VALUE_RETURN(area_index, 0, bar_data.area.num - 1, false, "Area index is invalid");
+    const ESP_Brookesia_StatusBarAreaData_t &area = bar_data.area.data[area_index];
 
     ESP_BROOKESIA_LOGD("Calibrate data");
 
@@ -253,7 +269,7 @@ bool ESP_Brookesia_StatusBar::calibrateData(const ESP_Brookesia_StyleSize_t &scr
         if (data.flags.enable_battery_icon_common_size) {
             data.battery.icon_data.size = data.icon_common_size;
         }
-        ESP_BROOKESIA_CHECK_FALSE_RETURN(calibrateIconData(data, home, data.battery.icon_data), false,
+        ESP_BROOKESIA_CHECK_FALSE_RETURN(calibrateIconData(data, home, data.battery.area_index, data.battery.icon_data), false,
                                          "Calibrate battery icon data failed");
     }
     // Wifi
@@ -262,7 +278,7 @@ bool ESP_Brookesia_StatusBar::calibrateData(const ESP_Brookesia_StyleSize_t &scr
         if (data.flags.enable_wifi_icon_common_size) {
             data.wifi.icon_data.size = data.icon_common_size;
         }
-        ESP_BROOKESIA_CHECK_FALSE_RETURN(calibrateIconData(data, home, data.wifi.icon_data), false,
+        ESP_BROOKESIA_CHECK_FALSE_RETURN(calibrateIconData(data, home, data.wifi.area_index, data.wifi.icon_data), false,
                                          "Calibrate wifi icon data failed");
     }
 

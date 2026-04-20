@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -90,6 +91,11 @@
 #define NVS_KEY_WIFI_SSID               "wifi_ssid"
 #define NVS_KEY_WIFI_PASSWORD           "wifi_pass"
 #define NVS_KEY_BLE_ENABLE              "ble_en"
+#define NVS_KEY_BLE_DEVICE_NAME         "ble_name"
+#define NVS_KEY_ZIGBEE_ENABLE           "zb_en"
+#define NVS_KEY_ZIGBEE_CHANNEL          "zb_ch"
+#define NVS_KEY_ZIGBEE_PERMIT_JOIN      "zb_join"
+#define NVS_KEY_ZIGBEE_DEVICE_NAME      "zb_name"
 #define NVS_KEY_AUDIO_VOLUME            "volume"
 #define NVS_KEY_DISPLAY_BRIGHTNESS      "brightness"
 #define NVS_KEY_DISPLAY_ADAPTIVE        "disp_adapt"
@@ -126,6 +132,8 @@ using namespace std;
 
 static const char TAG[] = "EUI_Setting";
 static constexpr uint32_t kSettingScreenAnimTimeMs = 220;
+static constexpr int kStatusBarBluetoothIconId = 0x424C45;
+static constexpr int kStatusBarZigbeeIconId = 0x5A425A;
 
 TaskHandle_t wifi_scan_handle_task;
 
@@ -136,7 +144,17 @@ static constexpr const char *kBleUnsupportedMessage = "BLE is unavailable with t
 
 namespace {
 
-constexpr const char *kBleDeviceName = "JC4880P443C Remote";
+struct BleScanResult {
+    std::string address;
+    std::string name;
+    int rssi;
+};
+
+constexpr const char *kBleDefaultDeviceName = "JC4880P443C Remote";
+constexpr const char *kZigbeeDefaultDeviceName = "JC4880P443C ZigBee";
+constexpr int32_t kBleScanDurationMs = 8000;
+constexpr size_t kBleScanResultLimit = 8;
+constexpr int32_t kBleStartupTimeoutMs = 8000;
 
 enum class BleRuntimeState : uint8_t {
     Disabled = 0,
@@ -152,10 +170,86 @@ bool s_bleControllerReady = false;
 bool s_bleHostReady = false;
 bool s_bleSynced = false;
 bool s_bleAdvertising = false;
+bool s_bleStopInProgress = false;
 uint8_t s_bleOwnAddrType = BLE_OWN_ADDR_PUBLIC;
 std::string s_bleStatusMessage = "BLE is off. Enable it to advertise from the ESP32-C6 radio.";
+std::string s_bleConfiguredName = kBleDefaultDeviceName;
+bool s_bleScanInProgress = false;
+bool s_bleResumeAdvertisingAfterScan = false;
+std::string s_bleScanStatus = "BLE discovery is idle.";
+std::vector<BleScanResult> s_bleScanResults;
+SemaphoreHandle_t s_bleHostStoppedSem = nullptr;
+int64_t s_bleStartTimestampUs = 0;
 
 extern "C" void ble_store_config_init(void);
+
+static std::string bleFormatAddress(const ble_addr_t &addr)
+{
+    char buffer[18] = {0};
+    snprintf(buffer, sizeof(buffer), "%02X:%02X:%02X:%02X:%02X:%02X",
+             addr.val[5], addr.val[4], addr.val[3], addr.val[2], addr.val[1], addr.val[0]);
+    return std::string(buffer);
+}
+
+static std::string bleExtractNameFromPayload(const uint8_t *data, uint8_t length)
+{
+    if ((data == nullptr) || (length == 0)) {
+        return std::string();
+    }
+
+    uint8_t offset = 0;
+    while (offset < length) {
+        const uint8_t field_length = data[offset];
+        if (field_length == 0) {
+            break;
+        }
+
+        if ((offset + field_length) >= length) {
+            break;
+        }
+
+        const uint8_t field_type = data[offset + 1];
+        if (((field_type == 0x08) || (field_type == 0x09)) && (field_length > 1)) {
+            return std::string(reinterpret_cast<const char *>(&data[offset + 2]), field_length - 1);
+        }
+
+        offset += field_length + 1;
+    }
+
+    return std::string();
+}
+
+static void bleUpdateScanResultLocked(const ble_gap_disc_desc &desc)
+{
+    BleScanResult result = {
+        .address = bleFormatAddress(desc.addr),
+        .name = bleExtractNameFromPayload(desc.data, desc.length_data),
+        .rssi = desc.rssi,
+    };
+
+    auto existing = std::find_if(s_bleScanResults.begin(), s_bleScanResults.end(),
+                                 [&result](const BleScanResult &entry) {
+                                     return entry.address == result.address;
+                                 });
+    if (existing != s_bleScanResults.end()) {
+        if (!result.name.empty()) {
+            existing->name = result.name;
+        }
+        existing->rssi = std::max(existing->rssi, result.rssi);
+    } else {
+        s_bleScanResults.push_back(result);
+    }
+
+    std::sort(s_bleScanResults.begin(), s_bleScanResults.end(),
+              [](const BleScanResult &lhs, const BleScanResult &rhs) {
+                  return lhs.rssi > rhs.rssi;
+              });
+    if (s_bleScanResults.size() > kBleScanResultLimit) {
+        s_bleScanResults.resize(kBleScanResultLimit);
+    }
+
+    s_bleScanStatus = std::string("Scanning nearby devices: ") + std::to_string(s_bleScanResults.size()) + " found.";
+}
 
 static bool bleIsExpectedInitResult(esp_err_t err)
 {
@@ -182,6 +276,108 @@ static void bleSetStatusLocked(BleRuntimeState state, const std::string &message
 {
     s_bleRuntimeState = state;
     s_bleStatusMessage = message;
+}
+
+static void bleTeardownLocked(bool set_disabled_status)
+{
+    if (s_bleScanInProgress) {
+        ble_gap_disc_cancel();
+        s_bleScanInProgress = false;
+    }
+
+    s_bleResumeAdvertisingAfterScan = false;
+    s_bleScanResults.clear();
+    s_bleScanStatus = "BLE discovery is idle.";
+
+    if (s_bleAdvertising) {
+        ble_gap_adv_stop();
+        s_bleAdvertising = false;
+    }
+
+    if (s_bleHostReady) {
+        if (s_bleHostStoppedSem == nullptr) {
+            s_bleHostStoppedSem = xSemaphoreCreateBinary();
+        }
+        if (s_bleHostStoppedSem != nullptr) {
+            xSemaphoreTake(s_bleHostStoppedSem, 0);
+        }
+
+        s_bleStopInProgress = true;
+
+        const int stop_rc = nimble_port_stop();
+        if ((stop_rc != 0) && (stop_rc != BLE_HS_EALREADY)) {
+            ESP_LOGW(TAG, "nimble_port_stop during teardown failed: %d", stop_rc);
+        }
+
+        if ((stop_rc == 0) || (stop_rc == BLE_HS_EALREADY)) {
+            if ((s_bleHostStoppedSem != nullptr) &&
+                (stop_rc == 0) &&
+                (xSemaphoreTake(s_bleHostStoppedSem, pdMS_TO_TICKS(2000)) != pdTRUE)) {
+                ESP_LOGW(TAG, "Timed out waiting for NimBLE host task shutdown");
+            }
+
+            nimble_port_freertos_deinit();
+        }
+
+        esp_err_t err = nimble_port_deinit();
+        if ((err != ESP_OK) && (err != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "nimble_port_deinit during teardown failed: %s", esp_err_to_name(err));
+        }
+
+        s_bleHostReady = false;
+        s_bleAdvertising = false;
+        s_bleSynced = false;
+        s_bleStopInProgress = false;
+    }
+
+    s_bleStartTimestampUs = 0;
+
+    if (s_bleControllerReady) {
+        esp_err_t err = esp_hosted_bt_controller_disable();
+        if ((err != ESP_OK) && (err != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "Hosted BT controller disable during teardown failed: %s", esp_err_to_name(err));
+        }
+
+        err = esp_hosted_bt_controller_deinit(false);
+        if ((err != ESP_OK) && (err != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "Hosted BT controller deinit during teardown failed: %s", esp_err_to_name(err));
+        }
+
+        s_bleControllerReady = false;
+    }
+
+    s_bleTransportReady = false;
+
+    if (set_disabled_status) {
+        bleSetStatusLocked(BleRuntimeState::Disabled, kBleDisabledMessage);
+    }
+}
+
+static void bleCheckStartupTimeout(void)
+{
+    if (!bleLock(pdMS_TO_TICKS(10))) {
+        return;
+    }
+
+    const bool timed_out = s_bleDesiredEnabled &&
+                           (s_bleRuntimeState == BleRuntimeState::Starting) &&
+                           !s_bleSynced &&
+                           (s_bleStartTimestampUs != 0) &&
+                           ((esp_timer_get_time() - s_bleStartTimestampUs) >= (static_cast<int64_t>(kBleStartupTimeoutMs) * 1000));
+
+    if (timed_out) {
+        bleSetStatusLocked(BleRuntimeState::Error,
+                           "BLE startup timed out. Toggle BLE again or reset the device if the ESP32-C6 radio is stuck.");
+        bleTeardownLocked(false);
+        s_bleDesiredEnabled = false;
+    }
+
+    bleUnlock();
+}
+
+static const char *bleCurrentDeviceNameLocked(void)
+{
+    return s_bleConfiguredName.empty() ? kBleDefaultDeviceName : s_bleConfiguredName.c_str();
 }
 
 static esp_err_t bleHandleHostedUnsupportedLocked(const char *context)
@@ -211,7 +407,7 @@ static esp_err_t bleAdvertiseLocked(void)
     }
 
     if (s_bleAdvertising) {
-        bleSetStatusLocked(BleRuntimeState::Advertising, std::string("BLE is advertising as '") + kBleDeviceName + "'.");
+        bleSetStatusLocked(BleRuntimeState::Advertising, std::string("BLE is advertising as '") + bleCurrentDeviceNameLocked() + "'.");
         return ESP_OK;
     }
 
@@ -244,18 +440,13 @@ static esp_err_t bleAdvertiseLocked(void)
     }
 
     s_bleAdvertising = true;
-    bleSetStatusLocked(BleRuntimeState::Advertising, std::string("BLE is advertising as '") + kBleDeviceName + "'.");
+    bleSetStatusLocked(BleRuntimeState::Advertising, std::string("BLE is advertising as '") + bleCurrentDeviceNameLocked() + "'.");
     return ESP_OK;
 }
 
 static void bleStopAdvertisingLocked(void)
 {
-    if (s_bleAdvertising) {
-        ble_gap_adv_stop();
-        s_bleAdvertising = false;
-    }
-
-    bleSetStatusLocked(BleRuntimeState::Disabled, kBleDisabledMessage);
+    bleTeardownLocked(true);
 }
 
 static void bleOnReset(int reason)
@@ -293,6 +484,7 @@ static void bleOnSync(void)
 
     if (bleLock()) {
         s_bleSynced = true;
+        s_bleStartTimestampUs = 0;
         if (s_bleDesiredEnabled) {
             bleAdvertiseLocked();
         } else {
@@ -307,6 +499,14 @@ static void bleHostTask(void *param)
     (void)param;
     nimble_port_run();
 
+    if (s_bleHostStoppedSem != nullptr) {
+        xSemaphoreGive(s_bleHostStoppedSem);
+    }
+
+    if (s_bleStopInProgress) {
+        vTaskSuspend(nullptr);
+    }
+
     if (bleLock()) {
         s_bleHostReady = false;
         s_bleSynced = false;
@@ -317,7 +517,7 @@ static void bleHostTask(void *param)
         bleUnlock();
     }
 
-    nimble_port_freertos_deinit();
+    vTaskDelete(nullptr);
 }
 
 static int bleGapEvent(struct ble_gap_event *event, void *arg)
@@ -329,6 +529,27 @@ static int bleGapEvent(struct ble_gap_event *event, void *arg)
     }
 
     switch (event->type) {
+        case BLE_GAP_EVENT_DISC:
+            if (s_bleScanInProgress) {
+                bleUpdateScanResultLocked(event->disc);
+            }
+            break;
+
+        case BLE_GAP_EVENT_DISC_COMPLETE:
+            s_bleScanInProgress = false;
+            if (s_bleScanResults.empty()) {
+                s_bleScanStatus = "Scan complete. No nearby BLE devices were detected.";
+            } else {
+                s_bleScanStatus = std::string("Scan complete. Showing the ") + std::to_string(s_bleScanResults.size()) + " strongest result(s).";
+            }
+            if (s_bleResumeAdvertisingAfterScan) {
+                s_bleResumeAdvertisingAfterScan = false;
+                if (s_bleDesiredEnabled) {
+                    bleAdvertiseLocked();
+                }
+            }
+            break;
+
         case BLE_GAP_EVENT_CONNECT:
             if (event->connect.status == 0) {
                 s_bleAdvertising = false;
@@ -380,17 +601,16 @@ static esp_err_t bleSetEnabled(bool enabled)
     }
 
     bleSetStatusLocked(BleRuntimeState::Starting, "Connecting to the ESP32-C6 and starting BLE.");
+    s_bleStartTimestampUs = esp_timer_get_time();
 
-    if (!s_bleTransportReady) {
-        int ret = esp_hosted_connect_to_slave();
-        if (ret != ESP_OK) {
-            bleSetStatusLocked(BleRuntimeState::Error,
-                               std::string("Failed to reach the ESP32-C6 radio (err=") + std::to_string(ret) + ").");
-            bleUnlock();
-            return ESP_FAIL;
-        }
-        s_bleTransportReady = true;
+    int ret = esp_hosted_connect_to_slave();
+    if (ret != ESP_OK) {
+        bleSetStatusLocked(BleRuntimeState::Error,
+                           std::string("Failed to reach the ESP32-C6 radio (err=") + std::to_string(ret) + ").");
+        bleUnlock();
+        return ESP_FAIL;
     }
+    s_bleTransportReady = true;
 
     if (!s_bleControllerReady) {
         esp_err_t err = esp_hosted_bt_controller_init();
@@ -402,6 +622,8 @@ static esp_err_t bleSetEnabled(bool enabled)
         if (!bleIsExpectedInitResult(err)) {
             bleSetStatusLocked(BleRuntimeState::Error,
                                std::string("Hosted BT controller init failed: ") + esp_err_to_name(err));
+            bleTeardownLocked(false);
+            s_bleDesiredEnabled = false;
             bleUnlock();
             return err;
         }
@@ -415,6 +637,8 @@ static esp_err_t bleSetEnabled(bool enabled)
         if (!bleIsExpectedInitResult(err)) {
             bleSetStatusLocked(BleRuntimeState::Error,
                                std::string("Hosted BT controller enable failed: ") + esp_err_to_name(err));
+            bleTeardownLocked(false);
+            s_bleDesiredEnabled = false;
             bleUnlock();
             return err;
         }
@@ -427,6 +651,8 @@ static esp_err_t bleSetEnabled(bool enabled)
         if (!bleIsExpectedInitResult(err)) {
             bleSetStatusLocked(BleRuntimeState::Error,
                                std::string("NimBLE host init failed: ") + esp_err_to_name(err));
+            bleTeardownLocked(false);
+            s_bleDesiredEnabled = false;
             bleUnlock();
             return err;
         }
@@ -438,10 +664,12 @@ static esp_err_t bleSetEnabled(bool enabled)
         ble_svc_gatt_init();
         ble_store_config_init();
 
-        int rc = ble_svc_gap_device_name_set(kBleDeviceName);
+        int rc = ble_svc_gap_device_name_set(bleCurrentDeviceNameLocked());
         if (rc != 0) {
             bleSetStatusLocked(BleRuntimeState::Error,
                                std::string("Failed to set BLE device name (rc=") + std::to_string(rc) + ").");
+            bleTeardownLocked(false);
+            s_bleDesiredEnabled = false;
             bleUnlock();
             return ESP_FAIL;
         }
@@ -464,6 +692,112 @@ static std::string bleStatusText(bool preference_enabled)
     return s_bleStatusMessage;
 }
 
+static esp_err_t bleStartScanLocked(void)
+{
+    if (!s_bleDesiredEnabled) {
+        s_bleScanStatus = "Enable BLE first to scan nearby devices.";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (!s_bleHostReady || !s_bleSynced) {
+        s_bleScanStatus = "BLE is still starting. Wait for advertising, then scan again.";
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_bleScanInProgress) {
+        return ESP_OK;
+    }
+
+    if (s_bleAdvertising) {
+        ble_gap_adv_stop();
+        s_bleAdvertising = false;
+        s_bleResumeAdvertisingAfterScan = true;
+    } else {
+        s_bleResumeAdvertisingAfterScan = false;
+    }
+
+    s_bleScanResults.clear();
+    s_bleScanInProgress = true;
+    s_bleScanStatus = "Scanning nearby BLE devices for 8 seconds...";
+
+    struct ble_gap_disc_params params = {};
+    params.passive = 0;
+    params.itvl = 0;
+    params.window = 0;
+    params.filter_duplicates = 1;
+    params.limited = 0;
+
+    const int rc = ble_gap_disc(s_bleOwnAddrType, kBleScanDurationMs, &params, bleGapEvent, nullptr);
+    if (rc != 0) {
+        s_bleScanInProgress = false;
+        s_bleScanStatus = std::string("BLE scan failed to start (rc=") + std::to_string(rc) + ").";
+        if (s_bleResumeAdvertisingAfterScan && s_bleDesiredEnabled) {
+            s_bleResumeAdvertisingAfterScan = false;
+            bleAdvertiseLocked();
+        }
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t bleStartScan(void)
+{
+    if (!bleLock()) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t err = bleStartScanLocked();
+    bleUnlock();
+    return err;
+}
+
+static void bleCancelScan(void)
+{
+    if (!bleLock()) {
+        return;
+    }
+
+    if (s_bleScanInProgress) {
+        ble_gap_disc_cancel();
+        s_bleScanInProgress = false;
+        s_bleScanStatus = "BLE scan stopped.";
+    }
+
+    if (s_bleResumeAdvertisingAfterScan && s_bleDesiredEnabled) {
+        s_bleResumeAdvertisingAfterScan = false;
+        bleAdvertiseLocked();
+    }
+
+    bleUnlock();
+}
+
+static esp_err_t bleUpdateConfiguredName(const std::string &name)
+{
+    if (!bleLock()) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    s_bleConfiguredName = name.empty() ? std::string(kBleDefaultDeviceName) : name;
+
+    if (s_bleHostReady) {
+        const int rc = ble_svc_gap_device_name_set(bleCurrentDeviceNameLocked());
+        if (rc != 0) {
+            bleUnlock();
+            return ESP_FAIL;
+        }
+    }
+
+    if (s_bleAdvertising) {
+        ble_gap_adv_stop();
+        s_bleAdvertising = false;
+        bleAdvertiseLocked();
+    }
+
+    bleUnlock();
+    return ESP_OK;
+}
+
 } // namespace
 
 static char st_wifi_ssid[32];
@@ -484,10 +818,36 @@ static constexpr int32_t kDisplayTimeoffOptionsSec[] = {0, 15, 30, 60, 120, 300}
 static constexpr char kDisplayTimeoffOptionsText[] = "Off\n15 sec\n30 sec\n1 min\n2 min\n5 min";
 static constexpr int32_t kDisplaySleepOptionsSec[] = {0, 30, 60, 120, 300, 600, 1800};
 static constexpr char kDisplaySleepOptionsText[] = "Off\n30 sec\n1 min\n2 min\n5 min\n10 min\n30 min";
+static constexpr int32_t kZigbeeChannelOptions[] = {0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26};
+static constexpr char kZigbeeChannelOptionsText[] = "Auto\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26";
+static constexpr int32_t kZigbeePermitJoinOptionsSec[] = {0, 60, 180, 255};
+static constexpr char kZigbeePermitJoinOptionsText[] = "Disabled\n60 sec\n180 sec\nAlways";
 static constexpr const char *kFirmwareGithubReleasesUrl = "https://api.github.com/repos/elik745i/JC4880P443C_I_W_Remote/releases";
 static constexpr const char *kFirmwareSdDirectory = "/sdcard/firmware";
 static constexpr const char *kFirmwareUnknownVersion = "unknown";
 static constexpr const char *kSdCardMountPoint = "/sdcard";
+
+static std::string zigbeeChannelPreferenceLabel(int32_t channel)
+{
+    if (channel <= 0) {
+        return "Auto / firmware default";
+    }
+
+    return std::string("Channel ") + std::to_string(channel);
+}
+
+static std::string zigbeePermitJoinLabel(int32_t permit_join_seconds)
+{
+    if (permit_join_seconds <= 0) {
+        return "Disabled";
+    }
+
+    if (permit_join_seconds == 255) {
+        return "Always open";
+    }
+
+    return std::to_string(permit_join_seconds) + " sec";
+}
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
@@ -895,6 +1255,7 @@ AppSettings::AppSettings():
     _displayTimezoneDropdown(nullptr),
     _displayTimezoneInfoLabel(nullptr),
     _bluetoothMenuItem(nullptr),
+    _zigbeeMenuItem(nullptr),
     _wifiMenuItem(nullptr),
     _audioMenuItem(nullptr),
     _displayMenuItem(nullptr),
@@ -902,6 +1263,22 @@ AppSettings::AppSettings():
     _securityMenuItem(nullptr),
     _aboutMenuItem(nullptr),
     _bluetoothInfoLabel(nullptr),
+    _bluetoothNameTextArea(nullptr),
+    _bluetoothNameSaveButton(nullptr),
+    _bluetoothScanButton(nullptr),
+    _bluetoothScanButtonLabel(nullptr),
+    _bluetoothScanStatusLabel(nullptr),
+    _bluetoothScanResultsLabel(nullptr),
+    _bluetoothKeyboard(nullptr),
+    _zigbeeEnableSwitch(nullptr),
+    _zigbeeNameTextArea(nullptr),
+    _zigbeeNameSaveButton(nullptr),
+    _zigbeeChannelDropdown(nullptr),
+    _zigbeePermitJoinDropdown(nullptr),
+    _zigbeeKeyboard(nullptr),
+    _zigbeeInfoLabel(nullptr),
+    _zigbeeRoleValueLabel(nullptr),
+    _zigbeeConfigSummaryLabel(nullptr),
     _securityDeviceLockSwitch(nullptr),
     _securitySettingsLockSwitch(nullptr),
     _securityInfoLabel(nullptr),
@@ -909,6 +1286,7 @@ AppSettings::AppSettings():
     _firmwareScreen(nullptr),
     _hardwareScreen(nullptr),
     _securityScreen(nullptr),
+    _zigbeeScreen(nullptr),
     _hardwareCpuSpeedValueLabel(nullptr),
     _hardwareCpuSpeedDetailLabel(nullptr),
     _hardwareCpuSpeedBar(nullptr),
@@ -937,6 +1315,8 @@ AppSettings::AppSettings():
     _firmwareProgressLabel(nullptr),
     _firmwareUpdateInProgress(false),
     _isWifiPasswordVisible(false),
+    _bluetoothStatusIconInstalled(false),
+    _zigbeeStatusIconInstalled(false),
     _deviceLockToggleContext{this, device_security::LockType::Device},
     _settingsLockToggleContext{this, device_security::LockType::Settings},
     _screen_list({nullptr}),
@@ -955,6 +1335,9 @@ void AppSettings::initializeDefaultNvsParams(void)
 {
     _nvs_param_map[NVS_KEY_WIFI_ENABLE] = false;
     _nvs_param_map[NVS_KEY_BLE_ENABLE] = false;
+    _nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] = false;
+    _nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL] = 13;
+    _nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN] = 180;
     _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = bsp_extra_codec_volume_get();
     _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = max(min((int)_nvs_param_map[NVS_KEY_AUDIO_VOLUME], SPEAKER_VOLUME_MAX), SPEAKER_VOLUME_MIN);
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = brightness;
@@ -979,6 +1362,7 @@ bool AppSettings::run(void)
              base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
 
     extraUiInit();
+    refreshRadioStatusBar();
     updateUiByNvsParam();
 
     xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_UI_INIT_DONE);
@@ -1047,6 +1431,13 @@ bool AppSettings::init(void)
     initializeDefaultNvsParams();
     // Load NVS parameters if exist
     loadNvsParam();
+    {
+        char ble_name[32] = {0};
+        if (!loadNvsStringParam(NVS_KEY_BLE_DEVICE_NAME, ble_name, sizeof(ble_name)) || (ble_name[0] == '\0')) {
+            strlcpy(ble_name, kBleDefaultDeviceName, sizeof(ble_name));
+        }
+        s_bleConfiguredName = ble_name;
+    }
     if (_nvs_param_map[NVS_KEY_BLE_ENABLE]) {
         esp_err_t ble_err = bleSetEnabled(true);
         if (ble_err != ESP_OK) {
@@ -1069,6 +1460,8 @@ bool AppSettings::init(void)
     create_background_task_prefer_psram(wifiScanTask, "WiFi Scan", WIFI_SCAN_TASK_STACK_SIZE,
                                         this, WIFI_SCAN_TASK_PRIORITY, nullptr, 1);
 
+    refreshRadioStatusBar();
+
     return true;
 }
 
@@ -1082,6 +1475,7 @@ bool AppSettings::pause(void)
 bool AppSettings::resume(void)
 {
     _is_ui_resumed = false;
+    refreshRadioStatusBar();
 
     return true;
 }
@@ -1120,6 +1514,55 @@ void AppSettings::extraUiInit(void)
         lv_obj_set_style_text_font(label, &lv_font_montserrat_30, 0);
         lv_obj_set_style_text_color(label, lv_color_hex(0x0F172A), 0);
         lv_obj_align_to(label, icon, LV_ALIGN_OUT_RIGHT_MID, UI_MAIN_ITEM_LEFT_OFFSET, 0);
+
+        lv_obj_t *arrow = lv_img_create(item);
+        lv_img_set_src(arrow, &ui_img_arrow_png);
+        lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -24, 0);
+
+        if (label_out != nullptr) {
+            *label_out = label;
+        }
+
+        lv_obj_add_event_cb(item, onMainMenuItemClickedEventCallback, LV_EVENT_CLICKED, this);
+        return item;
+    };
+
+    auto createMainBadgeMenuItem = [this](const char *title, const char *badge_text, lv_color_t badge_color,
+                                          lv_obj_t **label_out) {
+        lv_obj_t *item = lv_obj_create(ui_PanelSettingMainContainer);
+        lv_obj_set_size(item, lv_pct(100), 70);
+        lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(item, 0, 0);
+        lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_pad_all(item, 0, 0);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(item, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0xCBCBCB), LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(item, 255, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(item, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_border_opa(item, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+        lv_obj_t *badge = lv_obj_create(item);
+        lv_obj_set_size(badge, 42, 42);
+        lv_obj_align(badge, LV_ALIGN_LEFT_MID, 18, 0);
+        lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(badge, 0, 0);
+        lv_obj_set_style_bg_color(badge, badge_color, 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+        lv_obj_set_style_shadow_width(badge, 0, 0);
+
+        lv_obj_t *badgeLabel = lv_label_create(badge);
+        lv_label_set_text(badgeLabel, badge_text);
+        lv_obj_set_style_text_font(badgeLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(badgeLabel, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(badgeLabel);
+
+        lv_obj_t *label = lv_label_create(item);
+        lv_label_set_text(label, title);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_30, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x0F172A), 0);
+        lv_obj_align_to(label, badge, LV_ALIGN_OUT_RIGHT_MID, 20, 0);
 
         lv_obj_t *arrow = lv_img_create(item);
         lv_img_set_src(arrow, &ui_img_arrow_png);
@@ -1208,6 +1651,7 @@ void AppSettings::extraUiInit(void)
     _audioMenuItem = createMainMenuItem("Audio", &ui_img_sound_png, nullptr, nullptr);
     _displayMenuItem = createMainMenuItem("Display", &ui_img_light_png, nullptr, nullptr);
     _bluetoothMenuItem = createMainMenuItem("Bluetooth", &ui_img_bluetooth_png, nullptr, nullptr);
+    _zigbeeMenuItem = createMainBadgeMenuItem("ZigBee", "ZB", lv_color_hex(0xD97706), nullptr);
     _hardwareMenuItem = createMainMenuItem("Hardware", nullptr, LV_SYMBOL_SETTINGS, nullptr);
     _securityMenuItem = createMainMenuItem("Security", nullptr, LV_SYMBOL_WARNING, nullptr);
     _firmwareMenuItem = createMainMenuItem("Firmware OTA", nullptr, LV_SYMBOL_DOWNLOAD, nullptr);
@@ -1709,11 +2153,270 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_style_text_color(_bluetoothInfoLabel, lv_color_hex(0x475569), 0);
     lv_obj_align_to(_bluetoothInfoLabel, bluetoothStatusTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
 
+    lv_obj_t *bluetoothNameRow = lv_obj_create(ui_PanelScreenSettingBLEList);
+    lv_obj_set_width(bluetoothNameRow, lv_pct(100));
+    lv_obj_set_height(bluetoothNameRow, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(bluetoothNameRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(bluetoothNameRow, 18, 0);
+    lv_obj_set_style_border_width(bluetoothNameRow, 0, 0);
+    lv_obj_set_style_bg_color(bluetoothNameRow, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(bluetoothNameRow, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(bluetoothNameRow, 16, 0);
+
+    lv_obj_t *bluetoothNameTitle = lv_label_create(bluetoothNameRow);
+    lv_label_set_text(bluetoothNameTitle, "Device name");
+    lv_obj_set_style_text_font(bluetoothNameTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(bluetoothNameTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(bluetoothNameTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _bluetoothNameTextArea = lv_textarea_create(bluetoothNameRow);
+    lv_obj_set_width(_bluetoothNameTextArea, lv_pct(100));
+    lv_textarea_set_one_line(_bluetoothNameTextArea, true);
+    lv_textarea_set_max_length(_bluetoothNameTextArea, 31);
+    lv_textarea_set_placeholder_text(_bluetoothNameTextArea, kBleDefaultDeviceName);
+    lv_obj_set_style_radius(_bluetoothNameTextArea, 14, 0);
+    lv_obj_set_style_bg_color(_bluetoothNameTextArea, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_color(_bluetoothNameTextArea, lv_color_hex(0xCBD5E1), 0);
+    lv_obj_set_style_border_width(_bluetoothNameTextArea, 1, 0);
+    lv_obj_set_style_pad_left(_bluetoothNameTextArea, 12, 0);
+    lv_obj_set_style_pad_right(_bluetoothNameTextArea, 12, 0);
+    lv_obj_align_to(_bluetoothNameTextArea, bluetoothNameTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+    lv_obj_add_event_cb(_bluetoothNameTextArea, onBluetoothNameTextAreaEventCallback, LV_EVENT_ALL, this);
+
+    _bluetoothNameSaveButton = lv_btn_create(bluetoothNameRow);
+    lv_obj_set_size(_bluetoothNameSaveButton, 120, 42);
+    lv_obj_set_style_radius(_bluetoothNameSaveButton, 14, 0);
+    lv_obj_set_style_bg_color(_bluetoothNameSaveButton, lv_color_hex(0x2563EB), 0);
+    lv_obj_set_style_bg_opa(_bluetoothNameSaveButton, LV_OPA_COVER, 0);
+    lv_obj_align_to(_bluetoothNameSaveButton, _bluetoothNameTextArea, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 10);
+    lv_obj_add_event_cb(_bluetoothNameSaveButton, onBluetoothNameSaveClickedEventCallback, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *bluetoothNameSaveLabel = lv_label_create(_bluetoothNameSaveButton);
+    lv_label_set_text(bluetoothNameSaveLabel, "Save Name");
+    lv_obj_set_style_text_color(bluetoothNameSaveLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(bluetoothNameSaveLabel, &lv_font_montserrat_16, 0);
+    lv_obj_center(bluetoothNameSaveLabel);
+
+    lv_obj_t *bluetoothDiscoveryRow = lv_obj_create(ui_PanelScreenSettingBLEList);
+    lv_obj_set_width(bluetoothDiscoveryRow, lv_pct(100));
+    lv_obj_set_height(bluetoothDiscoveryRow, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(bluetoothDiscoveryRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(bluetoothDiscoveryRow, 18, 0);
+    lv_obj_set_style_border_width(bluetoothDiscoveryRow, 0, 0);
+    lv_obj_set_style_bg_color(bluetoothDiscoveryRow, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(bluetoothDiscoveryRow, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(bluetoothDiscoveryRow, 16, 0);
+
+    lv_obj_t *bluetoothDiscoveryTitle = lv_label_create(bluetoothDiscoveryRow);
+    lv_label_set_text(bluetoothDiscoveryTitle, "Nearby BLE devices");
+    lv_obj_set_style_text_font(bluetoothDiscoveryTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(bluetoothDiscoveryTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(bluetoothDiscoveryTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _bluetoothScanButton = lv_btn_create(bluetoothDiscoveryRow);
+    lv_obj_set_size(_bluetoothScanButton, 170, 42);
+    lv_obj_set_style_radius(_bluetoothScanButton, 14, 0);
+    lv_obj_set_style_bg_color(_bluetoothScanButton, lv_color_hex(0x0F766E), 0);
+    lv_obj_set_style_bg_opa(_bluetoothScanButton, LV_OPA_COVER, 0);
+    lv_obj_align(bluetoothDiscoveryTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_align(_bluetoothScanButton, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_add_event_cb(_bluetoothScanButton, onBluetoothScanClickedEventCallback, LV_EVENT_CLICKED, this);
+
+    _bluetoothScanButtonLabel = lv_label_create(_bluetoothScanButton);
+    lv_label_set_text(_bluetoothScanButtonLabel, "Scan Nearby");
+    lv_obj_set_style_text_color(_bluetoothScanButtonLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(_bluetoothScanButtonLabel, &lv_font_montserrat_16, 0);
+    lv_obj_center(_bluetoothScanButtonLabel);
+
+    _bluetoothScanStatusLabel = lv_label_create(bluetoothDiscoveryRow);
+    lv_obj_set_width(_bluetoothScanStatusLabel, lv_pct(100));
+    lv_label_set_long_mode(_bluetoothScanStatusLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_bluetoothScanStatusLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_bluetoothScanStatusLabel, lv_color_hex(0x475569), 0);
+    lv_obj_align_to(_bluetoothScanStatusLabel, bluetoothDiscoveryTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 14);
+
+    _bluetoothScanResultsLabel = lv_label_create(bluetoothDiscoveryRow);
+    lv_obj_set_width(_bluetoothScanResultsLabel, lv_pct(100));
+    lv_label_set_long_mode(_bluetoothScanResultsLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_bluetoothScanResultsLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_bluetoothScanResultsLabel, lv_color_hex(0x0F172A), 0);
+    lv_obj_align_to(_bluetoothScanResultsLabel, _bluetoothScanStatusLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+    _bluetoothKeyboard = lv_keyboard_create(ui_ScreenSettingBLE);
+    lv_obj_set_size(_bluetoothKeyboard, lv_pct(100), lv_pct(32));
+    lv_obj_align(_bluetoothKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_popovers(_bluetoothKeyboard, true);
+    lv_obj_add_flag(_bluetoothKeyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(_bluetoothKeyboard, onBluetoothKeyboardEventCallback, LV_EVENT_ALL, this);
+
     lv_obj_add_event_cb(ui_SwitchPanelScreenSettingBLESwitch, onSwitchPanelScreenSettingBluetoothValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
     // Record the screen index and install the screen loaded event callback
     _screen_list[UI_BLUETOOTH_SETTING_INDEX] = ui_ScreenSettingBLE;
     lv_obj_add_event_cb(ui_ScreenSettingBLE, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+
+    _zigbeeScreen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(_zigbeeScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(_zigbeeScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(_zigbeeScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *zigbeeBackButton = lv_btn_create(_zigbeeScreen);
+    lv_obj_set_size(zigbeeBackButton, 60, 60);
+    lv_obj_align(zigbeeBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_set_style_bg_color(zigbeeBackButton, lv_color_hex(0xE5F3FF), 0);
+    lv_obj_set_style_border_width(zigbeeBackButton, 0, 0);
+    lv_obj_add_event_cb(zigbeeBackButton, [](lv_event_t *e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *zigbeeBackImage = lv_img_create(zigbeeBackButton);
+    lv_img_set_src(zigbeeBackImage, &ui_img_return_png);
+    lv_obj_center(zigbeeBackImage);
+    lv_obj_set_style_img_recolor(zigbeeBackImage, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_img_recolor_opa(zigbeeBackImage, 255, 0);
+
+    lv_obj_t *zigbeeTitle = lv_label_create(_zigbeeScreen);
+    lv_label_set_text(zigbeeTitle, "ZigBee");
+    lv_obj_set_style_text_font(zigbeeTitle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(zigbeeTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(zigbeeTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *zigbeeTitleBadge = lv_obj_create(_zigbeeScreen);
+    lv_obj_set_size(zigbeeTitleBadge, 38, 38);
+    lv_obj_align_to(zigbeeTitleBadge, zigbeeTitle, LV_ALIGN_OUT_LEFT_MID, -16, 0);
+    lv_obj_clear_flag(zigbeeTitleBadge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(zigbeeTitleBadge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(zigbeeTitleBadge, 0, 0);
+    lv_obj_set_style_bg_color(zigbeeTitleBadge, lv_color_hex(0xD97706), 0);
+    lv_obj_set_style_bg_opa(zigbeeTitleBadge, LV_OPA_COVER, 0);
+
+    lv_obj_t *zigbeeTitleBadgeLabel = lv_label_create(zigbeeTitleBadge);
+    lv_label_set_text(zigbeeTitleBadgeLabel, "ZB");
+    lv_obj_set_style_text_font(zigbeeTitleBadgeLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(zigbeeTitleBadgeLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(zigbeeTitleBadgeLabel);
+
+    lv_obj_t *zigbeePanel = lv_obj_create(_zigbeeScreen);
+    lv_obj_set_size(zigbeePanel, lv_pct(92), 650);
+    lv_obj_align(zigbeePanel, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(zigbeePanel, 20, 0);
+    lv_obj_set_style_border_width(zigbeePanel, 0, 0);
+    lv_obj_set_style_bg_color(zigbeePanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(zigbeePanel, 14, 0);
+    lv_obj_set_style_pad_row(zigbeePanel, 12, 0);
+    lv_obj_set_flex_flow(zigbeePanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(zigbeePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(zigbeePanel, LV_DIR_VER);
+
+    lv_obj_t *zigbeeEnableRow = createSettingsToggleRow(zigbeePanel, "Enable ZigBee");
+    _zigbeeEnableSwitch = lv_switch_create(zigbeeEnableRow);
+    lv_obj_align(_zigbeeEnableSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_zigbeeEnableSwitch, onZigbeeEnableSwitchValueChangeEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *zigbeeRoleCard = lv_obj_create(zigbeePanel);
+    lv_obj_set_width(zigbeeRoleCard, lv_pct(100));
+    lv_obj_set_height(zigbeeRoleCard, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(zigbeeRoleCard, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(zigbeeRoleCard, 18, 0);
+    lv_obj_set_style_border_width(zigbeeRoleCard, 0, 0);
+    lv_obj_set_style_bg_color(zigbeeRoleCard, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(zigbeeRoleCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(zigbeeRoleCard, 16, 0);
+
+    lv_obj_t *zigbeeRoleTitle = lv_label_create(zigbeeRoleCard);
+    lv_label_set_text(zigbeeRoleTitle, "Coordinator Role");
+    lv_obj_set_style_text_font(zigbeeRoleTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(zigbeeRoleTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(zigbeeRoleTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _zigbeeRoleValueLabel = lv_label_create(zigbeeRoleCard);
+    lv_obj_set_width(_zigbeeRoleValueLabel, lv_pct(100));
+    lv_label_set_long_mode(_zigbeeRoleValueLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_zigbeeRoleValueLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_zigbeeRoleValueLabel, lv_color_hex(0x475569), 0);
+    lv_obj_align_to(_zigbeeRoleValueLabel, zigbeeRoleTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+    lv_obj_t *zigbeeNameCard = lv_obj_create(zigbeePanel);
+    lv_obj_set_width(zigbeeNameCard, lv_pct(100));
+    lv_obj_set_height(zigbeeNameCard, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(zigbeeNameCard, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(zigbeeNameCard, 18, 0);
+    lv_obj_set_style_border_width(zigbeeNameCard, 0, 0);
+    lv_obj_set_style_bg_color(zigbeeNameCard, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(zigbeeNameCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(zigbeeNameCard, 16, 0);
+
+    lv_obj_t *zigbeeNameTitle = lv_label_create(zigbeeNameCard);
+    lv_label_set_text(zigbeeNameTitle, "Device Name");
+    lv_obj_set_style_text_font(zigbeeNameTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(zigbeeNameTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(zigbeeNameTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _zigbeeNameTextArea = lv_textarea_create(zigbeeNameCard);
+    lv_obj_set_size(_zigbeeNameTextArea, lv_pct(100), 58);
+    lv_obj_align_to(_zigbeeNameTextArea, zigbeeNameTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+    lv_textarea_set_one_line(_zigbeeNameTextArea, true);
+    lv_textarea_set_max_length(_zigbeeNameTextArea, 31);
+    lv_textarea_set_placeholder_text(_zigbeeNameTextArea, "Enter ZigBee device name");
+    lv_obj_set_style_radius(_zigbeeNameTextArea, 16, 0);
+    lv_obj_set_style_border_width(_zigbeeNameTextArea, 1, 0);
+    lv_obj_set_style_border_color(_zigbeeNameTextArea, lv_color_hex(0xC6D4E1), 0);
+    lv_obj_set_style_bg_color(_zigbeeNameTextArea, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(_zigbeeNameTextArea, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(_zigbeeNameTextArea, 16, 0);
+    lv_obj_set_style_text_font(_zigbeeNameTextArea, &lv_font_montserrat_20, 0);
+    lv_obj_add_event_cb(_zigbeeNameTextArea, onZigbeeNameTextAreaEventCallback, LV_EVENT_ALL, this);
+
+    _zigbeeNameSaveButton = lv_btn_create(zigbeeNameCard);
+    lv_obj_set_size(_zigbeeNameSaveButton, 120, 44);
+    lv_obj_align(_zigbeeNameSaveButton, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_radius(_zigbeeNameSaveButton, 14, 0);
+    lv_obj_set_style_border_width(_zigbeeNameSaveButton, 0, 0);
+    lv_obj_set_style_bg_color(_zigbeeNameSaveButton, lv_color_hex(0xD97706), 0);
+    lv_obj_add_event_cb(_zigbeeNameSaveButton, onZigbeeNameSaveClickedEventCallback, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *zigbeeNameSaveLabel = lv_label_create(_zigbeeNameSaveButton);
+    lv_label_set_text(zigbeeNameSaveLabel, "Save Name");
+    lv_obj_set_style_text_font(zigbeeNameSaveLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(zigbeeNameSaveLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(zigbeeNameSaveLabel);
+
+    lv_obj_t *zigbeeChannelRow = createSettingsToggleRow(zigbeePanel, "Preferred Channel");
+    _zigbeeChannelDropdown = lv_dropdown_create(zigbeeChannelRow);
+    lv_dropdown_set_options_static(_zigbeeChannelDropdown, kZigbeeChannelOptionsText);
+    lv_obj_set_width(_zigbeeChannelDropdown, 150);
+    lv_obj_align(_zigbeeChannelDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_zigbeeChannelDropdown, onZigbeeChannelChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *zigbeePermitJoinRow = createSettingsToggleRow(zigbeePanel, "Permit Joining");
+    _zigbeePermitJoinDropdown = lv_dropdown_create(zigbeePermitJoinRow);
+    lv_dropdown_set_options_static(_zigbeePermitJoinDropdown, kZigbeePermitJoinOptionsText);
+    lv_obj_set_width(_zigbeePermitJoinDropdown, 150);
+    lv_obj_align(_zigbeePermitJoinDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_zigbeePermitJoinDropdown, onZigbeePermitJoinChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    _zigbeeConfigSummaryLabel = lv_label_create(zigbeePanel);
+    lv_obj_set_width(_zigbeeConfigSummaryLabel, lv_pct(100));
+    lv_label_set_long_mode(_zigbeeConfigSummaryLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_zigbeeConfigSummaryLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_zigbeeConfigSummaryLabel, lv_color_hex(0x334155), 0);
+
+    _zigbeeInfoLabel = lv_label_create(zigbeePanel);
+    lv_obj_set_width(_zigbeeInfoLabel, lv_pct(100));
+    lv_label_set_long_mode(_zigbeeInfoLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_zigbeeInfoLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_zigbeeInfoLabel, lv_color_hex(0x475569), 0);
+
+    _zigbeeKeyboard = lv_keyboard_create(_zigbeeScreen);
+    lv_obj_set_size(_zigbeeKeyboard, lv_pct(100), lv_pct(34));
+    lv_obj_align(_zigbeeKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(_zigbeeKeyboard, onZigbeeKeyboardEventCallback, LV_EVENT_ALL, this);
+
+    _screen_list[UI_ZIGBEE_SETTING_INDEX] = _zigbeeScreen;
+    lv_obj_add_event_cb(_zigbeeScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
     _securityScreen = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(_securityScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -2346,6 +3049,169 @@ void AppSettings::refreshBluetoothUi(void)
     if (_bluetoothInfoLabel != nullptr) {
         const std::string status = bleStatusText(bluetooth_enabled);
         lv_label_set_text(_bluetoothInfoLabel, status.c_str());
+    }
+
+    if (_bluetoothNameTextArea != nullptr) {
+        char ble_name[32] = {0};
+        if (!loadNvsStringParam(NVS_KEY_BLE_DEVICE_NAME, ble_name, sizeof(ble_name)) || (ble_name[0] == '\0')) {
+            strlcpy(ble_name, kBleDefaultDeviceName, sizeof(ble_name));
+        }
+
+        if (!lv_obj_has_state(_bluetoothNameTextArea, LV_STATE_FOCUSED)) {
+            lv_textarea_set_text(_bluetoothNameTextArea, ble_name);
+        }
+    }
+
+    if (_bluetoothScanButtonLabel != nullptr) {
+        lv_label_set_text(_bluetoothScanButtonLabel, s_bleScanInProgress ? "Stop Scan" : "Scan Nearby");
+    }
+
+    if (_bluetoothScanStatusLabel != nullptr) {
+        if (!bluetooth_enabled) {
+            lv_label_set_text(_bluetoothScanStatusLabel, "Enable BLE first to scan nearby devices.");
+        } else {
+            lv_label_set_text(_bluetoothScanStatusLabel, s_bleScanStatus.c_str());
+        }
+    }
+
+    if (_bluetoothScanResultsLabel != nullptr) {
+        std::string results;
+        if (s_bleScanResults.empty()) {
+            results = bluetooth_enabled ? "No discovery results yet." : "Discovery is unavailable while BLE is off.";
+        } else {
+            for (size_t index = 0; index < s_bleScanResults.size(); ++index) {
+                const auto &entry = s_bleScanResults[index];
+                results += std::to_string(index + 1) + ". ";
+                results += entry.name.empty() ? std::string("Unnamed device") : entry.name;
+                results += "\n";
+                results += entry.address + "  RSSI " + std::to_string(entry.rssi) + " dBm";
+                if ((index + 1) < s_bleScanResults.size()) {
+                    results += "\n\n";
+                }
+            }
+        }
+        lv_label_set_text(_bluetoothScanResultsLabel, results.c_str());
+    }
+}
+
+void AppSettings::refreshRadioStatusBar(void)
+{
+    if (status_bar == nullptr) {
+        return;
+    }
+
+    auto *mutable_status_bar = const_cast<ESP_Brookesia_StatusBar *>(status_bar);
+    if (!_bluetoothStatusIconInstalled) {
+        ESP_Brookesia_StatusBarIconData_t bluetooth_icon = {
+            .size = {
+                .width = 18,
+                .height = 18,
+            },
+            .icon = {
+                .image_num = 1,
+                .images = {
+                    ESP_BROOKESIA_STYLE_IMAGE_RECOLOR_WHITE(&ui_img_bluetooth_status_png),
+                },
+            },
+        };
+
+        _bluetoothStatusIconInstalled = mutable_status_bar->addIcon(
+            bluetooth_icon, ESP_BROOKESIA_STATUS_BAR_DATA_AREA_NUM_MAX - 1, kStatusBarBluetoothIconId
+        );
+    }
+
+    if (!_zigbeeStatusIconInstalled) {
+        ESP_Brookesia_StatusBarIconData_t zigbee_icon = {
+            .size = {
+                .width = 18,
+                .height = 18,
+            },
+            .icon = {
+                .image_num = 1,
+                .images = {
+                    ESP_BROOKESIA_STYLE_IMAGE_RECOLOR_WHITE(&ui_img_zigbee_status_png),
+                },
+            },
+        };
+
+        _zigbeeStatusIconInstalled = mutable_status_bar->addIcon(
+            zigbee_icon, ESP_BROOKESIA_STATUS_BAR_DATA_AREA_NUM_MAX - 1, kStatusBarZigbeeIconId
+        );
+    }
+
+    const bool bluetooth_active = (_nvs_param_map[NVS_KEY_BLE_ENABLE] != 0) &&
+                                  (s_bleRuntimeState == BleRuntimeState::Advertising || s_bleRuntimeState == BleRuntimeState::Starting);
+    const bool zigbee_active = _nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] != 0;
+
+    if (_bluetoothStatusIconInstalled) {
+        mutable_status_bar->setIconState(kStatusBarBluetoothIconId, bluetooth_active ? 0 : -1);
+    }
+    if (_zigbeeStatusIconInstalled) {
+        mutable_status_bar->setIconState(kStatusBarZigbeeIconId, zigbee_active ? 0 : -1);
+    }
+}
+
+void AppSettings::refreshZigbeeUi(void)
+{
+    const bool zigbee_enabled = _nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] != 0;
+    const int32_t preferred_channel = _nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL];
+    const int32_t permit_join_seconds = _nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN];
+
+    if (_zigbeeEnableSwitch != nullptr) {
+        if (zigbee_enabled) {
+            lv_obj_add_state(_zigbeeEnableSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_zigbeeEnableSwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (_zigbeeChannelDropdown != nullptr) {
+        lv_dropdown_set_selected(_zigbeeChannelDropdown,
+                                 findDropdownIndexForValue(kZigbeeChannelOptions,
+                                                           sizeof(kZigbeeChannelOptions) / sizeof(kZigbeeChannelOptions[0]),
+                                                           preferred_channel));
+    }
+
+    if (_zigbeePermitJoinDropdown != nullptr) {
+        lv_dropdown_set_selected(_zigbeePermitJoinDropdown,
+                                 findDropdownIndexForValue(kZigbeePermitJoinOptionsSec,
+                                                           sizeof(kZigbeePermitJoinOptionsSec) / sizeof(kZigbeePermitJoinOptionsSec[0]),
+                                                           permit_join_seconds));
+    }
+
+    if (_zigbeeNameTextArea != nullptr) {
+        char zigbee_name[32] = {0};
+        if (!loadNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, zigbee_name, sizeof(zigbee_name)) || (zigbee_name[0] == '\0')) {
+            strlcpy(zigbee_name, kZigbeeDefaultDeviceName, sizeof(zigbee_name));
+        }
+
+        if (lv_obj_has_state(_zigbeeNameTextArea, LV_STATE_FOCUSED) == false) {
+            lv_textarea_set_text(_zigbeeNameTextArea, zigbee_name);
+        }
+    }
+
+    if (_zigbeeRoleValueLabel != nullptr) {
+        lv_label_set_text(_zigbeeRoleValueLabel,
+                          "Coordinator on the ESP32-C6 coprocessor. The current firmware starts ZigBee natively on boot and keeps Wi-Fi/BLE coexistence enabled there.");
+    }
+
+    if (_zigbeeConfigSummaryLabel != nullptr) {
+        char zigbee_name[32] = {0};
+        if (!loadNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, zigbee_name, sizeof(zigbee_name)) || (zigbee_name[0] == '\0')) {
+            strlcpy(zigbee_name, kZigbeeDefaultDeviceName, sizeof(zigbee_name));
+        }
+
+        std::string summary = std::string("Device name: ") + zigbee_name +
+                              "\nPreferred channel: " + zigbeeChannelPreferenceLabel(preferred_channel) +
+                              "\nPermit joining: " + zigbeePermitJoinLabel(permit_join_seconds);
+        lv_label_set_text(_zigbeeConfigSummaryLabel, summary.c_str());
+    }
+
+    if (_zigbeeInfoLabel != nullptr) {
+        const std::string status = zigbee_enabled ?
+            "ZigBee preferences are enabled on the P4. Current controls are host-side preferences only: the existing ESP32-C6 firmware does not expose live ZigBee RPC control, joined-device lists, PAN ID, or permit-join commands back to the P4 yet." :
+            "ZigBee preference is disabled on the P4 UI. Note that the current ESP32-C6 release still starts ZigBee natively at boot when compiled with CONFIG_ZB_ENABLED, so this setting currently acts as a host-side preference gate for future integration.";
+        lv_label_set_text(_zigbeeInfoLabel, status.c_str());
     }
 }
 
@@ -3233,8 +4099,82 @@ void AppSettings::updateUiByNvsParam(void)
     lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, _nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
     refreshSavedWifiUi();
     refreshBluetoothUi();
+    refreshRadioStatusBar();
+    refreshZigbeeUi();
     refreshSecurityUi();
     refreshDisplayIdleUi();
+}
+
+void AppSettings::setZigbeeKeyboardVisible(bool visible)
+{
+    if ((_zigbeeKeyboard == nullptr) || (_zigbeeNameTextArea == nullptr)) {
+        return;
+    }
+
+    if (visible) {
+        lv_keyboard_set_textarea(_zigbeeKeyboard, _zigbeeNameTextArea);
+        lv_obj_clear_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_keyboard_set_textarea(_zigbeeKeyboard, nullptr);
+        lv_obj_add_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+bool AppSettings::persistZigbeeNameFromUi(void)
+{
+    if (_zigbeeNameTextArea == nullptr) {
+        return false;
+    }
+
+    std::string name = trim_copy(lv_textarea_get_text(_zigbeeNameTextArea));
+    if (name.empty()) {
+        name = kZigbeeDefaultDeviceName;
+    }
+
+    if (name.size() > 31) {
+        name.resize(31);
+    }
+
+    lv_textarea_set_text(_zigbeeNameTextArea, name.c_str());
+    return setNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, name.c_str());
+}
+
+void AppSettings::setBluetoothKeyboardVisible(bool visible)
+{
+    if ((_bluetoothKeyboard == nullptr) || (_bluetoothNameTextArea == nullptr)) {
+        return;
+    }
+
+    if (visible) {
+        lv_keyboard_set_textarea(_bluetoothKeyboard, _bluetoothNameTextArea);
+        lv_obj_clear_flag(_bluetoothKeyboard, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_keyboard_set_textarea(_bluetoothKeyboard, nullptr);
+        lv_obj_add_flag(_bluetoothKeyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+bool AppSettings::persistBluetoothNameFromUi(void)
+{
+    if (_bluetoothNameTextArea == nullptr) {
+        return false;
+    }
+
+    std::string name = trim_copy(lv_textarea_get_text(_bluetoothNameTextArea));
+    if (name.empty()) {
+        name = kBleDefaultDeviceName;
+    }
+
+    if (name.size() > 31) {
+        name.resize(31);
+    }
+
+    lv_textarea_set_text(_bluetoothNameTextArea, name.c_str());
+    if (!setNvsStringParam(NVS_KEY_BLE_DEVICE_NAME, name.c_str())) {
+        return false;
+    }
+
+    return bleUpdateConfiguredName(name) == ESP_OK;
 }
 
 esp_err_t AppSettings::initWifi()
@@ -3329,13 +4269,24 @@ AppSettings::WifiSignalStrengthLevel_t AppSettings::wifiSignalStrengthFromRssi(i
 
 void AppSettings::refreshWifiStatusBar(void)
 {
-    WifiSignalStrengthLevel_t signal_level = WIFI_SIGNAL_STRENGTH_NONE;
-    const EventBits_t wifi_bits = xEventGroupGetBits(s_wifi_event_group);
+    if (status_bar == nullptr) {
+        return;
+    }
 
-    if (wifi_bits & WIFI_EVENT_CONNECTED) {
+    const EventBits_t wifi_bits = xEventGroupGetBits(s_wifi_event_group);
+    const bool wifi_connected = (wifi_bits & WIFI_EVENT_CONNECTED) != 0;
+    WifiSignalStrengthLevel_t signal_level = wifi_connected ? WIFI_SIGNAL_STRENGTH_WEAK : WIFI_SIGNAL_STRENGTH_NONE;
+
+    if (wifi_connected) {
         wifi_ap_record_t ap_info = {};
         if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
             signal_level = wifiSignalStrengthFromRssi(ap_info.rssi);
+            if (signal_level == WIFI_SIGNAL_STRENGTH_NONE) {
+                signal_level = WIFI_SIGNAL_STRENGTH_WEAK;
+            }
+            _wifi_signal_strength_level = signal_level;
+        } else if (_wifi_signal_strength_level != WIFI_SIGNAL_STRENGTH_NONE) {
+            signal_level = _wifi_signal_strength_level;
         }
     }
 
@@ -3602,7 +4553,14 @@ void AppSettings::euiRefresTask(void *arg)
         if((xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_CONNECTED)) {
             app_sntp_init();
         }
+        bleCheckStartupTimeout();
         app->refreshWifiStatusBar();
+        bsp_display_lock(0);
+        app->refreshRadioStatusBar();
+        if (app->_screen_index == UI_BLUETOOTH_SETTING_INDEX) {
+            app->refreshBluetoothUi();
+        }
+        bsp_display_unlock();
 
         /* Updte Smart Gadget app */
         // app->updateGadgetTime(timeinfo);
@@ -3839,8 +4797,8 @@ void AppSettings::wifiEventHandler(void* arg, esp_event_base_t event_base, int32
                 lv_obj_clear_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_add_flag(ui_SpinnerScreenSettingWiFi, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_add_flag(ui_SwitchPanelScreenSettingWiFiSwitch, LV_OBJ_FLAG_CLICKABLE);
-                app->status_bar->setWifiIconState(0);
                 bsp_display_unlock();
+                app->refreshWifiStatusBar();
             }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -3959,6 +4917,14 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
         app->updateWifiPasswordVisibility(false);
     }
 
+    if (app->_screen_index != UI_BLUETOOTH_SETTING_INDEX) {
+        app->setBluetoothKeyboardVisible(false);
+    }
+
+    if (app->_screen_index != UI_ZIGBEE_SETTING_INDEX) {
+        app->setZigbeeKeyboardVisible(false);
+    }
+
     if ((app->_screen_index == UI_WIFI_SCAN_INDEX) && (app->_nvs_param_map[NVS_KEY_WIFI_ENABLE] == true)) {
         app->refreshSavedWifiUi();
         app->startWifiScan();
@@ -3970,6 +4936,10 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
 
     if (app->_screen_index == UI_BLUETOOTH_SETTING_INDEX) {
         app->refreshBluetoothUi();
+    }
+
+    if (app->_screen_index == UI_ZIGBEE_SETTING_INDEX) {
+        app->refreshZigbeeUi();
     }
 
     if (app->_screen_index == UI_SECURITY_SETTING_INDEX) {
@@ -3999,6 +4969,8 @@ void AppSettings::onMainMenuItemClickedEventCallback(lv_event_t *e)
         lv_scr_load_anim(ui_ScreenSettingLight, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_bluetoothMenuItem) {
         lv_scr_load_anim(ui_ScreenSettingBLE, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_zigbeeMenuItem) {
+        lv_scr_load_anim(app->_zigbeeScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_hardwareMenuItem) {
         lv_scr_load_anim(app->_hardwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_securityMenuItem) {
@@ -4250,6 +5222,9 @@ void AppSettings::onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
     enabled = (lv_obj_get_state(ui_SwitchPanelScreenSettingBLESwitch) & LV_STATE_CHECKED) != 0;
+    if (!enabled) {
+        bleCancelScan();
+    }
     if (bleSetEnabled(enabled) != ESP_OK) {
         enabled = false;
         lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
@@ -4258,6 +5233,177 @@ void AppSettings::onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv
     app->_nvs_param_map[NVS_KEY_BLE_ENABLE] = enabled;
     app->setNvsParam(NVS_KEY_BLE_ENABLE, enabled ? 1 : 0);
     app->refreshBluetoothUi();
+    app->refreshRadioStatusBar();
+
+end:
+    return;
+}
+
+void AppSettings::onBluetoothNameTextAreaEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    const lv_event_code_t code = lv_event_get_code(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if (code == LV_EVENT_FOCUSED) {
+        app->setBluetoothKeyboardVisible(true);
+    } else if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
+        app->setBluetoothKeyboardVisible(false);
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onBluetoothNameSaveClickedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    app->persistBluetoothNameFromUi();
+    app->setBluetoothKeyboardVisible(false);
+    app->refreshBluetoothUi();
+
+end:
+    return;
+}
+
+void AppSettings::onBluetoothKeyboardEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    const lv_event_code_t code = lv_event_get_code(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if ((code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
+        app->setBluetoothKeyboardVisible(false);
+        if (code == LV_EVENT_READY) {
+            app->persistBluetoothNameFromUi();
+            app->refreshBluetoothUi();
+        }
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onBluetoothScanClickedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if (s_bleScanInProgress) {
+        bleCancelScan();
+    } else {
+        bleStartScan();
+    }
+
+    app->refreshBluetoothUi();
+
+end:
+    return;
+}
+
+void AppSettings::onZigbeeEnableSwitchValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    bool enabled = false;
+
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    enabled = (lv_obj_get_state(app->_zigbeeEnableSwitch) & LV_STATE_CHECKED) != 0;
+
+    app->_nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] = enabled ? 1 : 0;
+    app->setNvsParam(NVS_KEY_ZIGBEE_ENABLE, enabled ? 1 : 0);
+    app->refreshZigbeeUi();
+    app->refreshRadioStatusBar();
+
+end:
+    return;
+}
+
+void AppSettings::onZigbeeChannelChangedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    uint16_t selected = 0;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    selected = lv_dropdown_get_selected(app->_zigbeeChannelDropdown);
+    if (selected < (sizeof(kZigbeeChannelOptions) / sizeof(kZigbeeChannelOptions[0]))) {
+        app->_nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL] = kZigbeeChannelOptions[selected];
+        app->setNvsParam(NVS_KEY_ZIGBEE_CHANNEL, kZigbeeChannelOptions[selected]);
+        app->refreshZigbeeUi();
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onZigbeePermitJoinChangedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    uint16_t selected = 0;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    selected = lv_dropdown_get_selected(app->_zigbeePermitJoinDropdown);
+    if (selected < (sizeof(kZigbeePermitJoinOptionsSec) / sizeof(kZigbeePermitJoinOptionsSec[0]))) {
+        app->_nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN] = kZigbeePermitJoinOptionsSec[selected];
+        app->setNvsParam(NVS_KEY_ZIGBEE_PERMIT_JOIN, kZigbeePermitJoinOptionsSec[selected]);
+        app->refreshZigbeeUi();
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onZigbeeNameTextAreaEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    const lv_event_code_t code = lv_event_get_code(e);
+
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if (code == LV_EVENT_FOCUSED) {
+        app->setZigbeeKeyboardVisible(true);
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onZigbeeNameSaveClickedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    app->persistZigbeeNameFromUi();
+    app->setZigbeeKeyboardVisible(false);
+    app->refreshZigbeeUi();
+
+end:
+    return;
+}
+
+void AppSettings::onZigbeeKeyboardEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    const lv_event_code_t code = lv_event_get_code(e);
+
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if (code == LV_EVENT_READY) {
+        app->persistZigbeeNameFromUi();
+        app->setZigbeeKeyboardVisible(false);
+        if (app->_zigbeeNameTextArea != nullptr) {
+            lv_obj_clear_state(app->_zigbeeNameTextArea, LV_STATE_FOCUSED);
+        }
+        app->refreshZigbeeUi();
+    } else if (code == LV_EVENT_CANCEL) {
+        app->setZigbeeKeyboardVisible(false);
+        if (app->_zigbeeNameTextArea != nullptr) {
+            lv_obj_clear_state(app->_zigbeeNameTextArea, LV_STATE_FOCUSED);
+        }
+        app->refreshZigbeeUi();
+    }
 
 end:
     return;

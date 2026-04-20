@@ -160,7 +160,9 @@ bool ESP_Brookesia_PhoneHome::processAppRun(ESP_Brookesia_CoreApp *app)
                 phone_app->_active_data.status_icon_data.size = _data.status_bar.data.icon_common_size;
             }
             ESP_BROOKESIA_CHECK_FALSE_RETURN(
-                ESP_Brookesia_StatusBar::calibrateIconData(_data.status_bar.data, *this, phone_app->_active_data.status_icon_data),
+                ESP_Brookesia_StatusBar::calibrateIconData(
+                    _data.status_bar.data, *this, app_data.status_icon_area_index, phone_app->_active_data.status_icon_data
+                ),
                 false, "Calibrate status icon data failed"
             );
             ESP_BROOKESIA_CHECK_FALSE_RETURN(

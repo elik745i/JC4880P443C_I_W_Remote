@@ -54,6 +54,7 @@ public:
     bool checkVisible(void) const;
 
     static bool calibrateIconData(const ESP_Brookesia_StatusBarData_t &bar_data, const ESP_Brookesia_CoreHome &home,
+                                  uint8_t area_index,
                                   ESP_Brookesia_StatusBarIconData_t &icon_data);
     static bool calibrateData(const ESP_Brookesia_StyleSize_t &screen_size, const ESP_Brookesia_CoreHome &home,
                               ESP_Brookesia_StatusBarData_t &data);

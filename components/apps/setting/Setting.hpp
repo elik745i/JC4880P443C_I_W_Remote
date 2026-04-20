@@ -38,6 +38,7 @@ private:
         UI_WIFI_SCAN_INDEX,
         UI_WIFI_CONNECT_INDEX,
         UI_BLUETOOTH_SETTING_INDEX,
+        UI_ZIGBEE_SETTING_INDEX,
         UI_SECURITY_SETTING_INDEX,
         UI_VOLUME_SETTING_INDEX,
         UI_BRIGHTNESS_SETTING_INDEX,
@@ -104,6 +105,8 @@ private:
     void refreshDisplayIdleUi(void);
     void refreshTimezoneUi(void);
     void refreshBluetoothUi(void);
+    void refreshRadioStatusBar(void);
+    void refreshZigbeeUi(void);
     void refreshSecurityUi(void);
     void refreshFirmwareUi(void);
     void refreshHardwareMonitorUi(void);
@@ -113,7 +116,11 @@ private:
     void initializeDefaultNvsParams(void);
     bool factoryResetPreferences(void);
     void setWifiKeyboardVisible(bool visible);
+    void setBluetoothKeyboardVisible(bool visible);
+    void setZigbeeKeyboardVisible(bool visible);
     void updateWifiPasswordVisibility(bool visible);
+    bool persistBluetoothNameFromUi(void);
+    bool persistZigbeeNameFromUi(void);
     void handleSecurityToggleResult(device_security::LockType type, bool success);
     void setFirmwareStatus(const std::string &status, bool is_error = false);
     void setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error = false);
@@ -176,6 +183,17 @@ private:
     // Bluetooth
     static void onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback( lv_event_t * e);
+    static void onBluetoothNameTextAreaEventCallback(lv_event_t *e);
+    static void onBluetoothNameSaveClickedEventCallback(lv_event_t *e);
+    static void onBluetoothKeyboardEventCallback(lv_event_t *e);
+    static void onBluetoothScanClickedEventCallback(lv_event_t *e);
+    // ZigBee
+    static void onZigbeeEnableSwitchValueChangeEventCallback(lv_event_t *e);
+    static void onZigbeeChannelChangedEventCallback(lv_event_t *e);
+    static void onZigbeePermitJoinChangedEventCallback(lv_event_t *e);
+    static void onZigbeeNameTextAreaEventCallback(lv_event_t *e);
+    static void onZigbeeNameSaveClickedEventCallback(lv_event_t *e);
+    static void onZigbeeKeyboardEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback(lv_event_t *e);
     static void onSecurityToggleRequestFinished(bool success, void *user_data);
     static void onMainMenuItemClickedEventCallback(lv_event_t *e);
@@ -218,6 +236,7 @@ private:
     lv_obj_t *_displayTimezoneDropdown;
     lv_obj_t *_displayTimezoneInfoLabel;
     lv_obj_t *_bluetoothMenuItem;
+    lv_obj_t *_zigbeeMenuItem;
     lv_obj_t *_wifiMenuItem;
     lv_obj_t *_audioMenuItem;
     lv_obj_t *_displayMenuItem;
@@ -225,6 +244,22 @@ private:
     lv_obj_t *_securityMenuItem;
     lv_obj_t *_aboutMenuItem;
     lv_obj_t *_bluetoothInfoLabel;
+    lv_obj_t *_bluetoothNameTextArea;
+    lv_obj_t *_bluetoothNameSaveButton;
+    lv_obj_t *_bluetoothScanButton;
+    lv_obj_t *_bluetoothScanButtonLabel;
+    lv_obj_t *_bluetoothScanStatusLabel;
+    lv_obj_t *_bluetoothScanResultsLabel;
+    lv_obj_t *_bluetoothKeyboard;
+    lv_obj_t *_zigbeeEnableSwitch;
+    lv_obj_t *_zigbeeNameTextArea;
+    lv_obj_t *_zigbeeNameSaveButton;
+    lv_obj_t *_zigbeeChannelDropdown;
+    lv_obj_t *_zigbeePermitJoinDropdown;
+    lv_obj_t *_zigbeeKeyboard;
+    lv_obj_t *_zigbeeInfoLabel;
+    lv_obj_t *_zigbeeRoleValueLabel;
+    lv_obj_t *_zigbeeConfigSummaryLabel;
     lv_obj_t *_securityDeviceLockSwitch;
     lv_obj_t *_securitySettingsLockSwitch;
     lv_obj_t *_securityInfoLabel;
@@ -232,6 +267,7 @@ private:
     lv_obj_t *_firmwareScreen;
     lv_obj_t *_hardwareScreen;
     lv_obj_t *_securityScreen;
+    lv_obj_t *_zigbeeScreen;
     lv_obj_t *_hardwareCpuSpeedValueLabel;
     lv_obj_t *_hardwareCpuSpeedDetailLabel;
     lv_obj_t *_hardwareCpuSpeedBar;
@@ -260,6 +296,8 @@ private:
     lv_obj_t *_firmwareProgressLabel;
     bool _firmwareUpdateInProgress;
     bool _isWifiPasswordVisible;
+    bool _bluetoothStatusIconInstalled;
+    bool _zigbeeStatusIconInstalled;
     struct SecurityToggleContext {
         AppSettings *app;
         device_security::LockType type;

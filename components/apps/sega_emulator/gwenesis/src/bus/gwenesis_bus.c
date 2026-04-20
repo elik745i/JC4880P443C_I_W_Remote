@@ -18,6 +18,8 @@ __license__ = "GPLv3"
 */
 #include <stdio.h>
 #include <stdint.h>
+
+#include "esp_attr.h"
 #include <string.h>
 #include <assert.h>
 #include <ctype.h>
@@ -65,12 +67,12 @@ unsigned char *M68K_RAM=(void *)(uint32_t)(0); // 68K RAM
 #else
 
 unsigned char *ROM_DATA; // 68K Main Program (uncompressed)
-unsigned char M68K_RAM[MAX_RAM_SIZE];    // 68K RAM
+EXT_RAM_BSS_ATTR unsigned char M68K_RAM[MAX_RAM_SIZE];    // 68K RAM
 #endif
 
 
 // Setup Z80 Memory
-unsigned char ZRAM[MAX_Z80_RAM_SIZE]; // Z80 RAM
+EXT_RAM_BSS_ATTR unsigned char ZRAM[MAX_Z80_RAM_SIZE]; // Z80 RAM
 unsigned char TMSS[0x4];
 extern unsigned short gwenesis_vdp_status;
 
@@ -156,7 +158,6 @@ void load_cartridge(unsigned char *buffer, size_t size)
 #endif
 
 /******************************************************************************
- *
  *   Power ON the CPU
  *   Initialize 68K, Z80 and YM2612 Cores
  *

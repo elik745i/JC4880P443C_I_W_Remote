@@ -577,10 +577,6 @@ bool InternetRadio::init(void)
         return false;
     }
 
-    if (!ensurePreviewWorkerReady()) {
-        ESP_LOGW(TAG, "Radio preview worker was not ready during init; playback will retry on demand");
-    }
-
     showRootMenu();
     return true;
 }
@@ -1108,6 +1104,19 @@ bool InternetRadio::ensurePreviewWorkerReady(void)
     }
 
     _previewTaskUsesCapsStack = false;
+    if (xTaskCreatePinnedToCoreWithCaps(previewPlaybackTask,
+                                        "radio_preview",
+                                        kPreviewTaskStackSize,
+                                        this,
+                                        kPreviewTaskPriority,
+                                        &_previewTaskHandle,
+                                        1,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        _previewTaskUsesCapsStack = true;
+        ESP_LOGI(TAG, "Radio preview worker created with PSRAM-backed stack");
+        return true;
+    }
+
     if (xTaskCreatePinnedToCore(previewPlaybackTask,
                                 "radio_preview",
                                 kPreviewTaskStackSize,

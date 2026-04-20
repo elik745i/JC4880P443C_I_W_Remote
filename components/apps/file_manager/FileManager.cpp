@@ -11,6 +11,7 @@
 
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
+#include "storage_access.h"
 
 static const char *TAG = "FileManager";
 static constexpr const char *kSdRoot = "/sdcard";
@@ -151,25 +152,25 @@ FileManager::FileManager()
 
 bool FileManager::init()
 {
-    if (!buildUi()) {
-        return false;
-    }
-
-    if (rootAvailable(StorageRoot::SdCard)) {
-        return switchStorage(StorageRoot::SdCard);
-    }
-
-    return switchStorage(StorageRoot::Spiffs);
+    _activeRoot = StorageRoot::Spiffs;
+    _currentPath = rootPath(StorageRoot::Spiffs);
+    return true;
 }
 
 bool FileManager::run()
 {
-    if (_screen == nullptr) {
+    if (!ensureUiReady()) {
         return false;
     }
 
+    if (_currentPath.empty()) {
+        _activeRoot = StorageRoot::Spiffs;
+        _currentPath = rootPath(StorageRoot::Spiffs);
+    }
+
     lv_scr_load(_screen);
-    return refreshEntries();
+    refreshEntries();
+    return true;
 }
 
 bool FileManager::pause()
@@ -179,7 +180,12 @@ bool FileManager::pause()
 
 bool FileManager::resume()
 {
-    return refreshEntries();
+    if (!ensureUiReady()) {
+        return false;
+    }
+
+    refreshEntries();
+    return true;
 }
 
 bool FileManager::back()
@@ -221,6 +227,11 @@ bool FileManager::close()
 bool FileManager::buildUi()
 {
     _screen = lv_obj_create(NULL);
+    if (_screen == nullptr) {
+        return false;
+    }
+
+    lv_obj_add_event_cb(_screen, onScreenDeleted, LV_EVENT_DELETE, this);
     lv_obj_set_style_bg_color(_screen, lv_color_hex(0xEEF3F9), 0);
     lv_obj_set_style_bg_opa(_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(_screen, LV_OBJ_FLAG_SCROLLABLE);
@@ -355,9 +366,54 @@ bool FileManager::buildUi()
     return true;
 }
 
+bool FileManager::ensureUiReady()
+{
+    if ((_screen != nullptr) && !lv_obj_is_valid(_screen)) {
+        resetUiPointers();
+    }
+
+    if (_screen == nullptr) {
+        return buildUi();
+    }
+
+    return _entryList != nullptr;
+}
+
+bool FileManager::ensureStorageReady(StorageRoot root, bool allowMount)
+{
+    if (root == StorageRoot::Spiffs) {
+        return is_path_directory(rootPath(root));
+    }
+
+    if (allowMount && !app_storage_ensure_sdcard_available()) {
+        return false;
+    }
+
+    return app_storage_is_sdcard_mounted() && is_path_directory(rootPath(root));
+}
+
 bool FileManager::refreshEntries()
 {
     if (_entryList == nullptr) {
+        return false;
+    }
+
+    if (!ensureStorageReady(_activeRoot, _activeRoot == StorageRoot::SdCard)) {
+        lv_obj_clean(_entryList);
+        _emptyLabel = nullptr;
+        _entries.clear();
+        _selectedEntry = nullptr;
+        updateActionButtons();
+        updatePathLabel();
+        updateOverviewCard();
+        setStatus(rootLabel(_activeRoot) + " is not available", true);
+        _emptyLabel = lv_label_create(_entryList);
+        lv_label_set_text_fmt(_emptyLabel,
+                              (_activeRoot == StorageRoot::SdCard) ? "Insert an SD card to browse files" : "%s is not mounted",
+                              rootLabel(_activeRoot).c_str());
+        lv_obj_set_width(_emptyLabel, 360);
+        lv_obj_set_style_text_align(_emptyLabel, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_top(_emptyLabel, 56, 0);
         return false;
     }
 
@@ -473,7 +529,7 @@ bool FileManager::switchStorage(StorageRoot root)
     _currentPath = rootPath(root);
     updateStorageButtons();
 
-    if (!rootAvailable(root)) {
+    if (!ensureStorageReady(root, root == StorageRoot::SdCard)) {
         lv_obj_clean(_entryList);
         _emptyLabel = nullptr;
         _entries.clear();
@@ -622,6 +678,10 @@ bool FileManager::showSelectedEntryInfo()
 
 bool FileManager::rootAvailable(StorageRoot root) const
 {
+    if (root == StorageRoot::SdCard) {
+        return app_storage_is_sdcard_mounted() && is_path_directory(rootPath(root));
+    }
+
     return is_path_directory(rootPath(root));
 }
 
@@ -744,6 +804,37 @@ void FileManager::selectEntry(EntryInfo *entry)
     }
 
     updateActionButtons();
+}
+
+void FileManager::resetUiPointers()
+{
+    _screen = nullptr;
+    _titleLabel = nullptr;
+    _subtitleLabel = nullptr;
+    _pathLabel = nullptr;
+    _statusLabel = nullptr;
+    _entryList = nullptr;
+    _sdButton = nullptr;
+    _spiffsButton = nullptr;
+    _storageNameLabel = nullptr;
+    _storageMetaLabel = nullptr;
+    _folderMetaLabel = nullptr;
+    _upButton = nullptr;
+    _refreshButton = nullptr;
+    _openButton = nullptr;
+    _newFolderButton = nullptr;
+    _renameButton = nullptr;
+    _deleteButton = nullptr;
+    _infoButton = nullptr;
+    _emptyLabel = nullptr;
+    _inputPanel = nullptr;
+    _inputTitleLabel = nullptr;
+    _inputTextArea = nullptr;
+    _keyboard = nullptr;
+    _dialogMessageBox = nullptr;
+    _selectedEntry = nullptr;
+    _entries.clear();
+    _inputMode = InputMode::None;
 }
 
 void FileManager::showInputDialog(InputMode mode, const char *title, const std::string &initialValue)
@@ -971,4 +1062,14 @@ void FileManager::onDeleteMessageBoxEvent(lv_event_t *event)
 
     lv_msgbox_close(msgbox);
     app->_dialogMessageBox = nullptr;
+}
+
+void FileManager::onScreenDeleted(lv_event_t *event)
+{
+    auto *app = static_cast<FileManager *>(lv_event_get_user_data(event));
+    if ((app == nullptr) || (lv_event_get_target(event) != app->_screen)) {
+        return;
+    }
+
+    app->resetUiPointers();
 }

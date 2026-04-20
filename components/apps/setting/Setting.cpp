@@ -56,6 +56,7 @@
 #include "ui/ui.h"
 #include "Setting.hpp"
 #include "app_sntp.h"
+#include "system_ui_service.h"
 
 #include "esp_brookesia_versions.h"
 
@@ -97,6 +98,7 @@
 #define NVS_KEY_ZIGBEE_PERMIT_JOIN      "zb_join"
 #define NVS_KEY_ZIGBEE_DEVICE_NAME      "zb_name"
 #define NVS_KEY_AUDIO_VOLUME            "volume"
+#define NVS_KEY_SYSTEM_AUDIO_VOLUME     "sys_volume"
 #define NVS_KEY_DISPLAY_BRIGHTNESS      "brightness"
 #define NVS_KEY_DISPLAY_ADAPTIVE        "disp_adapt"
 #define NVS_KEY_DISPLAY_SCREENSAVER     "disp_saver"
@@ -827,6 +829,17 @@ static constexpr const char *kFirmwareSdDirectory = "/sdcard/firmware";
 static constexpr const char *kFirmwareUnknownVersion = "unknown";
 static constexpr const char *kSdCardMountPoint = "/sdcard";
 
+static bool settings_ui_is_ready(void)
+{
+    return (ui_ScreenSettingMain != nullptr) && lv_obj_is_valid(ui_ScreenSettingMain) &&
+           (ui_ScreenSettingWiFi != nullptr) && lv_obj_is_valid(ui_ScreenSettingWiFi) &&
+           (ui_ScreenSettingVolume != nullptr) && lv_obj_is_valid(ui_ScreenSettingVolume) &&
+           (ui_ScreenSettingLight != nullptr) && lv_obj_is_valid(ui_ScreenSettingLight) &&
+           (ui_ScreenSettingBLE != nullptr) && lv_obj_is_valid(ui_ScreenSettingBLE) &&
+           (ui_ScreenSettingAbout != nullptr) && lv_obj_is_valid(ui_ScreenSettingAbout) &&
+           (ui_ScreenSettingVerification != nullptr) && lv_obj_is_valid(ui_ScreenSettingVerification);
+}
+
 static std::string zigbeeChannelPreferenceLabel(int32_t channel)
 {
     if (channel <= 0) {
@@ -1254,6 +1267,8 @@ AppSettings::AppSettings():
     _displayAutoTimezoneSwitch(nullptr),
     _displayTimezoneDropdown(nullptr),
     _displayTimezoneInfoLabel(nullptr),
+    _audioMediaVolumeSlider(nullptr),
+    _audioSystemVolumeSlider(nullptr),
     _bluetoothMenuItem(nullptr),
     _zigbeeMenuItem(nullptr),
     _wifiMenuItem(nullptr),
@@ -1338,8 +1353,10 @@ void AppSettings::initializeDefaultNvsParams(void)
     _nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] = false;
     _nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL] = 13;
     _nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN] = 180;
-    _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = bsp_extra_codec_volume_get();
+    _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = bsp_extra_audio_media_volume_get();
     _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = max(min((int)_nvs_param_map[NVS_KEY_AUDIO_VOLUME], SPEAKER_VOLUME_MAX), SPEAKER_VOLUME_MIN);
+    _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME] = bsp_extra_audio_system_volume_get();
+    _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME] = max(min((int)_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], SPEAKER_VOLUME_MAX), SPEAKER_VOLUME_MIN);
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = brightness;
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = max(min((int)_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], SCREEN_BRIGHTNESS_MAX), SCREEN_BRIGHTNESS_MIN);
     _nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE] = 0;
@@ -1354,14 +1371,21 @@ bool AppSettings::run(void)
 {
     _is_ui_del = false;
 
-    ui_setting_init();
+    const bool rebuild_ui = !settings_ui_is_ready();
+    if (rebuild_ui) {
+        ui_setting_init();
+    } else {
+        lv_disp_load_scr(ui_ScreenSettingMain);
+    }
 
     esp_read_mac(base_mac_addr, ESP_MAC_EFUSE_FACTORY);
     snprintf(mac_str, sizeof(mac_str), "%02X-%02X-%02X-%02X-%02X-%02X",
              base_mac_addr[0], base_mac_addr[1], base_mac_addr[2],
              base_mac_addr[3], base_mac_addr[4], base_mac_addr[5]);
 
-    extraUiInit();
+    if (rebuild_ui) {
+        extraUiInit();
+    }
     refreshRadioStatusBar();
     updateUiByNvsParam();
 
@@ -1410,23 +1434,6 @@ bool AppSettings::init(void)
     status_bar = home.getStatusBar();
     backstage = home.getRecentsScreen();
 
-    adc_battery_estimation_t config = {
-        .internal = {
-            .adc_unit = ADC_UNIT_2,
-            .adc_bitwidth = ADC_BITWIDTH_DEFAULT,
-            .adc_atten = EXAMPLE_ADC_ATTEN,
-        },
-        .adc_channel = EXAMPLE_ADC2_CHAN0,
-        .upper_resistor = 68000,
-        .lower_resistor = 100000,
-        .battery_points = default_battery_points,
-        .battery_points_count = DEFAULT_POINTS_COUNT,
-        .charging_detect_cb = NULL,
-        .charging_detect_user_data = NULL,
-    };
-
-    adc_battery_estimation_handle = adc_battery_estimation_create(&config);
-
     // Initialize NVS parameters
     initializeDefaultNvsParams();
     // Load NVS parameters if exist
@@ -1448,17 +1455,20 @@ bool AppSettings::init(void)
     }
     applyManualTimezonePreference();
     // Update System parameters
-    bsp_extra_codec_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME], (int *)&_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    bsp_extra_audio_media_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    bsp_extra_audio_system_volume_set(_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME]);
     bsp_display_brightness_set(_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
     ESP_ERROR_CHECK(bsp_extra_display_idle_init());
     applyDisplayIdleSettings();
 
-    create_background_task_prefer_psram(euiRefresTask, "Home Refresh", HOME_REFRESH_TASK_STACK_SIZE,
-                                        this, HOME_REFRESH_TASK_PRIORITY, nullptr, 1);
-    create_background_task_prefer_psram(euiBatteryTask, "Battey Refresh", HOME_REFRESH_TASK_STACK_SIZE,
-                                        this, HOME_REFRESH_TASK_PRIORITY, nullptr, 1);
-    create_background_task_prefer_psram(wifiScanTask, "WiFi Scan", WIFI_SCAN_TASK_STACK_SIZE,
-                                        this, WIFI_SCAN_TASK_PRIORITY, nullptr, 1);
+    if (create_background_task_prefer_psram(euiRefresTask, "Home Refresh", HOME_REFRESH_TASK_STACK_SIZE,
+                                            this, HOME_REFRESH_TASK_PRIORITY, nullptr, 1) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to start Settings refresh task");
+    }
+    if (create_background_task_prefer_psram(wifiScanTask, "WiFi Scan", WIFI_SCAN_TASK_STACK_SIZE,
+                                            this, WIFI_SCAN_TASK_PRIORITY, nullptr, 1) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to start WiFi scan background task");
+    }
 
     refreshRadioStatusBar();
 
@@ -2581,9 +2591,76 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_event_cb(ui_ScreenSettingLight, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
     /* Audio */
+    _audioMediaVolumeSlider = ui_SliderPanelScreenSettingVolumeSwitch;
+    lv_obj_clear_flag(ui_PanelScreenSettingVolumeList, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_pad_left(ui_PanelScreenSettingVolumeList, 0, 0);
+    lv_obj_set_style_pad_right(ui_PanelScreenSettingVolumeList, 0, 0);
+    lv_obj_set_style_pad_top(ui_PanelScreenSettingVolumeList, 0, 0);
+    lv_obj_set_style_pad_bottom(ui_PanelScreenSettingVolumeList, 0, 0);
+    lv_obj_set_style_pad_row(ui_PanelScreenSettingVolumeList, 12, 0);
+    lv_obj_set_style_bg_opa(ui_PanelScreenSettingVolumeList, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ui_PanelScreenSettingVolumeList, 0, 0);
+    lv_obj_set_scroll_dir(ui_PanelScreenSettingVolumeList, LV_DIR_VER);
+
+    auto styleAudioSliderRow = [](lv_obj_t *row, lv_obj_t *label, lv_obj_t *slider, lv_obj_t *icon) {
+        lv_obj_set_parent(row, ui_PanelScreenSettingVolumeList);
+        lv_obj_set_size(row, lv_pct(100), 72);
+        lv_obj_set_x(row, 0);
+        lv_obj_set_y(row, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(row, 18, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_left(row, 18, 0);
+        lv_obj_set_style_pad_right(row, 18, 0);
+        lv_obj_set_style_pad_top(row, 10, 0);
+        lv_obj_set_style_pad_bottom(row, 10, 0);
+
+        if (icon != nullptr) {
+            lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_align(icon, LV_ALIGN_LEFT_MID, 0, 0);
+        }
+
+        if (label != nullptr) {
+            lv_obj_set_width(label, 110);
+            lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
+            lv_obj_set_style_text_color(label, lv_color_hex(0x111827), 0);
+            if (icon != nullptr) {
+                lv_obj_align_to(label, icon, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
+            } else {
+                lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+            }
+        }
+
+        if (slider != nullptr) {
+            lv_obj_set_size(slider, 220, 14);
+            lv_obj_align(slider, LV_ALIGN_RIGHT_MID, 0, 0);
+        }
+    };
+
+    lv_label_set_text(ui_LabelPanelScreenSettingVolumeSwitch, "Media");
     lv_slider_set_range(ui_SliderPanelScreenSettingVolumeSwitch, SPEAKER_VOLUME_MIN, SPEAKER_VOLUME_MAX);
     lv_obj_add_event_cb(ui_SliderPanelScreenSettingVolumeSwitch, onSliderPanelVolumeSwitchValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
+    styleAudioSliderRow(ui_PanelScreenSettingVolumeSwitch, ui_LabelPanelScreenSettingVolumeSwitch,
+                        ui_SliderPanelScreenSettingVolumeSwitch, ui_ImagePanelScreenSettingVolumeSwitch);
+
+    {
+        lv_obj_t *row = lv_obj_create(ui_PanelScreenSettingVolumeList);
+        lv_obj_t *label = lv_label_create(row);
+        lv_label_set_text(label, "System Sounds");
+
+        _audioSystemVolumeSlider = lv_slider_create(row);
+        lv_slider_set_range(_audioSystemVolumeSlider, SPEAKER_VOLUME_MIN, SPEAKER_VOLUME_MAX);
+        lv_obj_add_event_cb(_audioSystemVolumeSlider, onSliderPanelSystemVolumeValueChangeEventCallback,
+                            LV_EVENT_VALUE_CHANGED, this);
+        lv_obj_add_event_cb(_audioSystemVolumeSlider, onSliderPanelSystemVolumeValueChangeEventCallback,
+                            LV_EVENT_RELEASED, this);
+
+        styleAudioSliderRow(row, label, _audioSystemVolumeSlider, nullptr);
+    }
     lv_obj_add_flag(ui_ButtonScreenSettingVolumeReturn, LV_OBJ_FLAG_HIDDEN);
     // Record the screen index and install the screen loaded event callback
     _screen_list[UI_VOLUME_SETTING_INDEX] = ui_ScreenSettingVolume;
@@ -2887,9 +2964,7 @@ bool AppSettings::clearSavedWifiCredentials(void)
     }
 
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED);
-    if (status_bar != nullptr) {
-        status_bar->setWifiIconState(0);
-    }
+    system_ui_service::set_wifi_connected(false);
 
     refreshSavedWifiUi();
     return ok;
@@ -2925,7 +3000,8 @@ bool AppSettings::factoryResetPreferences(void)
     ok &= clearSavedWifiCredentials();
     ok &= loadNvsParam();
     applyManualTimezonePreference();
-    bsp_extra_codec_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME], (int *)&_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    bsp_extra_audio_media_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
+    bsp_extra_audio_system_volume_set(_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME]);
     bsp_display_brightness_set(_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
     applyDisplayIdleSettings();
     updateUiByNvsParam();
@@ -4097,6 +4173,9 @@ void AppSettings::updateUiByNvsParam(void)
 
     lv_slider_set_value(ui_SliderPanelScreenSettingLightSwitch1, _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], LV_ANIM_OFF);
     lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, _nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
+    if (_audioSystemVolumeSlider != nullptr) {
+        lv_slider_set_value(_audioSystemVolumeSlider, _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], LV_ANIM_OFF);
+    }
     refreshSavedWifiUi();
     refreshBluetoothUi();
     refreshRadioStatusBar();
@@ -4265,36 +4344,6 @@ AppSettings::WifiSignalStrengthLevel_t AppSettings::wifiSignalStrengthFromRssi(i
     }
 
     return WIFI_SIGNAL_STRENGTH_NONE;
-}
-
-void AppSettings::refreshWifiStatusBar(void)
-{
-    if (status_bar == nullptr) {
-        return;
-    }
-
-    const EventBits_t wifi_bits = xEventGroupGetBits(s_wifi_event_group);
-    const bool wifi_connected = (wifi_bits & WIFI_EVENT_CONNECTED) != 0;
-    WifiSignalStrengthLevel_t signal_level = wifi_connected ? WIFI_SIGNAL_STRENGTH_WEAK : WIFI_SIGNAL_STRENGTH_NONE;
-
-    if (wifi_connected) {
-        wifi_ap_record_t ap_info = {};
-        if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-            signal_level = wifiSignalStrengthFromRssi(ap_info.rssi);
-            if (signal_level == WIFI_SIGNAL_STRENGTH_NONE) {
-                signal_level = WIFI_SIGNAL_STRENGTH_WEAK;
-            }
-            _wifi_signal_strength_level = signal_level;
-        } else if (_wifi_signal_strength_level != WIFI_SIGNAL_STRENGTH_NONE) {
-            signal_level = _wifi_signal_strength_level;
-        }
-    }
-
-    _wifi_signal_strength_level = signal_level;
-
-    bsp_display_lock(0);
-    status_bar->setWifiIconState(static_cast<int>(signal_level));
-    bsp_display_unlock();
 }
 
 void AppSettings::refreshHardwareMonitorUi(void)
@@ -4522,10 +4571,6 @@ void AppSettings::deinitWifiListButton(void)
 void AppSettings::euiRefresTask(void *arg)
 {
     AppSettings *app = (AppSettings *)arg;
-    time_t now;
-    struct tm timeinfo;
-    bool is_time_pm = false;
-    // char textBuf[50];
     uint16_t free_sram_size_kb = 0;
     uint16_t total_sram_size_kb = 0;
     uint16_t free_psram_size_kb = 0;
@@ -4537,24 +4582,7 @@ void AppSettings::euiRefresTask(void *arg)
     }
 
     while (1) {
-        /* Update status bar */
-        // time
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        is_time_pm = (timeinfo.tm_hour >= 12);
-
-        bsp_display_lock(0);
-        if(!app->status_bar->setClock(timeinfo.tm_hour, timeinfo.tm_min, is_time_pm)) {
-            ESP_LOGE(TAG, "Set clock failed");
-        }
-        bsp_display_unlock();
-
-        // Update WiFi icon state
-        if((xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_CONNECTED)) {
-            app_sntp_init();
-        }
         bleCheckStartupTimeout();
-        app->refreshWifiStatusBar();
         bsp_display_lock(0);
         app->refreshRadioStatusBar();
         if (app->_screen_index == UI_BLUETOOTH_SETTING_INDEX) {
@@ -4593,43 +4621,6 @@ void AppSettings::euiRefresTask(void *arg)
 
 err:
     vTaskDelete(NULL);
-}
-
-
-void AppSettings::euiBatteryTask(void *arg)
-{
-    AppSettings *app = (AppSettings *)arg;
-     while(1)
-    {
-       
-        float capacity = 0;
-        adc_battery_estimation_get_capacity(app->adc_battery_estimation_handle, &capacity);
-        
-        adc_battery_estimation_get_charging_state(app->adc_battery_estimation_handle,&app->charge_flag);
-        // printf("Battery capacity: %.1f%%\n", capacity);
-         
- 
-         bsp_display_lock(0);
-
-         if(!app->status_bar->setBatteryPercent(app->charge_flag,capacity))
-         {
-             ESP_LOGE(TAG,"Set battery failed");
-         }
-        //  if(app->charge_flag)
-        //  {
-        //     app->status_bar->hideBatteryPercent();
-        //  }
-        //  else
-        //  {
-        //     app->status_bar->showBatteryPercent();
-        //  }
-         bsp_display_unlock();
-
-         vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-    
-    vTaskDelete(NULL);
-
 }
 
 void AppSettings::wifiScanTask(void *arg)
@@ -4692,7 +4683,7 @@ void AppSettings::wifiConnectTask(void *arg)
     wifi_config_t wifi_config = { 0 };
 
     esp_wifi_disconnect();
-    app->status_bar->setWifiIconState(0);
+    system_ui_service::set_wifi_connected(false);
 
     strncpy(st_wifi_ssid, lv_label_get_text(ui_LabelScreenSettingVerificationSSID), sizeof(st_wifi_ssid) - 1);
     st_wifi_ssid[sizeof(st_wifi_ssid) - 1] = '\0';
@@ -4786,6 +4777,7 @@ void AppSettings::wifiEventHandler(void* arg, esp_event_base_t event_base, int32
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED | WIFI_EVENT_CONNECTING);
         ESP_LOGI(TAG, "Disconnected from AP SSID:%s", st_wifi_ssid);
+        system_ui_service::set_wifi_connected(false);
         if (app != nullptr) {
             app->requestWifiConnect("disconnect recovery");
         }
@@ -4798,15 +4790,14 @@ void AppSettings::wifiEventHandler(void* arg, esp_event_base_t event_base, int32
                 lv_obj_add_flag(ui_SpinnerScreenSettingWiFi, LV_OBJ_FLAG_HIDDEN);
                 lv_obj_add_flag(ui_SwitchPanelScreenSettingWiFiSwitch, LV_OBJ_FLAG_CLICKABLE);
                 bsp_display_unlock();
-                app->refreshWifiStatusBar();
             }
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTING);
         xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_CONNECTED);
+        system_ui_service::refresh_wifi_from_driver();
         if (app != nullptr) {
             app->_autoTimezoneRefreshPending = true;
-            app->refreshWifiStatusBar();
         }
     }
 }
@@ -5162,7 +5153,7 @@ void AppSettings::onSwitchPanelScreenSettingWiFiSwitchValueChangeEventCallback( 
             app->stopWifiScan();
             if (xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_CONNECTED) {
                 ESP_ERROR_CHECK(esp_wifi_disconnect());
-                app->status_bar->setWifiIconState(0);
+                system_ui_service::set_wifi_connected(false);
             }
         }
     }
@@ -5486,13 +5477,40 @@ void AppSettings::onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t 
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
     if (volume != app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME]) {
-        if ((bsp_extra_codec_volume_set(volume, NULL) != ESP_OK) && (bsp_extra_codec_volume_get() != volume)) {
+        if ((bsp_extra_audio_media_volume_set(volume) != ESP_OK) && (bsp_extra_audio_media_volume_get() != volume)) {
             ESP_LOGE(TAG, "Set volume failed");
             lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
             return;
         }
         app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME] = volume;
         app->setNvsParam(NVS_KEY_AUDIO_VOLUME, volume);
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onSliderPanelSystemVolumeValueChangeEventCallback( lv_event_t * e) {
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    int volume = 0;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app->_audioSystemVolumeSlider, end, "Invalid system volume slider");
+
+    volume = lv_slider_get_value(app->_audioSystemVolumeSlider);
+    if (volume != app->_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME]) {
+        if ((bsp_extra_audio_system_volume_set(volume) != ESP_OK) &&
+            (bsp_extra_audio_system_volume_get() != volume)) {
+            ESP_LOGE(TAG, "Set system sound volume failed");
+            lv_slider_set_value(app->_audioSystemVolumeSlider, app->_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], LV_ANIM_OFF);
+            goto end;
+        }
+
+        app->_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME] = volume;
+        app->setNvsParam(NVS_KEY_SYSTEM_AUDIO_VOLUME, volume);
+    }
+
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        bsp_extra_audio_play_system_notification();
     }
 
 end:

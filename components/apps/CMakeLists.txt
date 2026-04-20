@@ -1,9 +1,11 @@
 set(APPS_DIR ./)
 file(GLOB_RECURSE APPS_C_SRCS ${APPS_DIR}/*.c)
 file(GLOB_RECURSE APPS_CPP_SRCS ${APPS_DIR}/*.cpp)
+set(APPS_SHARED_SRCS ${APPS_DIR}/system_ui_service.cpp)
+list(REMOVE_ITEM APPS_CPP_SRCS ${APPS_SHARED_SRCS})
 
 idf_component_register(
-    SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS}
+    SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS} ${APPS_SHARED_SRCS}
     INCLUDE_DIRS ${APPS_DIR}
                  ${APPS_DIR}/music_player
                  ${APPS_DIR}/sega_emulator/smsplus

@@ -56,6 +56,56 @@ esp_err_t bsp_extra_codec_mute_set(bool enable);
  */
 esp_err_t bsp_extra_codec_volume_set(int volume, int *volume_set);
 
+/**
+ * @brief Set media playback volume used by file and stream playback.
+ *
+ * @param volume: volume set
+ *
+ * @return
+ *    - ESP_OK: Success
+ *    - Others: Fail
+ */
+esp_err_t bsp_extra_audio_media_volume_set(int volume);
+
+/**
+ * @brief Get media playback volume.
+ *
+ * @return
+ *   - volume: media playback volume
+ */
+int bsp_extra_audio_media_volume_get(void);
+
+/**
+ * @brief Set system sound volume used for notification overlays.
+ *
+ * @param volume: volume set
+ *
+ * @return
+ *    - ESP_OK: Success
+ *    - Others: Fail
+ */
+esp_err_t bsp_extra_audio_system_volume_set(int volume);
+
+/**
+ * @brief Get system sound volume.
+ *
+ * @return
+ *   - volume: system sound volume
+ */
+int bsp_extra_audio_system_volume_get(void);
+
+/**
+ * @brief Play a short system notification tone on the shared output path.
+ *
+ * If media playback is active, the notification is mixed into the PCM stream.
+ * Otherwise the tone is written directly to the codec path.
+ *
+ * @return
+ *    - ESP_OK: Success
+ *    - Others: Fail
+ */
+esp_err_t bsp_extra_audio_play_system_notification(void);
+
 /** 
  * @brief Player get volume.
  * 

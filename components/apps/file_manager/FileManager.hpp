@@ -40,6 +40,8 @@ private:
     };
 
     bool buildUi();
+    bool ensureUiReady();
+    bool ensureStorageReady(StorageRoot root, bool allowMount);
     bool refreshEntries();
     bool switchStorage(StorageRoot root);
     bool navigateTo(const std::string &path);
@@ -62,6 +64,7 @@ private:
     void updateStorageButtons();
     void updateActionButtons();
     void selectEntry(EntryInfo *entry);
+    void resetUiPointers();
     void showInputDialog(InputMode mode, const char *title, const std::string &initialValue);
     void hideInputDialog();
     void showDeleteConfirm();
@@ -81,6 +84,7 @@ private:
     static void onKeyboardDone(lv_event_t *event);
     static void onInfoMessageBoxEvent(lv_event_t *event);
     static void onDeleteMessageBoxEvent(lv_event_t *event);
+    static void onScreenDeleted(lv_event_t *event);
 
     lv_obj_t *_screen;
     lv_obj_t *_titleLabel;

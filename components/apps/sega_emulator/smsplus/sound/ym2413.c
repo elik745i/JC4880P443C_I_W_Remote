@@ -1,3 +1,5 @@
+#include "esp_attr.h"
+
 #if 0
 /*
 **
@@ -441,13 +443,13 @@ static const UINT8 mul_tab[16]= {
 *  TL_RES_LEN - sinus resolution (X axis)
 */
 #define TL_TAB_LEN (11*2*TL_RES_LEN)
-static signed int tl_tab[TL_TAB_LEN];
+static EXT_RAM_BSS_ATTR signed int tl_tab[TL_TAB_LEN];
 
 #define ENV_QUIET    (TL_TAB_LEN>>5)
 
 /* sin waveform table in 'decibel' scale */
 /* two waveforms on OPLL type chips */
-static unsigned int sin_tab[SIN_LEN * 2];
+static EXT_RAM_BSS_ATTR unsigned int sin_tab[SIN_LEN * 2];
 
 
 /* LFO Amplitude Modulation table (verified on real YM3812)

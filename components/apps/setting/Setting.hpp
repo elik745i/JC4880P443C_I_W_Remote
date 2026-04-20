@@ -156,13 +156,11 @@ private:
     void stopWifiScan(void);
     void scanWifiAndUpdateUi(void);
     WifiSignalStrengthLevel_t wifiSignalStrengthFromRssi(int rssi) const;
-    void refreshWifiStatusBar(void);
     // Smart Gadget
     // void updateGadgetTime(struct tm timeinfo);
 
     /* Task */
     static void euiRefresTask(void *arg);
-    static void euiBatteryTask(void *arg);
     static void wifiScanTask(void *arg);
     static void wifiConnectTask(void *arg);
 
@@ -207,6 +205,7 @@ private:
     static void onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e);
     // Audio
     static void onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e);
+    static void onSliderPanelSystemVolumeValueChangeEventCallback(lv_event_t * e);
     // Brightness
     static void onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t * e);
     static void onSwitchPanelScreenSettingAdaptiveBrightnessValueChangeEventCallback(lv_event_t *e);
@@ -235,6 +234,8 @@ private:
     lv_obj_t *_displayAutoTimezoneSwitch;
     lv_obj_t *_displayTimezoneDropdown;
     lv_obj_t *_displayTimezoneInfoLabel;
+    lv_obj_t *_audioMediaVolumeSlider;
+    lv_obj_t *_audioSystemVolumeSlider;
     lv_obj_t *_bluetoothMenuItem;
     lv_obj_t *_zigbeeMenuItem;
     lv_obj_t *_wifiMenuItem;
@@ -318,9 +319,6 @@ private:
     int adc_raw[2][10];
     int voltage[2][10];
     bool do_calibration2;
-    bool charge_flag;
     adc_oneshot_unit_handle_t adc2_handle;
     adc_cali_handle_t adc2_cali_handle;
-
-    adc_battery_estimation_handle_t adc_battery_estimation_handle;
 };

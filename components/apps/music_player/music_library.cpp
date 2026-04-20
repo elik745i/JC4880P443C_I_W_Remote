@@ -13,6 +13,7 @@
 
 #include "esp_log.h"
 #include "bsp_board_extra.h"
+#include "storage_access.h"
 
 namespace {
 
@@ -32,6 +33,51 @@ static const char *kEmptyArtist = "Insert an SD card with audio files";
 static const char *kEmptyGenre = "MP3, WAV";
 static std::vector<TrackInfo> s_tracks;
 static uint32_t s_currentIndex = 0;
+
+bool ensure_music_audio_ready()
+{
+    esp_err_t ret = bsp_extra_codec_dev_stop();
+    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
+        ESP_LOGW(TAG, "Failed to stop codec output path before music playback: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    const esp_err_t codec_init_err = bsp_extra_codec_init();
+    if (codec_init_err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "Music playback unavailable due to limited audio resources: %s",
+                 esp_err_to_name(codec_init_err));
+        return false;
+    }
+
+    ret = bsp_extra_player_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to initialize shared audio player for music playback: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ret = bsp_extra_codec_dev_resume();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to resume codec output path for music playback: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    const int current_volume = bsp_extra_codec_volume_get();
+    const int restore_volume = current_volume >= 0 ? current_volume : 60;
+    ret = bsp_extra_codec_volume_set(restore_volume, NULL);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to restore music playback volume: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ret = bsp_extra_codec_mute_set(false);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to unmute music playback path: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    return true;
+}
 
 std::string trim_extension(const std::string &name);
 std::string make_parent_label(const std::string &path);
@@ -393,6 +439,13 @@ const TrackInfo *get_track(uint32_t track_id)
 extern "C" bool music_library_refresh(void)
 {
     s_tracks.clear();
+
+    if (!app_storage_ensure_sdcard_available()) {
+        s_currentIndex = 0;
+        ESP_LOGI(TAG, "SD card unavailable, skipping media scan");
+        return false;
+    }
+
     scan_directory(kSdRoot);
 
     std::sort(s_tracks.begin(), s_tracks.end(), [](const TrackInfo &left, const TrackInfo &right) {
@@ -446,6 +499,10 @@ extern "C" bool music_library_play(uint32_t track_id)
 {
     const TrackInfo *track = get_track(track_id);
     if (track == nullptr) {
+        return false;
+    }
+
+    if (!ensure_music_audio_ready()) {
         return false;
     }
 

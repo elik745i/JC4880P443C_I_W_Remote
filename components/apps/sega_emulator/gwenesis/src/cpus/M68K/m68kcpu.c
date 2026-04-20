@@ -19,6 +19,7 @@ extern int vdp_68k_irq_ack(int int_level);
   #endif
 #endif
 
+#include "esp_attr.h"
 #include "m68kconf.h"
 #include "m68kcpu.h"
 #include "m68kops.h"
@@ -34,7 +35,7 @@ static unsigned char m68ki_cycles[0x10000];
 
 static int irq_latency;
 
-m68ki_cpu_core m68k;
+EXT_RAM_BSS_ATTR m68ki_cpu_core m68k;
 
 
 /* ======================================================================== */

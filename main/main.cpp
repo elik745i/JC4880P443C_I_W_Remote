@@ -28,11 +28,11 @@
 #include "esp_brookesia.hpp"
 #include "app_examples/phone/squareline/src/phone_app_squareline.hpp"
 #include "apps.h"
+#include "storage_access.h"
+#include "system_ui_service.h"
  
 static const char *TAG = "main";
-static constexpr TickType_t kSdcardMonitorPeriod = pdMS_TO_TICKS(2000);
-static constexpr TickType_t kSdcardMountRetryPeriod = pdMS_TO_TICKS(5000);
-static constexpr uint32_t kSdcardMonitorTaskStack = 8192;
+static constexpr TickType_t kSdcardMountRetryPeriod = pdMS_TO_TICKS(2000);
 static constexpr uint32_t kSerialCommandTaskStack = 6144;
 static constexpr const char *kNvsStorageNamespace = "storage";
 static constexpr const char *kNvsKeyOtaPendingVersion = "ota_ver";
@@ -44,16 +44,9 @@ struct PendingReleaseNotesContext {
     std::string notes;
 };
 
-struct SdcardRuntimeApps {
-    ESP_Brookesia_Phone *phone = nullptr;
-    FileManager *file_manager = nullptr;
-    MusicPlayer *music_player = nullptr;
-};
-
 static SemaphoreHandle_t s_sdcardMutex = nullptr;
 static bool s_sdcardMounted = false;
 static TickType_t s_nextSdcardMountAttempt = 0;
-static SdcardRuntimeApps s_sdcardRuntimeApps;
 static InternetRadio *s_internetRadioApp = nullptr;
 
 static void set_sdcard_probe_log_levels(esp_log_level_t sdmmc_periph_level,
@@ -251,16 +244,31 @@ static void init_serial_command_console(void)
 template <typename T>
 static T *install_app_or_delete(ESP_Brookesia_Phone &phone, T *app, const char *app_name)
 {
+    const size_t internal_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    const size_t psram_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
     if (app == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate %s", app_name);
         return nullptr;
     }
 
     if (phone.installApp(app) < 0) {
-        ESP_LOGW(TAG, "Skipping %s because install/init failed", app_name);
+        ESP_LOGW(TAG,
+                 "Skipping %s because install/init failed (internal delta: %d bytes, psram delta: %d bytes)",
+                 app_name,
+                 (int)(internal_before - heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                 (int)(psram_before - heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
         delete app;
         return nullptr;
     }
+
+    ESP_LOGI(TAG,
+             "Installed %s (internal delta: %d bytes, psram delta: %d bytes, internal free: %u KB, psram free: %u KB)",
+             app_name,
+             (int)(internal_before - heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             (int)(psram_before - heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
 
     return app;
 }
@@ -325,86 +333,14 @@ static bool sync_sdcard_mount_state(bool try_mount)
     return mounted;
 }
 
-static bool with_display_lock(TickType_t timeout_ms, void (*callback)(void *), void *context)
+extern "C" bool app_storage_is_sdcard_mounted(void)
 {
-    if (!bsp_display_lock(timeout_ms)) {
-        ESP_LOGW(TAG, "Timed out waiting for display lock");
-        return false;
-    }
-
-    callback(context);
-    bsp_display_unlock();
-    return true;
+    return sync_sdcard_mount_state(false);
 }
 
-static void install_storage_apps_locked(void *context)
+extern "C" bool app_storage_ensure_sdcard_available(void)
 {
-    (void)context;
-
-    if (s_sdcardRuntimeApps.phone == nullptr) {
-        return;
-    }
-
-    if (s_sdcardRuntimeApps.file_manager == nullptr) {
-        s_sdcardRuntimeApps.file_manager = install_app_or_delete(*s_sdcardRuntimeApps.phone, new FileManager(), "file manager");
-    }
-
-    if (s_sdcardRuntimeApps.music_player == nullptr) {
-        s_sdcardRuntimeApps.music_player = install_app_or_delete(*s_sdcardRuntimeApps.phone, new MusicPlayer(), "music player");
-    }
-}
-
-static void uninstall_storage_apps_locked(void *context)
-{
-    (void)context;
-
-    if (s_sdcardRuntimeApps.phone == nullptr) {
-        return;
-    }
-
-    uninstall_app_and_delete(*s_sdcardRuntimeApps.phone, s_sdcardRuntimeApps.music_player, "music player");
-    uninstall_app_and_delete(*s_sdcardRuntimeApps.phone, s_sdcardRuntimeApps.file_manager, "file manager");
-}
-
-static void ensure_sdcard_apps_available(void)
-{
-    if (s_sdcardRuntimeApps.phone == nullptr) {
-        return;
-    }
-
-    with_display_lock(1000, install_storage_apps_locked, nullptr);
-}
-
-static void remove_sdcard_apps(void)
-{
-    if (s_sdcardRuntimeApps.phone == nullptr) {
-        return;
-    }
-
-    with_display_lock(1000, uninstall_storage_apps_locked, nullptr);
-}
-
-static void sdcard_monitor_task(void *parameter)
-{
-    (void)parameter;
-
-    bool last_state = sync_sdcard_mount_state(false);
-    for (;;) {
-        const bool current_state = sync_sdcard_mount_state(true);
-        if (current_state != last_state) {
-            ESP_LOGI(TAG, "SD card %s", current_state ? "available" : "removed");
-            if (current_state) {
-                ensure_sdcard_apps_available();
-            } else {
-                remove_sdcard_apps();
-            }
-            last_state = current_state;
-        } else if (current_state && ((s_sdcardRuntimeApps.file_manager == nullptr) ||
-                                     (s_sdcardRuntimeApps.music_player == nullptr))) {
-            ensure_sdcard_apps_available();
-        }
-        vTaskDelay(kSdcardMonitorPeriod);
-    }
+    return sync_sdcard_mount_state(true);
 }
 
 static bool load_nvs_string(const char *key, std::string &value)
@@ -528,12 +464,6 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(bsp_spiffs_mount());
     ESP_LOGI(TAG, "SPIFFS mount successfully");
 
-    const bool sdcard_available_on_boot = sync_sdcard_mount_state(true);
-    if (sdcard_available_on_boot) {
-        ESP_LOGI(TAG, "SD card mount successfully");
-    } else {
-        ESP_LOGW(TAG, "No SD card detected at boot, continuing without removable storage");
-    }
  //    ESP_ERROR_CHECK(bsp_extra_codec_init());
 
     bsp_display_cfg_t cfg = {
@@ -560,28 +490,22 @@ extern "C" void app_main(void)
     ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->activateStylesheet(*phone_stylesheet), "Activate phone stylesheet failed");
 
     ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->begin(), "Failed to begin phone");
-
-    s_sdcardRuntimeApps.phone = phone;
-
+    if (!system_ui_service::initialize(*phone)) {
+        ESP_LOGW(TAG, "System UI service initialization failed");
+    }
     install_app_or_delete(*phone, new PhoneAppSquareline(), "phone app squareline");
 
     install_app_or_delete(*phone, new Calculator(), "calculator");
 
     install_app_or_delete(*phone, new AppSettings(), "settings");
 
-    install_app_or_delete(*phone, new Game2048(), "2048");
-
     install_app_or_delete(*phone, new SegaEmulator(), "sega emulator");
-
-    Camera *camera = install_app_or_delete(*phone, new Camera(1288, 728), "camera");
-    if ((camera != nullptr) && (camera->get_camera_ctlr_handle() < 0)) {
-        ESP_LOGW(TAG, "Camera hardware is unavailable, uninstalling camera app");
-        phone->uninstallApp(camera);
-        delete camera;
-        camera = nullptr;
-    }
         
     install_app_or_delete(*phone, new AppImageDisplay(), "image viewer");
+
+    install_app_or_delete(*phone, new FileManager(), "file manager");
+
+    install_app_or_delete(*phone, new MusicPlayer(), "music player");
 
     s_internetRadioApp = install_app_or_delete(*phone, new InternetRadio(), "internet radio");
 
@@ -592,10 +516,6 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "Free sram size: %d KB, total sram size: %d KB, "
                          "free psram size: %d KB, total psram size: %d KB",
                          free_sram_size_kb, total_sram_size_kb, free_psram_size_kb, total_psram_size_kb);
-
-    if (sdcard_available_on_boot) {
-        install_storage_apps_locked(nullptr);
-    }
 
     device_security::init(phone);
 
@@ -613,12 +533,4 @@ extern "C" void app_main(void)
     init_serial_command_console();
     device_security::promptBootUnlockIfNeeded();
     schedule_pending_release_notes_popup();
-    if (create_background_task_prefer_psram(sdcard_monitor_task,
-                                            "sdcard_monitor",
-                                            kSdcardMonitorTaskStack,
-                                            nullptr,
-                                            1,
-                                            0) != pdPASS) {
-        ESP_LOGW(TAG, "Failed to start SD card monitor task");
-    }
 }

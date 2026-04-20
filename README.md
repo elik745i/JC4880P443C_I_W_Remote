@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.5 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.6 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -37,12 +37,16 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Internet radio buffering and MP3 recovery are more tolerant of malformed or slow streams, which reduces playback stalls.
 - Firmware settings can browse GitHub releases directly and offer OTA updates from attached `.bin` assets.
 - Dead launcher apps and unreachable video-player sources were removed to reduce maintenance surface and keep OTA builds within budget.
+- Camera and 2048 were removed from the installed launcher set to reduce boot-time memory pressure and maintenance surface.
 - MP3 probing and decode fallback behavior are more tolerant of malformed frames and stream sync loss.
 - BLE and ZigBee features are now enabled through a matching ESP32-C6 coprocessor firmware release.
 - The standalone ESP32-C6 release now includes the fixed ZigBee storage partition layout required for stable bring-up.
 - Wi-Fi status in the top bar now follows real connection state and signal strength updates more reliably.
 - BLE startup, teardown, and disconnect recovery on the ESP-Hosted path were hardened to avoid stuck startup states and disconnect-time crashes.
 - The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
+- Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
+- Files, Music, and Radio startup paths were hardened to avoid preallocating unnecessary runtime memory before launch.
+- Internal SRAM usage was reduced substantially by moving large SEGA emulator permanent buffers and tables into PSRAM-backed BSS.
 - Additional enclosure revisions and raw CAD exports are included under `3D/` for the updated hardware fit iterations.
 
 ## Feature Summary
@@ -50,7 +54,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ### Launcher And Native Apps
 
 - Phone-style launcher UI based on ESP-Brookesia and LVGL.
-- Settings, Calculator, Camera, Files, Music Player, Internet Radio, Image Display, and 2048.
+- Settings, Calculator, Files, Music Player, Internet Radio, Image Display, and SEGA Emulator.
 - SEGA Emulator app integrated into the launcher instead of living as a separate upstream project.
 
 ### Media And Storage
@@ -84,7 +88,6 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 
 - ESP32-P4 Function EV Board based target.
 - 7-inch 1024x600 MIPI-DSI display using EK79007-compatible support.
-- MIPI-CSI camera.
 - USB-C for power, flashing, and serial monitoring.
 - Optional SD card for media, firmware packages, and emulator ROMs.
 
@@ -93,7 +96,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash size is configured for 16 MB.
 - Partition table provides two enlarged OTA app slots of `0x7B0000` each.
 - SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
-- Version 1.1.5 validates at `0x749790`, leaving `0x66870` bytes free in the smallest OTA app slot.
+- Version 1.1.6 validates at `0x597030`, leaving `0x218FD0` bytes free in the smallest OTA app slot.
 
 ## SD Card Layout
 

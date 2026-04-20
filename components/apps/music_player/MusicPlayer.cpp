@@ -13,6 +13,7 @@
 #include "gui_music/lv_demo_music_main.h"
 #include "MusicPlayer.hpp"
 #include "music_library.h"
+#include "storage_access.h"
 
 using namespace std;
 
@@ -31,6 +32,7 @@ MusicPlayer::~MusicPlayer()
 
 bool MusicPlayer::run(void)
 {
+    app_storage_ensure_sdcard_available();
     music_library_refresh();
     lv_demo_music(lv_scr_act());
 
@@ -39,10 +41,10 @@ bool MusicPlayer::run(void)
 
 bool MusicPlayer::pause(void)
 {
-     ESP_LOGI(TAG, "pause");
-    //_lv_demo_music_exit_pause();
-    if (audio_player_pause() != ESP_OK) {
-        ESP_LOGE(TAG, "audio_player_pause failed");
+    ESP_LOGI(TAG, "pause");
+    const esp_err_t ret = audio_player_pause();
+    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
+        ESP_LOGE(TAG, "audio_player_pause failed: %s", esp_err_to_name(ret));
         return false;
     }
     notifyCoreClosed();
@@ -52,8 +54,9 @@ bool MusicPlayer::pause(void)
 bool MusicPlayer::back(void)
 {
     ESP_LOGI(TAG, "back");
-    if (audio_player_pause() != ESP_OK) {
-        ESP_LOGE(TAG, "audio_player_pause failed");
+    const esp_err_t ret = audio_player_pause();
+    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
+        ESP_LOGE(TAG, "audio_player_pause failed: %s", esp_err_to_name(ret));
         return false;
     }
     notifyCoreClosed();
@@ -64,8 +67,9 @@ bool MusicPlayer::back(void)
 bool MusicPlayer::close(void)
 {
     ESP_LOGI(TAG, "close");
-    if (audio_player_pause() != ESP_OK) {
-        ESP_LOGE(TAG, "audio_player_pause failed");
+    const esp_err_t ret = audio_player_pause();
+    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
+        ESP_LOGE(TAG, "audio_player_pause failed: %s", esp_err_to_name(ret));
         return false;
     }
     notifyCoreClosed(); 
@@ -74,17 +78,6 @@ bool MusicPlayer::close(void)
 
 bool MusicPlayer::init(void)
 {
-    bsp_extra_codec_dev_stop();
-    vTaskDelay(pdMS_TO_TICKS(50));
-    ESP_ERROR_CHECK(bsp_extra_codec_init());
-        vTaskDelay(100 / portTICK_PERIOD_MS);
-    if (bsp_extra_player_init() != ESP_OK) {
-        ESP_LOGE(TAG, "Audio player init failed");
-        return false;
-    }
-
-    music_library_refresh();
-
     return true;
 }
 void MusicPlayer::stop_audio_fully(void)

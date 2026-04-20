@@ -6,9 +6,11 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <math.h>
 #include <string.h>
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_check.h"
@@ -35,10 +37,50 @@ static esp_codec_dev_handle_t record_dev_handle;
 static bool _is_audio_init = false;
 static bool _is_player_init = false;
 static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
+static int s_system_volume_intensity = CODEC_DEFAULT_VOLUME;
+
+typedef struct {
+    SemaphoreHandle_t mutex;
+    uint8_t *mix_buffer;
+    size_t mix_buffer_size;
+    uint32_t sample_rate;
+    uint32_t bits_per_sample;
+    i2s_slot_mode_t channel_mode;
+    bool notification_active;
+    bool notification_direct_task_running;
+    uint32_t notification_total_frames;
+    uint32_t notification_remaining_frames;
+    float notification_phase;
+    float notification_phase_step;
+    int applied_output_volume;
+} audio_mix_state_t;
+
+static audio_mix_state_t s_audio_mix_state = {
+    .mutex = NULL,
+    .mix_buffer = NULL,
+    .mix_buffer_size = 0,
+    .sample_rate = CODEC_DEFAULT_SAMPLE_RATE,
+    .bits_per_sample = CODEC_DEFAULT_BIT_WIDTH,
+    .channel_mode = CODEC_DEFAULT_CHANNEL,
+    .notification_active = false,
+    .notification_direct_task_running = false,
+    .notification_total_frames = 0,
+    .notification_remaining_frames = 0,
+    .notification_phase = 0.0f,
+    .notification_phase_step = 0.0f,
+    .applied_output_volume = -1,
+};
 
 static audio_player_cb_t audio_idle_callback = NULL;
 static void *audio_idle_cb_user_data = NULL;
 static char audio_file_path[512];
+
+#define AUDIO_NOTIFICATION_TASK_STACK_SIZE       (4096)
+#define AUDIO_NOTIFICATION_TASK_PRIORITY         (4)
+#define AUDIO_NOTIFICATION_CHUNK_FRAMES         (256)
+#define AUDIO_NOTIFICATION_FREQUENCY_HZ         (1046)
+#define AUDIO_NOTIFICATION_DURATION_MS          (180)
+#define AUDIO_NOTIFICATION_AMPLITUDE            (0.35f)
 
 #define DISPLAY_IDLE_TASK_STACK_SIZE            (4096)
 #define DISPLAY_IDLE_TASK_PRIORITY              (1)
@@ -68,6 +110,266 @@ static display_idle_state_t s_display_idle_state = {
 };
 static bool s_deep_sleep_warning_logged = false;
 
+static int audio_clamp_volume(int volume)
+{
+    if (volume < 0) {
+        return 0;
+    }
+    if (volume > 100) {
+        return 100;
+    }
+    return volume;
+}
+
+static bool audio_mix_lock(TickType_t timeout)
+{
+    if (s_audio_mix_state.mutex == NULL) {
+        s_audio_mix_state.mutex = xSemaphoreCreateMutex();
+        if (s_audio_mix_state.mutex == NULL) {
+            return false;
+        }
+    }
+
+    return xSemaphoreTake(s_audio_mix_state.mutex, timeout) == pdTRUE;
+}
+
+static void audio_mix_unlock(void)
+{
+    if (s_audio_mix_state.mutex != NULL) {
+        xSemaphoreGive(s_audio_mix_state.mutex);
+    }
+}
+
+static int audio_get_output_target_volume_locked(void)
+{
+    int target = _vloume_intensity;
+    if (s_audio_mix_state.notification_active) {
+        target = (target > s_system_volume_intensity) ? target : s_system_volume_intensity;
+    }
+    return audio_clamp_volume(target);
+}
+
+static esp_err_t audio_apply_output_volume_locked(void)
+{
+    const int target = audio_get_output_target_volume_locked();
+    if ((play_dev_handle == NULL) || (s_audio_mix_state.applied_output_volume == target)) {
+        s_audio_mix_state.applied_output_volume = target;
+        return ESP_OK;
+    }
+
+    ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(play_dev_handle, target), TAG, "Set Codec volume failed");
+    s_audio_mix_state.applied_output_volume = target;
+    return ESP_OK;
+}
+
+static uint8_t *audio_ensure_mix_buffer(size_t len)
+{
+    if (s_audio_mix_state.mix_buffer_size >= len) {
+        return s_audio_mix_state.mix_buffer;
+    }
+
+    uint8_t *buffer = (uint8_t *)heap_caps_realloc(s_audio_mix_state.mix_buffer, len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (buffer == NULL) {
+        return NULL;
+    }
+
+    s_audio_mix_state.mix_buffer = buffer;
+    s_audio_mix_state.mix_buffer_size = len;
+    return s_audio_mix_state.mix_buffer;
+}
+
+static inline int16_t audio_clip_sample(int32_t sample)
+{
+    if (sample > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (sample < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return (int16_t)sample;
+}
+
+static inline int16_t audio_generate_notification_sample(uint32_t total_frames,
+                                                         uint32_t *remaining_frames,
+                                                         float *phase,
+                                                         float phase_step)
+{
+    if ((remaining_frames == NULL) || (phase == NULL) || (*remaining_frames == 0) || (total_frames == 0)) {
+        return 0;
+    }
+
+    const float envelope = (float)(*remaining_frames) / (float)total_frames;
+    const float sample = sinf(*phase) * envelope * AUDIO_NOTIFICATION_AMPLITUDE * (float)INT16_MAX;
+
+    *phase += phase_step;
+    if (*phase >= (2.0f * (float)M_PI)) {
+        *phase -= (2.0f * (float)M_PI);
+    }
+
+    (*remaining_frames)--;
+    return (int16_t)sample;
+}
+
+static esp_err_t audio_player_clock_set(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)
+{
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.sample_rate = rate;
+        s_audio_mix_state.bits_per_sample = bits_cfg;
+        s_audio_mix_state.channel_mode = ch;
+        audio_mix_unlock();
+    }
+
+    return bsp_extra_codec_set_fs(rate, bits_cfg, ch);
+}
+
+static esp_err_t audio_player_write_with_mix(void *audio_buffer, size_t len, size_t *bytes_written, uint32_t timeout_ms)
+{
+    bool notification_active = false;
+    uint32_t notification_total_frames = 0;
+    uint32_t notification_remaining_frames = 0;
+    float notification_phase = 0.0f;
+    float notification_phase_step = 0.0f;
+    uint32_t bits_per_sample = CODEC_DEFAULT_BIT_WIDTH;
+    i2s_slot_mode_t channel_mode = CODEC_DEFAULT_CHANNEL;
+    int media_volume = _vloume_intensity;
+    int system_volume = s_system_volume_intensity;
+    int target_volume = media_volume;
+
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        notification_active = s_audio_mix_state.notification_active;
+        notification_total_frames = s_audio_mix_state.notification_total_frames;
+        notification_remaining_frames = s_audio_mix_state.notification_remaining_frames;
+        notification_phase = s_audio_mix_state.notification_phase;
+        notification_phase_step = s_audio_mix_state.notification_phase_step;
+        bits_per_sample = s_audio_mix_state.bits_per_sample;
+        channel_mode = s_audio_mix_state.channel_mode;
+        media_volume = _vloume_intensity;
+        system_volume = s_system_volume_intensity;
+        target_volume = audio_get_output_target_volume_locked();
+        audio_apply_output_volume_locked();
+        audio_mix_unlock();
+    }
+
+    if (!notification_active || (audio_buffer == NULL) || (len == 0) || (bits_per_sample != 16)) {
+        return bsp_extra_i2s_write(audio_buffer, len, bytes_written, timeout_ms);
+    }
+
+    uint8_t *mix_buffer = audio_ensure_mix_buffer(len);
+    if (mix_buffer == NULL) {
+        return bsp_extra_i2s_write(audio_buffer, len, bytes_written, timeout_ms);
+    }
+
+    const size_t channel_count = (channel_mode == I2S_SLOT_MODE_MONO) ? 1U : 2U;
+    const size_t frame_count = len / (sizeof(int16_t) * channel_count);
+    const int16_t *input = (const int16_t *)audio_buffer;
+    int16_t *output = (int16_t *)mix_buffer;
+
+    for (size_t frame_index = 0; frame_index < frame_count; ++frame_index) {
+        const int16_t notification_sample = audio_generate_notification_sample(notification_total_frames,
+                                                                               &notification_remaining_frames,
+                                                                               &notification_phase,
+                                                                               notification_phase_step);
+        for (size_t channel_index = 0; channel_index < channel_count; ++channel_index) {
+            const size_t sample_index = frame_index * channel_count + channel_index;
+            int32_t mixed_sample = 0;
+            if (target_volume > 0) {
+                mixed_sample += ((int32_t)input[sample_index] * media_volume) / target_volume;
+                mixed_sample += ((int32_t)notification_sample * system_volume) / target_volume;
+            }
+            output[sample_index] = audio_clip_sample(mixed_sample);
+        }
+    }
+
+    const esp_err_t write_ret = bsp_extra_i2s_write(output, len, bytes_written, timeout_ms);
+
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.notification_remaining_frames = notification_remaining_frames;
+        s_audio_mix_state.notification_phase = notification_phase;
+        s_audio_mix_state.notification_active = notification_remaining_frames > 0;
+        audio_apply_output_volume_locked();
+        audio_mix_unlock();
+    }
+
+    return write_ret;
+}
+
+static void audio_notification_output_task(void *arg)
+{
+    (void)arg;
+
+    int16_t *buffer = (int16_t *)heap_caps_malloc(AUDIO_NOTIFICATION_CHUNK_FRAMES * 2 * sizeof(int16_t),
+                                                  MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (buffer == NULL) {
+        if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+            s_audio_mix_state.notification_direct_task_running = false;
+            audio_mix_unlock();
+        }
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (true) {
+        if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {
+            break;
+        }
+
+        uint32_t total_frames = 0;
+        uint32_t remaining_frames = 0;
+        float phase = 0.0f;
+        float phase_step = 0.0f;
+        int system_volume = CODEC_DEFAULT_VOLUME;
+
+        if (!audio_mix_lock(pdMS_TO_TICKS(1000))) {
+            break;
+        }
+
+        if (!s_audio_mix_state.notification_active || (s_audio_mix_state.notification_remaining_frames == 0)) {
+            s_audio_mix_state.notification_direct_task_running = false;
+            audio_apply_output_volume_locked();
+            audio_mix_unlock();
+            break;
+        }
+
+        total_frames = s_audio_mix_state.notification_total_frames;
+        remaining_frames = s_audio_mix_state.notification_remaining_frames;
+        phase = s_audio_mix_state.notification_phase;
+        phase_step = s_audio_mix_state.notification_phase_step;
+        system_volume = s_system_volume_intensity;
+        audio_apply_output_volume_locked();
+        audio_mix_unlock();
+
+        const size_t frames_to_write = (remaining_frames > AUDIO_NOTIFICATION_CHUNK_FRAMES)
+                                           ? AUDIO_NOTIFICATION_CHUNK_FRAMES
+                                           : remaining_frames;
+        for (size_t frame_index = 0; frame_index < frames_to_write; ++frame_index) {
+            const int16_t sample = audio_generate_notification_sample(total_frames, &remaining_frames, &phase, phase_step);
+            buffer[(frame_index * 2) + 0] = sample;
+            buffer[(frame_index * 2) + 1] = sample;
+        }
+
+        size_t bytes_written = 0;
+        bsp_extra_i2s_write(buffer, frames_to_write * 2 * sizeof(int16_t), &bytes_written, 1000);
+
+        if (!audio_mix_lock(pdMS_TO_TICKS(1000))) {
+            break;
+        }
+        s_audio_mix_state.notification_remaining_frames = remaining_frames;
+        s_audio_mix_state.notification_phase = phase;
+        s_audio_mix_state.notification_active = remaining_frames > 0;
+        s_audio_mix_state.notification_direct_task_running = s_audio_mix_state.notification_active;
+        audio_apply_output_volume_locked();
+        audio_mix_unlock();
+    }
+
+    free(buffer);
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.notification_direct_task_running = false;
+        audio_apply_output_volume_locked();
+        audio_mix_unlock();
+    }
+    vTaskDelete(NULL);
+}
+
 /**************************************************************************************************
  *
  * Extra Board Function
@@ -83,7 +385,11 @@ static esp_err_t audio_mute_function(AUDIO_PLAYER_MUTE_SETTING setting)
 
     // restore the voice volume upon unmuting
     if (setting == AUDIO_PLAYER_UNMUTE) {
-        ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(play_dev_handle, _vloume_intensity), TAG, "Set Codec volume failed");
+        if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+            s_audio_mix_state.applied_output_volume = -1;
+            audio_apply_output_volume_locked();
+            audio_mix_unlock();
+        }
     }
 
     return ESP_OK;
@@ -235,6 +541,13 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
         ret |= esp_codec_dev_open(record_dev_handle, &fs);
     }
 
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.sample_rate = rate;
+        s_audio_mix_state.bits_per_sample = bits_cfg;
+        s_audio_mix_state.channel_mode = ch;
+        audio_mix_unlock();
+    }
+
     ESP_LOGI(TAG,"ret = 0x%x , %s",ret,strerror(ret));
     return ret;
 }
@@ -264,10 +577,99 @@ esp_err_t bsp_extra_codec_set_fs_play(uint32_t rate, uint32_t bits_cfg, i2s_slot
 
 esp_err_t bsp_extra_codec_volume_set(int volume, int *volume_set)
 {
-    ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(play_dev_handle, volume), TAG, "Set Codec volume failed");
-    _vloume_intensity = volume;
+    ESP_RETURN_ON_ERROR(bsp_extra_audio_media_volume_set(volume), TAG, "Set media volume failed");
 
-    ESP_LOGI(TAG, "Setting volume: %d", volume);
+    if (volume_set != NULL) {
+        *volume_set = _vloume_intensity;
+    }
+
+    ESP_LOGI(TAG, "Setting volume: %d", _vloume_intensity);
+
+    return ESP_OK;
+}
+
+esp_err_t bsp_extra_audio_media_volume_set(int volume)
+{
+    _vloume_intensity = audio_clamp_volume(volume);
+
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.applied_output_volume = -1;
+        audio_apply_output_volume_locked();
+        audio_mix_unlock();
+    }
+
+    return ESP_OK;
+}
+
+int bsp_extra_audio_media_volume_get(void)
+{
+    return _vloume_intensity;
+}
+
+esp_err_t bsp_extra_audio_system_volume_set(int volume)
+{
+    s_system_volume_intensity = audio_clamp_volume(volume);
+
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.applied_output_volume = -1;
+        audio_apply_output_volume_locked();
+        audio_mix_unlock();
+    }
+
+    return ESP_OK;
+}
+
+int bsp_extra_audio_system_volume_get(void)
+{
+    return s_system_volume_intensity;
+}
+
+esp_err_t bsp_extra_audio_play_system_notification(void)
+{
+    ESP_RETURN_ON_ERROR(bsp_extra_codec_init(), TAG, "speaker codec init failed");
+    ESP_RETURN_ON_ERROR(bsp_extra_codec_set_fs_play(CODEC_DEFAULT_SAMPLE_RATE, CODEC_DEFAULT_BIT_WIDTH, CODEC_DEFAULT_CHANNEL),
+                        TAG,
+                        "Failed to prepare codec output path for notification");
+    ESP_RETURN_ON_ERROR(bsp_extra_codec_mute_set(false), TAG, "Failed to unmute codec output");
+
+    if (!audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    s_audio_mix_state.notification_total_frames = (CODEC_DEFAULT_SAMPLE_RATE * AUDIO_NOTIFICATION_DURATION_MS) / 1000U;
+    s_audio_mix_state.notification_remaining_frames = s_audio_mix_state.notification_total_frames;
+    s_audio_mix_state.notification_phase = 0.0f;
+    s_audio_mix_state.notification_phase_step = (2.0f * (float)M_PI * (float)AUDIO_NOTIFICATION_FREQUENCY_HZ) /
+                                               (float)CODEC_DEFAULT_SAMPLE_RATE;
+    s_audio_mix_state.notification_active = s_audio_mix_state.notification_remaining_frames > 0;
+    s_audio_mix_state.applied_output_volume = -1;
+    audio_apply_output_volume_locked();
+
+    const bool start_direct_task = (audio_player_get_state() != AUDIO_PLAYER_STATE_PLAYING) &&
+                                   !s_audio_mix_state.notification_direct_task_running;
+    if (start_direct_task) {
+        s_audio_mix_state.notification_direct_task_running = true;
+    }
+    audio_mix_unlock();
+
+    if (start_direct_task) {
+        if (xTaskCreatePinnedToCore(audio_notification_output_task,
+                                    "audio_notify",
+                                    AUDIO_NOTIFICATION_TASK_STACK_SIZE,
+                                    NULL,
+                                    AUDIO_NOTIFICATION_TASK_PRIORITY,
+                                    NULL,
+                                    1) != pdPASS) {
+            if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+                s_audio_mix_state.notification_direct_task_running = false;
+                s_audio_mix_state.notification_active = false;
+                s_audio_mix_state.notification_remaining_frames = 0;
+                audio_apply_output_volume_locked();
+                audio_mix_unlock();
+            }
+            return ESP_ERR_NO_MEM;
+        }
+    }
 
     return ESP_OK;
 }
@@ -318,12 +720,20 @@ esp_err_t bsp_extra_codec_init()
     }
 
     play_dev_handle = bsp_audio_codec_speaker_init();
-    assert((play_dev_handle) && "play_dev_handle not initialized");
+    ESP_RETURN_ON_FALSE(play_dev_handle != NULL, ESP_ERR_NO_MEM, TAG, "speaker codec init failed");
 
     record_dev_handle = bsp_audio_codec_microphone_init();
-    assert((record_dev_handle) && "record_dev_handle not initialized");
+    if (record_dev_handle == NULL) {
+        esp_codec_dev_close(play_dev_handle);
+        play_dev_handle = NULL;
+        return ESP_ERR_NO_MEM;
+    }
 
-    bsp_extra_codec_set_fs(CODEC_DEFAULT_SAMPLE_RATE, CODEC_DEFAULT_BIT_WIDTH, CODEC_DEFAULT_CHANNEL);
+    ESP_RETURN_ON_ERROR(bsp_extra_codec_set_fs(CODEC_DEFAULT_SAMPLE_RATE,
+                                               CODEC_DEFAULT_BIT_WIDTH,
+                                               CODEC_DEFAULT_CHANNEL),
+                        TAG,
+                        "Failed to set default codec sample format");
 
     _is_audio_init = true;
 
@@ -336,9 +746,9 @@ esp_err_t bsp_extra_player_init(void)
         return ESP_OK;
     }
 
-    audio_player_config_t config = { .mute_fn = audio_mute_function,
-                                     .write_fn = bsp_extra_i2s_write,
-                                     .clk_set_fn = bsp_extra_codec_set_fs,
+        audio_player_config_t config = { .mute_fn = audio_mute_function,
+                                                                         .write_fn = audio_player_write_with_mix,
+                                                                         .clk_set_fn = audio_player_clock_set,
                                      .priority = 5
                                    };
     ESP_RETURN_ON_ERROR(audio_player_new(config), TAG, "audio_player_init failed");

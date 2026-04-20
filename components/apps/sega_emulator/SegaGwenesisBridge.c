@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "psram_alloc.h"
 #include "sega_emulator/gwenesis/gwenesis.h"
 
@@ -13,10 +14,10 @@ extern int zclk;
 int system_clock = 0;
 int scan_line = 0;
 
-int16_t gwenesis_sn76489_buffer[GWENESIS_AUDIO_BUFFER_LENGTH_PAL] = {0};
+EXT_RAM_BSS_ATTR int16_t gwenesis_sn76489_buffer[GWENESIS_AUDIO_BUFFER_LENGTH_PAL] = {0};
 int sn76489_index = 0;
 int sn76489_clock = 0;
-int16_t gwenesis_ym2612_buffer[GWENESIS_AUDIO_BUFFER_LENGTH_PAL] = {0};
+EXT_RAM_BSS_ATTR int16_t gwenesis_ym2612_buffer[GWENESIS_AUDIO_BUFFER_LENGTH_PAL] = {0};
 int ym2612_index = 0;
 int ym2612_clock = 0;
 

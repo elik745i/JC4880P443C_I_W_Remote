@@ -123,13 +123,15 @@ bool SegaEmulator::init()
     memset(_canvasBackBuffer, 0, sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight);
     memset(_emulatorBuffer, 0, std::max(kSmsFrameBufferSize, kGenesisFrameBufferSize));
 
-    createBrowserScreen();
-    createPlayerScreen();
-    return (_browserScreen != nullptr) && (_playerScreen != nullptr);
+    return true;
 }
 
 bool SegaEmulator::run()
 {
+    if (!ensureUiReady()) {
+        return false;
+    }
+
     refreshRomList();
     lv_scr_load(_browserScreen);
     return true;
@@ -143,12 +145,37 @@ bool SegaEmulator::pause()
 
 bool SegaEmulator::resume()
 {
+    if (!ensureUiReady()) {
+        return false;
+    }
+
     if (_running.load()) {
         lv_scr_load(_playerScreen);
     } else {
         lv_scr_load(_browserScreen);
     }
     return true;
+}
+
+bool SegaEmulator::ensureUiReady()
+{
+    if ((_browserScreen != nullptr) && (_playerScreen != nullptr) && (_canvas != nullptr)) {
+        return true;
+    }
+
+    if ((_canvasFrontBuffer == nullptr) || (_canvasBackBuffer == nullptr) || (_emulatorBuffer == nullptr)) {
+        ESP_LOGE(kTag, "SEGA buffers are not initialized");
+        return false;
+    }
+
+    if (_browserScreen == nullptr) {
+        createBrowserScreen();
+    }
+    if (_playerScreen == nullptr) {
+        createPlayerScreen();
+    }
+
+    return (_browserScreen != nullptr) && (_playerScreen != nullptr) && (_canvas != nullptr);
 }
 
 bool SegaEmulator::back()

@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.6 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.7 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -47,6 +47,9 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
 - Files, Music, and Radio startup paths were hardened to avoid preallocating unnecessary runtime memory before launch.
 - Internal SRAM usage was reduced substantially by moving large SEGA emulator permanent buffers and tables into PSRAM-backed BSS.
+- Additional boot-time SRAM pressure was removed by deferring heavy Internet Radio, Image Display, and SEGA UI/runtime setup until first launch.
+- The unused camera and deep-learning component stack was removed from the resolved build graph to reduce flash footprint and memory pressure.
+- Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
 - Additional enclosure revisions and raw CAD exports are included under `3D/` for the updated hardware fit iterations.
 
 ## Feature Summary
@@ -96,7 +99,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash size is configured for 16 MB.
 - Partition table provides two enlarged OTA app slots of `0x7B0000` each.
 - SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
-- Version 1.1.6 validates at `0x597030`, leaving `0x218FD0` bytes free in the smallest OTA app slot.
+- Version 1.1.7 validates at `0x590400`, leaving `0x21FC00` bytes free in the smallest OTA app slot.
 
 ## SD Card Layout
 

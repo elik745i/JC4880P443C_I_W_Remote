@@ -16,6 +16,13 @@ set(CXX_COMPILE_OPTIONS
     -Wno-write-strings
 )
 
+set(EXCLUDE_COMPONENTS
+    espressif__esp_video
+    espressif__esp_cam_sensor
+    human_face_detect
+    pedestrian_detect
+)
+
 add_compile_options(
     -Wno-format
     -Wno-unused-variable
@@ -27,4 +34,4 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-project(esp_brookesia_demo VERSION 1.1.6)
+project(esp_brookesia_demo VERSION 1.1.7)

@@ -573,18 +573,16 @@ InternetRadio::InternetRadio()
 
 bool InternetRadio::init(void)
 {
-    if (!buildUi()) {
-        return false;
-    }
-
-    showRootMenu();
     return true;
 }
 
 bool InternetRadio::run(void)
 {
     if (_screen == nullptr) {
-        return false;
+        if (!buildUi()) {
+            return false;
+        }
+        showRootMenu();
     }
 
     audio_player_callback_register(radioAudioCallback, this);

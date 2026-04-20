@@ -139,6 +139,7 @@ private:
     bool validateFirmwareImageHeader(const uint8_t *data, size_t data_len, const std::string &source_label,
                                      std::string &error_message, bool &header_checked);
     void persistPendingReleaseNotes(const FirmwareEntry_t &entry);
+    bool isUiActive(void) const;
     static void firmwareUpdateTask(void *arg);
     static void applyAsyncFirmwareUiUpdate(void *arg);
     // NVS Parameters

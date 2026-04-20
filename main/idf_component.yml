@@ -8,10 +8,6 @@ dependencies:
   espressif/esp-brookesia:
     version: 0.4.*
 
-  # 修改esp_video依赖为本地路径
-  esp_video:
-    path: "../components/espressif__esp_video"
-
   espressif/avi_player: ^2.0.0
 
   esp_lcd_st7701: '*'

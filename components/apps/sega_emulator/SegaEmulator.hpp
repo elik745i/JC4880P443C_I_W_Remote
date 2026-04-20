@@ -50,6 +50,7 @@ private:
     static void presentFrameAsync(void *context);
     static void finishEmulationAsync(void *context);
 
+    bool ensureUiReady();
     void createBrowserScreen();
     void createPlayerScreen();
     void refreshRomList();

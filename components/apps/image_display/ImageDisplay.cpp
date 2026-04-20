@@ -110,6 +110,48 @@ AppImageDisplay::~AppImageDisplay()
 
 bool AppImageDisplay::run(void)
 {
+    if (image_event_group == nullptr) {
+        image_event_group = xEventGroupCreate();
+        if (image_event_group == nullptr) {
+            ESP_LOGE(TAG, "Failed to create image event group");
+            return false;
+        }
+        xEventGroupClearBits(image_event_group, IMAGE_EVENT_TASK_RUN | IMAGE_EVENT_DELETE | IMAGE_EVENT_DIR);
+    }
+
+    if (image_task_event == nullptr) {
+        image_task_event = xSemaphoreCreateBinary();
+        if (image_task_event == nullptr) {
+            ESP_LOGE(TAG, "Failed to create image task semaphore");
+            return false;
+        }
+    }
+
+    if (image_muxe == nullptr) {
+        image_muxe = xSemaphoreCreateRecursiveMutex();
+        if (image_muxe == nullptr) {
+            ESP_LOGE(TAG, "Failed to create image mutex");
+            return false;
+        }
+    }
+
+    if (time_refer_handle == NULL) {
+        const esp_timer_create_args_t time_arg = {
+            .callback = &timer_refersh_task,
+            .name = "refersh"
+        };
+        ESP_ERROR_CHECK(esp_timer_create(&time_arg, &time_refer_handle));
+    }
+
+    static bool s_image_worker_started = false;
+    if (!s_image_worker_started) {
+        if (create_background_task_prefer_psram((TaskFunction_t)image_delay_change, "Image Init", 2048, this, 3, nullptr, 0) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to start image background task");
+            return false;
+        }
+        s_image_worker_started = true;
+    }
+
     app_image_display_init();
 
     lv_obj_add_event_cb(lv_scr_act(),image_change_cb,LV_EVENT_GESTURE,this);
@@ -177,11 +219,6 @@ bool AppImageDisplay::close(void)
 
 bool AppImageDisplay::init(void)
 {
-    image_event_group = xEventGroupCreate();
-     xEventGroupClearBits(image_event_group, IMAGE_EVENT_TASK_RUN);
-     xEventGroupClearBits(image_event_group, IMAGE_EVENT_DELETE);
-     xEventGroupClearBits(image_event_group, IMAGE_EVENT_DIR);
-
     if (bsp_extra_file_instance_init(IMAGE_DIR, &_image_file_iterator) != ESP_OK) {
         ESP_LOGW(TAG, "Built-in sample image directory is missing, skipping image viewer app");
         return false;
@@ -193,19 +230,6 @@ bool AppImageDisplay::init(void)
         return false;
     }
     ESP_LOGI(TAG,"image file count = %d",image_count);
-
-    create_background_task_prefer_psram((TaskFunction_t)image_delay_change, "Image Init", 2048, this, 3, nullptr, 0);
-
-     const esp_timer_create_args_t time_arg = {
-        .callback = &timer_refersh_task,
-        /* name is optional, but may help identify the timer when debugging */
-        .name = "refersh"
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&time_arg,&time_refer_handle));
-    
-    image_task_event = xSemaphoreCreateBinary();
-    image_muxe = xSemaphoreCreateRecursiveMutex();
-    // xSemaphoreGive(image_muxe);
 
     return true;
 }

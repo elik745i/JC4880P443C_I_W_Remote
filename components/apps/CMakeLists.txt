@@ -2,6 +2,10 @@ set(APPS_DIR ./)
 file(GLOB_RECURSE APPS_C_SRCS ${APPS_DIR}/*.c)
 file(GLOB_RECURSE APPS_CPP_SRCS ${APPS_DIR}/*.cpp)
 set(APPS_SHARED_SRCS ${APPS_DIR}/system_ui_service.cpp)
+file(GLOB_RECURSE APPS_CAMERA_C_SRCS ${APPS_DIR}/camera/*.c)
+file(GLOB_RECURSE APPS_CAMERA_CPP_SRCS ${APPS_DIR}/camera/*.cpp)
+list(REMOVE_ITEM APPS_C_SRCS ${APPS_CAMERA_C_SRCS})
+list(REMOVE_ITEM APPS_CPP_SRCS ${APPS_CAMERA_CPP_SRCS})
 list(REMOVE_ITEM APPS_CPP_SRCS ${APPS_SHARED_SRCS})
 
 idf_component_register(
@@ -17,7 +21,7 @@ idf_component_register(
                  ${APPS_DIR}/sega_emulator/gwenesis/src/savestate
                  ${APPS_DIR}/sega_emulator/gwenesis/src/sound
                  ${APPS_DIR}/sega_emulator/gwenesis/src/vdp
-    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board esp_video pedestrian_detect human_face_detect espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player app_update esp_partition esp-tls esp_hosted bt main)
+    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player app_update esp_partition esp-tls esp_hosted bt main)
 
 target_compile_options(
     ${COMPONENT_LIB}

@@ -840,6 +840,11 @@ static bool settings_ui_is_ready(void)
            (ui_ScreenSettingVerification != nullptr) && lv_obj_is_valid(ui_ScreenSettingVerification);
 }
 
+static bool lv_obj_ready(lv_obj_t *obj)
+{
+    return (obj != nullptr) && lv_obj_is_valid(obj);
+}
+
 static std::string zigbeeChannelPreferenceLabel(int32_t channel)
 {
     if (channel <= 0) {
@@ -1473,6 +1478,11 @@ bool AppSettings::init(void)
     refreshRadioStatusBar();
 
     return true;
+}
+
+bool AppSettings::isUiActive(void) const
+{
+    return !_is_ui_del && settings_ui_is_ready();
 }
 
 bool AppSettings::pause(void)
@@ -3012,7 +3022,8 @@ bool AppSettings::factoryResetPreferences(void)
 
 void AppSettings::refreshSavedWifiUi(void)
 {
-    if ((_savedWifiPanel == nullptr) || (_savedWifiValueLabel == nullptr) || (_savedWifiForgetButton == nullptr)) {
+    if (!isUiActive() || !lv_obj_ready(_savedWifiPanel) || !lv_obj_ready(_savedWifiValueLabel) ||
+        !lv_obj_ready(_savedWifiForgetButton)) {
         return;
     }
 
@@ -3031,7 +3042,11 @@ void AppSettings::refreshSavedWifiUi(void)
 
 void AppSettings::refreshDisplayIdleUi(void)
 {
-    if (_displayAdaptiveBrightnessSwitch != nullptr) {
+    if (!isUiActive()) {
+        return;
+    }
+
+    if (lv_obj_ready(_displayAdaptiveBrightnessSwitch)) {
         if (_nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE]) {
             lv_obj_add_state(_displayAdaptiveBrightnessSwitch, LV_STATE_CHECKED);
         } else {
@@ -3039,7 +3054,7 @@ void AppSettings::refreshDisplayIdleUi(void)
         }
     }
 
-    if (_displayScreensaverSwitch != nullptr) {
+    if (lv_obj_ready(_displayScreensaverSwitch)) {
         if (_nvs_param_map[NVS_KEY_DISPLAY_SCREENSAVER]) {
             lv_obj_add_state(_displayScreensaverSwitch, LV_STATE_CHECKED);
         } else {
@@ -3047,14 +3062,14 @@ void AppSettings::refreshDisplayIdleUi(void)
         }
     }
 
-    if (_displayTimeoffDropdown != nullptr) {
+    if (lv_obj_ready(_displayTimeoffDropdown)) {
         lv_dropdown_set_selected(_displayTimeoffDropdown,
                                  findDropdownIndexForValue(kDisplayTimeoffOptionsSec,
                                                            sizeof(kDisplayTimeoffOptionsSec) / sizeof(kDisplayTimeoffOptionsSec[0]),
                                                            _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF]));
     }
 
-    if (_displaySleepDropdown != nullptr) {
+    if (lv_obj_ready(_displaySleepDropdown)) {
         lv_dropdown_set_selected(_displaySleepDropdown,
                                  findDropdownIndexForValue(kDisplaySleepOptionsSec,
                                                            sizeof(kDisplaySleepOptionsSec) / sizeof(kDisplaySleepOptionsSec[0]),
@@ -3066,12 +3081,16 @@ void AppSettings::refreshDisplayIdleUi(void)
 
 void AppSettings::refreshTimezoneUi(void)
 {
-    if (_displayTimezoneDropdown != nullptr) {
+    if (!isUiActive()) {
+        return;
+    }
+
+    if (lv_obj_ready(_displayTimezoneDropdown)) {
         lv_dropdown_set_selected(_displayTimezoneDropdown,
                                  findTimezoneDropdownIndexForOffset(_nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE]));
     }
 
-    if (_displayAutoTimezoneSwitch != nullptr) {
+    if (lv_obj_ready(_displayAutoTimezoneSwitch)) {
         if (_nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO]) {
             lv_obj_add_state(_displayAutoTimezoneSwitch, LV_STATE_CHECKED);
         } else {
@@ -3079,7 +3098,7 @@ void AppSettings::refreshTimezoneUi(void)
         }
     }
 
-    if (_displayTimezoneInfoLabel != nullptr) {
+    if (lv_obj_ready(_displayTimezoneInfoLabel)) {
         const bool auto_enabled = _nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO] != 0;
         const TimezoneOption &manual_option = getTimezoneOptionForOffset(_nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE]);
 
@@ -3104,9 +3123,13 @@ void AppSettings::refreshTimezoneUi(void)
 
 void AppSettings::refreshBluetoothUi(void)
 {
+    if (!isUiActive()) {
+        return;
+    }
+
     const bool bluetooth_enabled = _nvs_param_map[NVS_KEY_BLE_ENABLE] != 0;
 
-    if (ui_SwitchPanelScreenSettingBLESwitch != nullptr) {
+    if (lv_obj_ready(ui_SwitchPanelScreenSettingBLESwitch)) {
         if (bluetooth_enabled) {
             lv_obj_add_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
         } else {
@@ -3114,7 +3137,7 @@ void AppSettings::refreshBluetoothUi(void)
         }
     }
 
-    if (ui_SpinnerScreenSettingBLE != nullptr) {
+    if (lv_obj_ready(ui_SpinnerScreenSettingBLE)) {
         if (s_bleRuntimeState == BleRuntimeState::Starting) {
             lv_obj_clear_flag(ui_SpinnerScreenSettingBLE, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -3122,12 +3145,12 @@ void AppSettings::refreshBluetoothUi(void)
         }
     }
 
-    if (_bluetoothInfoLabel != nullptr) {
+    if (lv_obj_ready(_bluetoothInfoLabel)) {
         const std::string status = bleStatusText(bluetooth_enabled);
         lv_label_set_text(_bluetoothInfoLabel, status.c_str());
     }
 
-    if (_bluetoothNameTextArea != nullptr) {
+    if (lv_obj_ready(_bluetoothNameTextArea)) {
         char ble_name[32] = {0};
         if (!loadNvsStringParam(NVS_KEY_BLE_DEVICE_NAME, ble_name, sizeof(ble_name)) || (ble_name[0] == '\0')) {
             strlcpy(ble_name, kBleDefaultDeviceName, sizeof(ble_name));
@@ -3138,11 +3161,11 @@ void AppSettings::refreshBluetoothUi(void)
         }
     }
 
-    if (_bluetoothScanButtonLabel != nullptr) {
+    if (lv_obj_ready(_bluetoothScanButtonLabel)) {
         lv_label_set_text(_bluetoothScanButtonLabel, s_bleScanInProgress ? "Stop Scan" : "Scan Nearby");
     }
 
-    if (_bluetoothScanStatusLabel != nullptr) {
+    if (lv_obj_ready(_bluetoothScanStatusLabel)) {
         if (!bluetooth_enabled) {
             lv_label_set_text(_bluetoothScanStatusLabel, "Enable BLE first to scan nearby devices.");
         } else {
@@ -3150,7 +3173,7 @@ void AppSettings::refreshBluetoothUi(void)
         }
     }
 
-    if (_bluetoothScanResultsLabel != nullptr) {
+    if (lv_obj_ready(_bluetoothScanResultsLabel)) {
         std::string results;
         if (s_bleScanResults.empty()) {
             results = bluetooth_enabled ? "No discovery results yet." : "Discovery is unavailable while BLE is off.";
@@ -3229,11 +3252,15 @@ void AppSettings::refreshRadioStatusBar(void)
 
 void AppSettings::refreshZigbeeUi(void)
 {
+    if (!isUiActive()) {
+        return;
+    }
+
     const bool zigbee_enabled = _nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] != 0;
     const int32_t preferred_channel = _nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL];
     const int32_t permit_join_seconds = _nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN];
 
-    if (_zigbeeEnableSwitch != nullptr) {
+    if (lv_obj_ready(_zigbeeEnableSwitch)) {
         if (zigbee_enabled) {
             lv_obj_add_state(_zigbeeEnableSwitch, LV_STATE_CHECKED);
         } else {
@@ -3241,21 +3268,21 @@ void AppSettings::refreshZigbeeUi(void)
         }
     }
 
-    if (_zigbeeChannelDropdown != nullptr) {
+    if (lv_obj_ready(_zigbeeChannelDropdown)) {
         lv_dropdown_set_selected(_zigbeeChannelDropdown,
                                  findDropdownIndexForValue(kZigbeeChannelOptions,
                                                            sizeof(kZigbeeChannelOptions) / sizeof(kZigbeeChannelOptions[0]),
                                                            preferred_channel));
     }
 
-    if (_zigbeePermitJoinDropdown != nullptr) {
+    if (lv_obj_ready(_zigbeePermitJoinDropdown)) {
         lv_dropdown_set_selected(_zigbeePermitJoinDropdown,
                                  findDropdownIndexForValue(kZigbeePermitJoinOptionsSec,
                                                            sizeof(kZigbeePermitJoinOptionsSec) / sizeof(kZigbeePermitJoinOptionsSec[0]),
                                                            permit_join_seconds));
     }
 
-    if (_zigbeeNameTextArea != nullptr) {
+    if (lv_obj_ready(_zigbeeNameTextArea)) {
         char zigbee_name[32] = {0};
         if (!loadNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, zigbee_name, sizeof(zigbee_name)) || (zigbee_name[0] == '\0')) {
             strlcpy(zigbee_name, kZigbeeDefaultDeviceName, sizeof(zigbee_name));
@@ -3266,12 +3293,12 @@ void AppSettings::refreshZigbeeUi(void)
         }
     }
 
-    if (_zigbeeRoleValueLabel != nullptr) {
+    if (lv_obj_ready(_zigbeeRoleValueLabel)) {
         lv_label_set_text(_zigbeeRoleValueLabel,
                           "Coordinator on the ESP32-C6 coprocessor. The current firmware starts ZigBee natively on boot and keeps Wi-Fi/BLE coexistence enabled there.");
     }
 
-    if (_zigbeeConfigSummaryLabel != nullptr) {
+    if (lv_obj_ready(_zigbeeConfigSummaryLabel)) {
         char zigbee_name[32] = {0};
         if (!loadNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, zigbee_name, sizeof(zigbee_name)) || (zigbee_name[0] == '\0')) {
             strlcpy(zigbee_name, kZigbeeDefaultDeviceName, sizeof(zigbee_name));
@@ -3283,7 +3310,7 @@ void AppSettings::refreshZigbeeUi(void)
         lv_label_set_text(_zigbeeConfigSummaryLabel, summary.c_str());
     }
 
-    if (_zigbeeInfoLabel != nullptr) {
+    if (lv_obj_ready(_zigbeeInfoLabel)) {
         const std::string status = zigbee_enabled ?
             "ZigBee preferences are enabled on the P4. Current controls are host-side preferences only: the existing ESP32-C6 firmware does not expose live ZigBee RPC control, joined-device lists, PAN ID, or permit-join commands back to the P4 yet." :
             "ZigBee preference is disabled on the P4 UI. Note that the current ESP32-C6 release still starts ZigBee natively at boot when compiled with CONFIG_ZB_ENABLED, so this setting currently acts as a host-side preference gate for future integration.";
@@ -3293,10 +3320,14 @@ void AppSettings::refreshZigbeeUi(void)
 
 void AppSettings::refreshSecurityUi(void)
 {
+    if (!isUiActive()) {
+        return;
+    }
+
     const bool device_lock_enabled = device_security::isLockEnabled(device_security::LockType::Device);
     const bool settings_lock_enabled = device_security::isLockEnabled(device_security::LockType::Settings);
 
-    if (_securityDeviceLockSwitch != nullptr) {
+    if (lv_obj_ready(_securityDeviceLockSwitch)) {
         if (device_lock_enabled) {
             lv_obj_add_state(_securityDeviceLockSwitch, LV_STATE_CHECKED);
         } else {
@@ -3304,7 +3335,7 @@ void AppSettings::refreshSecurityUi(void)
         }
     }
 
-    if (_securitySettingsLockSwitch != nullptr) {
+    if (lv_obj_ready(_securitySettingsLockSwitch)) {
         if (settings_lock_enabled) {
             lv_obj_add_state(_securitySettingsLockSwitch, LV_STATE_CHECKED);
         } else {
@@ -3315,7 +3346,7 @@ void AppSettings::refreshSecurityUi(void)
 
 void AppSettings::setFirmwareStatus(const std::string &status, bool is_error)
 {
-    if (_firmwareStatusLabel == nullptr) {
+    if (!isUiActive() || !lv_obj_ready(_firmwareStatusLabel)) {
         return;
     }
 
@@ -3325,7 +3356,11 @@ void AppSettings::setFirmwareStatus(const std::string &status, bool is_error)
 
 void AppSettings::setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error)
 {
-    if (_firmwareProgressBar != nullptr) {
+    if (!isUiActive()) {
+        return;
+    }
+
+    if (lv_obj_ready(_firmwareProgressBar)) {
         const int32_t clamped = std::max<int32_t>(0, std::min<int32_t>(100, percent));
         lv_bar_set_value(_firmwareProgressBar, clamped, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(_firmwareProgressBar,
@@ -3336,7 +3371,7 @@ void AppSettings::setFirmwareProgress(int32_t percent, const std::string &phase,
                                   LV_PART_INDICATOR);
     }
 
-    if (_firmwareProgressLabel != nullptr) {
+    if (lv_obj_ready(_firmwareProgressLabel)) {
         lv_label_set_text(_firmwareProgressLabel, phase.c_str());
         lv_obj_set_style_text_color(_firmwareProgressLabel,
                                     is_error ? lv_color_hex(0xB91C1C) : lv_color_hex(0x64748B),
@@ -4162,8 +4197,18 @@ bool AppSettings::restoreWifiCredentials(void)
 
 void AppSettings::updateUiByNvsParam(void)
 {
+    if (!isUiActive()) {
+        return;
+    }
+
     loadNvsStringParam(NVS_KEY_WIFI_SSID, st_wifi_ssid, sizeof(st_wifi_ssid));
     loadNvsStringParam(NVS_KEY_WIFI_PASSWORD, st_wifi_password, sizeof(st_wifi_password));
+
+    if (!lv_obj_ready(ui_SwitchPanelScreenSettingWiFiSwitch) ||
+        !lv_obj_ready(ui_SliderPanelScreenSettingLightSwitch1) ||
+        !lv_obj_ready(ui_SliderPanelScreenSettingVolumeSwitch)) {
+        return;
+    }
 
     if (_nvs_param_map[NVS_KEY_WIFI_ENABLE]) {
         lv_obj_add_state(ui_SwitchPanelScreenSettingWiFiSwitch, LV_STATE_CHECKED);
@@ -4186,7 +4231,7 @@ void AppSettings::updateUiByNvsParam(void)
 
 void AppSettings::setZigbeeKeyboardVisible(bool visible)
 {
-    if ((_zigbeeKeyboard == nullptr) || (_zigbeeNameTextArea == nullptr)) {
+    if (!isUiActive() || !lv_obj_ready(_zigbeeKeyboard) || !lv_obj_ready(_zigbeeNameTextArea)) {
         return;
     }
 
@@ -4220,7 +4265,7 @@ bool AppSettings::persistZigbeeNameFromUi(void)
 
 void AppSettings::setBluetoothKeyboardVisible(bool visible)
 {
-    if ((_bluetoothKeyboard == nullptr) || (_bluetoothNameTextArea == nullptr)) {
+    if (!isUiActive() || !lv_obj_ready(_bluetoothKeyboard) || !lv_obj_ready(_bluetoothNameTextArea)) {
         return;
     }
 
@@ -4348,8 +4393,12 @@ AppSettings::WifiSignalStrengthLevel_t AppSettings::wifiSignalStrengthFromRssi(i
 
 void AppSettings::refreshHardwareMonitorUi(void)
 {
+    if (!isUiActive()) {
+        return;
+    }
+
     auto setMonitorBar = [](lv_obj_t *bar, int32_t percent, lv_color_t color) {
-        if (bar == nullptr) {
+        if (!lv_obj_ready(bar)) {
             return;
         }
 
@@ -4362,11 +4411,11 @@ void AppSettings::refreshHardwareMonitorUi(void)
     const uint64_t used_sram = (total_sram >= free_sram) ? (total_sram - free_sram) : 0;
     const int32_t sram_percent = calculatePercent(used_sram, total_sram);
 
-    if (_hardwareSramValueLabel != nullptr) {
+    if (lv_obj_ready(_hardwareSramValueLabel)) {
         const string text = formatPercentUsed(sram_percent);
         lv_label_set_text(_hardwareSramValueLabel, text.c_str());
     }
-    if (_hardwareSramDetailLabel != nullptr) {
+    if (lv_obj_ready(_hardwareSramDetailLabel)) {
         const string detail = formatStorageAmount(used_sram) + " / " + formatStorageAmount(total_sram) + " occupied";
         lv_label_set_text(_hardwareSramDetailLabel, detail.c_str());
     }
@@ -4377,11 +4426,11 @@ void AppSettings::refreshHardwareMonitorUi(void)
     const uint64_t used_psram = (total_psram >= free_psram) ? (total_psram - free_psram) : 0;
     const int32_t psram_percent = calculatePercent(used_psram, total_psram);
 
-    if (_hardwarePsramValueLabel != nullptr) {
+    if (lv_obj_ready(_hardwarePsramValueLabel)) {
         const string text = formatPercentUsed(psram_percent);
         lv_label_set_text(_hardwarePsramValueLabel, text.c_str());
     }
-    if (_hardwarePsramDetailLabel != nullptr) {
+    if (lv_obj_ready(_hardwarePsramDetailLabel)) {
         const string detail = formatStorageAmount(used_psram) + " / " + formatStorageAmount(total_psram) + " occupied";
         lv_label_set_text(_hardwarePsramDetailLabel, detail.c_str());
     }
@@ -4399,7 +4448,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
         sd_ready = (sd_total > 0);
     }
 
-    if (_hardwareSdValueLabel != nullptr) {
+    if (lv_obj_ready(_hardwareSdValueLabel)) {
         if (sd_ready) {
             const string text = formatPercentUsed(calculatePercent(sd_used, sd_total));
             lv_label_set_text(_hardwareSdValueLabel, text.c_str());
@@ -4407,7 +4456,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
             lv_label_set_text(_hardwareSdValueLabel, "Not mounted");
         }
     }
-    if (_hardwareSdDetailLabel != nullptr) {
+    if (lv_obj_ready(_hardwareSdDetailLabel)) {
         if (sd_ready) {
             const string detail = formatStorageAmount(sd_used) + " / " + formatStorageAmount(sd_total) + " occupied";
             lv_label_set_text(_hardwareSdDetailLabel, detail.c_str());
@@ -4421,7 +4470,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
     wifi_ap_record_t ap_info = {};
     const bool wifi_connected = (xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_CONNECTED) &&
                                 (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK);
-    if (_hardwareWifiValueLabel != nullptr) {
+    if (lv_obj_ready(_hardwareWifiValueLabel)) {
         if (wifi_connected) {
             const string text = formatSignedWithUnit(static_cast<int32_t>(ap_info.rssi), "dBm");
             lv_label_set_text(_hardwareWifiValueLabel, text.c_str());
@@ -4429,7 +4478,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
             lv_label_set_text(_hardwareWifiValueLabel, "Disconnected");
         }
     }
-    if (_hardwareWifiDetailLabel != nullptr) {
+    if (lv_obj_ready(_hardwareWifiDetailLabel)) {
         if (wifi_connected) {
             string detail = "Connected to ";
             detail += reinterpret_cast<const char *>(ap_info.ssid);
@@ -4441,7 +4490,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
     const int32_t wifi_percent = wifi_connected ? std::max<int32_t>(0, std::min<int32_t>(100, (ap_info.rssi + 100) * 2)) : 0;
     setMonitorBar(_hardwareWifiBar, wifi_percent, wifi_connected ? getMonitorBarColor(100 - wifi_percent) : lv_color_hex(0x94A3B8));
 
-    if (_hardwareCpuSpeedValueLabel != nullptr) {
+    if (lv_obj_ready(_hardwareCpuSpeedValueLabel)) {
 #ifdef CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
         const string text = formatSignedWithUnit(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, "MHz");
         lv_label_set_text(_hardwareCpuSpeedValueLabel, text.c_str());
@@ -4450,7 +4499,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
 #endif
     }
 
-    if (_hardwareCpuSpeedDetailLabel != nullptr) {
+    if (lv_obj_ready(_hardwareCpuSpeedDetailLabel)) {
         const uint64_t uptime_seconds = static_cast<uint64_t>(esp_timer_get_time() / 1000000ULL);
         const string uptime_text = string("Uptime: ") + formatUptime(uptime_seconds);
         lv_label_set_text(_hardwareCpuSpeedDetailLabel, uptime_text.c_str());
@@ -4458,7 +4507,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
 
     float cpu_temp_celsius = 0.0f;
     const bool has_cpu_temp = readCpuTemperatureCelsius(cpu_temp_celsius);
-    if (_hardwareCpuTempValueLabel != nullptr) {
+    if (lv_obj_ready(_hardwareCpuTempValueLabel)) {
         if (has_cpu_temp) {
             const string text = formatTemperatureCelsius(cpu_temp_celsius);
             lv_label_set_text(_hardwareCpuTempValueLabel, text.c_str());
@@ -4466,7 +4515,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
             lv_label_set_text(_hardwareCpuTempValueLabel, "Unavailable");
         }
     }
-    if (_hardwareCpuTempDetailLabel != nullptr) {
+    if (lv_obj_ready(_hardwareCpuTempDetailLabel)) {
         lv_label_set_text(_hardwareCpuTempDetailLabel,
                           has_cpu_temp ? "Sensor updates every 2 seconds while this page is open."
                                        : "Temperature sensor is not available on this build.");
@@ -4477,10 +4526,18 @@ void AppSettings::refreshHardwareMonitorUi(void)
 
 void AppSettings::stopWifiScan(void)
 {
+    if (s_wifi_event_group == nullptr) {
+        return;
+    }
+
     ESP_LOGI(TAG, "Stop Wi-Fi scan");
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_SCANING);
-    lv_obj_add_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(ui_SpinnerScreenSettingWiFi, LV_OBJ_FLAG_HIDDEN);
+    if (lv_obj_ready(ui_PanelScreenSettingWiFiList)) {
+        lv_obj_add_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (lv_obj_ready(ui_SpinnerScreenSettingWiFi)) {
+        lv_obj_add_flag(ui_SpinnerScreenSettingWiFi, LV_OBJ_FLAG_HIDDEN);
+    }
     deinitWifiListButton();
 }
 
@@ -4563,8 +4620,12 @@ void AppSettings::initWifiListButton(lv_obj_t* lv_label_ssid, lv_obj_t* lv_img_w
 void AppSettings::deinitWifiListButton(void)
 {
     for (int i = 0; i < SCAN_LIST_SIZE; i++) {
-        lv_obj_add_flag(img_img_wifi_lock[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(wifi_connect[i], LV_OBJ_FLAG_HIDDEN);
+        if (lv_obj_ready(img_img_wifi_lock[i])) {
+            lv_obj_add_flag(img_img_wifi_lock[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (lv_obj_ready(wifi_connect[i])) {
+            lv_obj_add_flag(wifi_connect[i], LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 
@@ -4583,12 +4644,14 @@ void AppSettings::euiRefresTask(void *arg)
 
     while (1) {
         bleCheckStartupTimeout();
-        bsp_display_lock(0);
-        app->refreshRadioStatusBar();
-        if (app->_screen_index == UI_BLUETOOTH_SETTING_INDEX) {
-            app->refreshBluetoothUi();
+        if (app->isUiActive()) {
+            bsp_display_lock(0);
+            app->refreshRadioStatusBar();
+            if (app->_screen_index == UI_BLUETOOTH_SETTING_INDEX) {
+                app->refreshBluetoothUi();
+            }
+            bsp_display_unlock();
         }
-        bsp_display_unlock();
 
         /* Updte Smart Gadget app */
         // app->updateGadgetTime(timeinfo);
@@ -4610,7 +4673,7 @@ void AppSettings::euiRefresTask(void *arg)
             bsp_display_unlock();
         }
 
-        if (app->_screen_index == UI_HARDWARE_SETTING_INDEX) {
+        if (app->isUiActive() && (app->_screen_index == UI_HARDWARE_SETTING_INDEX)) {
             bsp_display_lock(0);
             app->refreshHardwareMonitorUi();
             bsp_display_unlock();
@@ -4649,7 +4712,9 @@ void AppSettings::wifiScanTask(void *arg)
     while (true) {
         if((xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_INIT_DONE) &&
            (xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_UI_INIT_DONE)){
-            lv_obj_add_flag(ui_SwitchPanelScreenSettingWiFiSwitch, LV_OBJ_FLAG_CLICKABLE);
+            if (app->isUiActive() && lv_obj_ready(ui_SwitchPanelScreenSettingWiFiSwitch)) {
+                lv_obj_add_flag(ui_SwitchPanelScreenSettingWiFiSwitch, LV_OBJ_FLAG_CLICKABLE);
+            }
             xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_INIT_DONE);
             xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_UI_INIT_DONE);
         }
@@ -4782,15 +4847,15 @@ void AppSettings::wifiEventHandler(void* arg, esp_event_base_t event_base, int32
             app->requestWifiConnect("disconnect recovery");
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
-        if(lv_obj_has_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN) &&
+        if((app != nullptr) && app->isUiActive() && lv_obj_ready(ui_PanelScreenSettingWiFiList) &&
+           lv_obj_ready(ui_SpinnerScreenSettingWiFi) && lv_obj_ready(ui_SwitchPanelScreenSettingWiFiSwitch) &&
+           lv_obj_has_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN) &&
            xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_SCANING) {
-            if (!app->_is_ui_del) {
-                bsp_display_lock(0);
-                lv_obj_clear_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_add_flag(ui_SpinnerScreenSettingWiFi, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_add_flag(ui_SwitchPanelScreenSettingWiFiSwitch, LV_OBJ_FLAG_CLICKABLE);
-                bsp_display_unlock();
-            }
+            bsp_display_lock(0);
+            lv_obj_clear_flag(ui_PanelScreenSettingWiFiList, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ui_SpinnerScreenSettingWiFi, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(ui_SwitchPanelScreenSettingWiFiSwitch, LV_OBJ_FLAG_CLICKABLE);
+            bsp_display_unlock();
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTING);
@@ -4858,7 +4923,7 @@ end:
 
 void AppSettings::setWifiKeyboardVisible(bool visible)
 {
-    if (ui_KeyboardScreenSettingVerification == nullptr) {
+    if (!isUiActive() || !lv_obj_ready(ui_KeyboardScreenSettingVerification)) {
         return;
     }
 
@@ -4876,11 +4941,11 @@ void AppSettings::updateWifiPasswordVisibility(bool visible)
 {
     _isWifiPasswordVisible = visible;
 
-    if (ui_TextAreaScreenSettingVerificationPassword != nullptr) {
+    if (isUiActive() && lv_obj_ready(ui_TextAreaScreenSettingVerificationPassword)) {
         lv_textarea_set_password_mode(ui_TextAreaScreenSettingVerificationPassword, !visible);
     }
 
-    if (_wifiPasswordToggleLabel != nullptr) {
+    if (isUiActive() && lv_obj_ready(_wifiPasswordToggleLabel)) {
         lv_label_set_text(_wifiPasswordToggleLabel, visible ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
     }
 }

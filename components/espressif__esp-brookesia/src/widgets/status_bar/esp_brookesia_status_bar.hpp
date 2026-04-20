@@ -52,6 +52,7 @@ public:
     bool setClock(int hour, int min, bool is_pm) const;
 
     bool checkVisible(void) const;
+    lv_obj_t *getMainObject(void) const { return _main_obj.get(); }
 
     static bool calibrateIconData(const ESP_Brookesia_StatusBarData_t &bar_data, const ESP_Brookesia_CoreHome &home,
                                   uint8_t area_index,

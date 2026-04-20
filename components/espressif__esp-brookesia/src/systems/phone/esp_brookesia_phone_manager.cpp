@@ -38,6 +38,8 @@ static constexpr int kQuickAccessShadow = 32;
 static constexpr int kQuickAccessAnimTimeMs = 220;
 static constexpr lv_opa_t kQuickAccessOverlayOpa = LV_OPA_50;
 static constexpr lv_opa_t kQuickAccessPanelOpa = 220;
+static constexpr int kQuickAccessAppListTopOffset = 72;
+static constexpr int kQuickAccessAppFooterHeight = 64;
 
 static int get_internal_heap_used_percent()
 {
@@ -75,6 +77,8 @@ ESP_Brookesia_PhoneManager::ESP_Brookesia_PhoneManager(ESP_Brookesia_Core &core_
     _quick_access_panel_type(QuickAccessPanelType::NONE),
     _quick_access_close_button_app_id_map(),
     _quick_access_row_app_id_map(),
+    _quick_access_close_all_timer(nullptr),
+    _quick_access_close_all_queue(),
     _recents_screen_drag_tan_threshold(0),
     _recents_screen_start_point{},
     _recents_screen_last_point{},
@@ -233,6 +237,11 @@ bool ESP_Brookesia_PhoneManager::del(void)
     _quick_access_system_volume_slider = nullptr;
     _quick_access_system_volume_value_label = nullptr;
     _quick_access_panel_type = QuickAccessPanelType::NONE;
+    if (_quick_access_close_all_timer != nullptr) {
+        lv_timer_del(_quick_access_close_all_timer);
+        _quick_access_close_all_timer = nullptr;
+    }
+    _quick_access_close_all_queue.clear();
     if (home.getRecentsScreen() != nullptr) {
         temp_obj = home.getRecentsScreen()->getEventObject();
         if (temp_obj != nullptr && lv_obj_is_valid(temp_obj)) {
@@ -366,7 +375,7 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
     _quick_access_app_panel = lv_obj_create(_quick_access_overlay);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_app_panel, false, "Create quick access app panel failed");
     lv_obj_set_size(_quick_access_app_panel, lv_pct(100), lv_pct(50));
-    lv_obj_set_pos(_quick_access_app_panel, 0, 0);
+    lv_obj_set_pos(_quick_access_app_panel, 0, getQuickAccessPanelHiddenY(QuickAccessPanelType::APPS));
     lv_obj_set_style_radius(_quick_access_app_panel, 0, 0);
     lv_obj_set_style_bg_color(_quick_access_app_panel, lv_color_hex(kQuickAccessPanelBg), 0);
     lv_obj_set_style_bg_grad_color(_quick_access_app_panel, lv_color_hex(0x2A3B50), 0);
@@ -394,8 +403,8 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
 
     _quick_access_close_all_button = lv_btn_create(_quick_access_app_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_close_all_button, false, "Create quick access close-all button failed");
-    lv_obj_set_size(_quick_access_close_all_button, 104, 38);
-    lv_obj_align(_quick_access_close_all_button, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_size(_quick_access_close_all_button, lv_pct(100), 44);
+    lv_obj_align(_quick_access_close_all_button, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_radius(_quick_access_close_all_button, 18, 0);
     lv_obj_set_style_bg_color(_quick_access_close_all_button, lv_color_hex(0xDC2626), 0);
     lv_obj_set_style_bg_opa(_quick_access_close_all_button, LV_OPA_COVER, 0);
@@ -409,20 +418,22 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
     _quick_access_app_list = lv_obj_create(_quick_access_app_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_app_list, false, "Create quick access app list failed");
     lv_obj_set_size(_quick_access_app_list, lv_pct(100), lv_pct(100));
-    lv_obj_align(_quick_access_app_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_align(_quick_access_app_list, LV_ALIGN_TOP_MID, 0, kQuickAccessAppListTopOffset);
     lv_obj_set_style_bg_opa(_quick_access_app_list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(_quick_access_app_list, 0, 0);
     lv_obj_set_style_pad_all(_quick_access_app_list, 0, 0);
     lv_obj_set_style_pad_row(_quick_access_app_list, 10, 0);
+    lv_obj_set_style_pad_bottom(_quick_access_app_list, 10, 0);
+    lv_obj_set_flex_flow(_quick_access_app_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(_quick_access_app_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
     lv_obj_set_scroll_dir(_quick_access_app_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(_quick_access_app_list, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_set_y(_quick_access_app_list, 56);
-    lv_obj_set_height(_quick_access_app_list, lv_pct(100));
+    lv_obj_set_height(_quick_access_app_list, lv_obj_get_height(_quick_access_app_panel) - kQuickAccessAppListTopOffset - kQuickAccessAppFooterHeight);
 
     _quick_access_volume_panel = lv_obj_create(_quick_access_overlay);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_volume_panel, false, "Create quick access volume panel failed");
     lv_obj_set_size(_quick_access_volume_panel, lv_pct(50), lv_pct(50));
-    lv_obj_set_pos(_quick_access_volume_panel, lv_pct(50), 0);
+    lv_obj_set_pos(_quick_access_volume_panel, lv_pct(50), getQuickAccessPanelHiddenY(QuickAccessPanelType::AUDIO));
     lv_obj_set_style_radius(_quick_access_volume_panel, 0, 0);
     lv_obj_set_style_bg_color(_quick_access_volume_panel, lv_color_hex(kQuickAccessPanelBg), 0);
     lv_obj_set_style_bg_grad_color(_quick_access_volume_panel, lv_color_hex(0x314256), 0);
@@ -499,6 +510,29 @@ lv_obj_t *ESP_Brookesia_PhoneManager::getQuickAccessPanel(QuickAccessPanelType t
     }
 }
 
+int ESP_Brookesia_PhoneManager::getQuickAccessPanelShownY(QuickAccessPanelType type) const
+{
+    switch (type) {
+    case QuickAccessPanelType::APPS:
+        return home.getData().status_bar.data.main.size.height;
+    case QuickAccessPanelType::AUDIO:
+        return home.getData().status_bar.data.main.size.height;
+    case QuickAccessPanelType::NONE:
+    default:
+        return 0;
+    }
+}
+
+int ESP_Brookesia_PhoneManager::getQuickAccessPanelHiddenY(QuickAccessPanelType type) const
+{
+    lv_obj_t *panel = getQuickAccessPanel(type);
+    if ((panel == nullptr) || !lv_obj_is_valid(panel)) {
+        return 0;
+    }
+
+    return getQuickAccessPanelShownY(type) - lv_obj_get_height(panel);
+}
+
 void ESP_Brookesia_PhoneManager::onQuickAccessAnimateY(void *var, int32_t value)
 {
     lv_obj_t *obj = static_cast<lv_obj_t *>(var);
@@ -542,7 +576,7 @@ void ESP_Brookesia_PhoneManager::animateQuickAccessHide(void)
     lv_anim_init(&panel_anim);
     lv_anim_set_var(&panel_anim, panel);
     lv_anim_set_exec_cb(&panel_anim, onQuickAccessAnimateY);
-    lv_anim_set_values(&panel_anim, lv_obj_get_y(panel), -lv_obj_get_height(panel));
+    lv_anim_set_values(&panel_anim, lv_obj_get_y(panel), getQuickAccessPanelHiddenY(_quick_access_panel_type));
     lv_anim_set_time(&panel_anim, kQuickAccessAnimTimeMs);
     lv_anim_set_path_cb(&panel_anim, lv_anim_path_ease_in);
     lv_anim_start(&panel_anim);
@@ -572,11 +606,11 @@ void ESP_Brookesia_PhoneManager::hideQuickAccessOverlay(bool animate)
     lv_obj_add_flag(_quick_access_overlay, LV_OBJ_FLAG_HIDDEN);
     if ((_quick_access_app_panel != nullptr) && lv_obj_is_valid(_quick_access_app_panel)) {
         lv_obj_add_flag(_quick_access_app_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_y(_quick_access_app_panel, -lv_obj_get_height(_quick_access_app_panel));
+        lv_obj_set_y(_quick_access_app_panel, getQuickAccessPanelHiddenY(QuickAccessPanelType::APPS));
     }
     if ((_quick_access_volume_panel != nullptr) && lv_obj_is_valid(_quick_access_volume_panel)) {
         lv_obj_add_flag(_quick_access_volume_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_y(_quick_access_volume_panel, -lv_obj_get_height(_quick_access_volume_panel));
+        lv_obj_set_y(_quick_access_volume_panel, getQuickAccessPanelHiddenY(QuickAccessPanelType::AUDIO));
     }
     lv_obj_set_style_bg_opa(_quick_access_overlay, LV_OPA_TRANSP, 0);
     _quick_access_panel_type = QuickAccessPanelType::NONE;
@@ -606,6 +640,15 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
             continue;
         }
 
+        ESP_Brookesia_PhoneApp *phone_app = static_cast<ESP_Brookesia_PhoneApp *>(app);
+        const void *icon_resource = nullptr;
+        if ((phone_app != nullptr) && (phone_app->getActiveData().status_icon_data.icon.image_num > 0)) {
+            icon_resource = phone_app->getActiveData().status_icon_data.icon.images[0].resource;
+        }
+        if (icon_resource == nullptr) {
+            icon_resource = app->getLauncherIcon().resource;
+        }
+
         lv_obj_t *row = lv_btn_create(_quick_access_app_list);
         lv_obj_set_width(row, lv_pct(100));
         lv_obj_set_height(row, 64);
@@ -623,13 +666,19 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
         lv_obj_add_event_cb(row, onQuickAccessAppRowEventCallback, LV_EVENT_CLICKED, this);
         _quick_access_row_app_id_map[row] = app->getId();
 
+        if (icon_resource != nullptr) {
+            lv_obj_t *icon = lv_img_create(row);
+            lv_img_set_src(icon, icon_resource);
+            lv_obj_align(icon, LV_ALIGN_LEFT_MID, 0, 0);
+        }
+
         lv_obj_t *name = lv_label_create(row);
         const bool is_active = (getActiveApp() == app);
         const std::string title = is_active ? (std::string(app->getName()) + "  ACTIVE") : std::string(app->getName());
         lv_label_set_text(name, title.c_str());
         lv_obj_set_style_text_color(name, lv_color_hex(is_active ? kQuickAccessAccent : kQuickAccessText), 0);
         lv_obj_set_style_text_font(name, &lv_font_montserrat_18, 0);
-        lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_align(name, LV_ALIGN_LEFT_MID, 52, 0);
 
         lv_obj_t *close_button = lv_btn_create(row);
         lv_obj_set_size(close_button, 70, 34);
@@ -667,6 +716,21 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessVolumePanel(void)
 
 void ESP_Brookesia_PhoneManager::showQuickAccessAppList(void)
 {
+    if ((_quick_access_app_panel != nullptr) && lv_obj_is_valid(_quick_access_app_panel) &&
+        (_quick_access_app_list != nullptr) && lv_obj_is_valid(_quick_access_app_list) &&
+        (_quick_access_close_all_button != nullptr) && lv_obj_is_valid(_quick_access_close_all_button)) {
+        int list_height = 0;
+
+        lv_obj_update_layout(_quick_access_app_panel);
+        list_height = lv_obj_get_height(_quick_access_app_panel) - kQuickAccessAppListTopOffset - lv_obj_get_height(_quick_access_close_all_button) - 20;
+        if (list_height < 48) {
+            list_height = 48;
+        }
+
+        lv_obj_set_pos(_quick_access_app_list, 0, kQuickAccessAppListTopOffset);
+        lv_obj_set_size(_quick_access_app_list, lv_pct(100), list_height);
+    }
+
     refreshQuickAccessAppList();
     showQuickAccessOverlay(QuickAccessPanelType::APPS);
 }
@@ -702,20 +766,24 @@ void ESP_Brookesia_PhoneManager::showQuickAccessOverlay(QuickAccessPanelType typ
     if ((other_panel != nullptr) && lv_obj_is_valid(other_panel)) {
         lv_anim_del(other_panel, onQuickAccessAnimateY);
         lv_obj_add_flag(other_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_y(other_panel, -lv_obj_get_height(other_panel));
+        lv_obj_set_y(other_panel, getQuickAccessPanelHiddenY((type == QuickAccessPanelType::APPS) ? QuickAccessPanelType::AUDIO : QuickAccessPanelType::APPS));
     }
 
     lv_obj_clear_flag(_quick_access_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_y(panel, -lv_obj_get_height(panel));
+    lv_obj_set_y(panel, getQuickAccessPanelHiddenY(type));
     lv_obj_move_foreground(_quick_access_overlay);
+    if ((home.getStatusBar() != nullptr) && (home.getStatusBar()->getMainObject() != nullptr) &&
+        lv_obj_is_valid(home.getStatusBar()->getMainObject())) {
+        lv_obj_move_foreground(home.getStatusBar()->getMainObject());
+    }
     _quick_access_panel_type = type;
 
     lv_anim_t panel_anim;
     lv_anim_init(&panel_anim);
     lv_anim_set_var(&panel_anim, panel);
     lv_anim_set_exec_cb(&panel_anim, onQuickAccessAnimateY);
-    lv_anim_set_values(&panel_anim, -lv_obj_get_height(panel), 0);
+    lv_anim_set_values(&panel_anim, getQuickAccessPanelHiddenY(type), getQuickAccessPanelShownY(type));
     lv_anim_set_time(&panel_anim, kQuickAccessAnimTimeMs);
     lv_anim_set_path_cb(&panel_anim, lv_anim_path_ease_out);
     lv_anim_start(&panel_anim);
@@ -783,24 +851,72 @@ void ESP_Brookesia_PhoneManager::onQuickAccessCloseAllEventCallback(lv_event_t *
     ESP_Brookesia_PhoneManager *manager = static_cast<ESP_Brookesia_PhoneManager *>(lv_event_get_user_data(event));
     ESP_BROOKESIA_CHECK_NULL_EXIT(manager, "Invalid manager");
 
-    std::vector<int> running_app_ids;
+    if (manager->_quick_access_close_all_timer != nullptr) {
+        lv_timer_del(manager->_quick_access_close_all_timer);
+        manager->_quick_access_close_all_timer = nullptr;
+    }
+
+    manager->_quick_access_close_all_queue.clear();
+
+    ESP_Brookesia_CoreApp *active_app = manager->getActiveApp();
+    if (active_app != nullptr) {
+        manager->_quick_access_close_all_queue.push_back(active_app->getId());
+    }
+
     const int running_app_count = manager->getRunningAppCount();
-    running_app_ids.reserve(running_app_count);
     for (int index = 0; index < running_app_count; ++index) {
         ESP_Brookesia_CoreApp *app = manager->getRunningAppByIdenx(index);
-        if (app != nullptr) {
-            running_app_ids.push_back(app->getId());
+        if ((app != nullptr) && ((active_app == nullptr) || (app->getId() != active_app->getId()))) {
+            manager->_quick_access_close_all_queue.push_back(app->getId());
         }
     }
 
-    for (int app_id : running_app_ids) {
-        ESP_Brookesia_CoreApp *app = manager->getRunningAppById(app_id);
-        if (app != nullptr) {
-            ESP_BROOKESIA_CHECK_FALSE_EXIT(manager->processAppClose(app), "Quick access close-all failed");
+    manager->hideQuickAccessOverlay(false);
+
+    if (manager->_quick_access_close_all_queue.empty()) {
+        return;
+    }
+
+    manager->_quick_access_close_all_timer = lv_timer_create(onQuickAccessCloseAllTimerCallback, 80, manager);
+    ESP_BROOKESIA_CHECK_NULL_EXIT(manager->_quick_access_close_all_timer, "Create quick access close-all timer failed");
+    lv_timer_set_repeat_count(manager->_quick_access_close_all_timer, -1);
+}
+
+void ESP_Brookesia_PhoneManager::onQuickAccessCloseAllTimerCallback(lv_timer_t *timer)
+{
+    ESP_Brookesia_PhoneManager *manager = (timer != nullptr) ? static_cast<ESP_Brookesia_PhoneManager *>(timer->user_data) : nullptr;
+    if (manager == nullptr) {
+        if (timer != nullptr) {
+            lv_timer_del(timer);
+        }
+        return;
+    }
+
+    if (manager->_quick_access_close_all_queue.empty()) {
+        if (manager->_quick_access_close_all_timer != nullptr) {
+            lv_timer_del(manager->_quick_access_close_all_timer);
+            manager->_quick_access_close_all_timer = nullptr;
+        }
+        manager->refreshQuickAccessAppList();
+        return;
+    }
+
+    const int app_id = manager->_quick_access_close_all_queue.front();
+    manager->_quick_access_close_all_queue.erase(manager->_quick_access_close_all_queue.begin());
+
+    ESP_Brookesia_CoreApp *app = manager->getRunningAppById(app_id);
+    if (app != nullptr) {
+        if (!manager->processAppClose(app)) {
+            ESP_BROOKESIA_LOGE("Quick access close-all failed for app(%d)", app_id);
         }
     }
 
-    manager->hideQuickAccessOverlay(true);
+    if (manager->_quick_access_close_all_queue.empty()) {
+        if (manager->_quick_access_close_all_timer != nullptr) {
+            lv_timer_del(manager->_quick_access_close_all_timer);
+            manager->_quick_access_close_all_timer = nullptr;
+        }
+    }
 }
 
 void ESP_Brookesia_PhoneManager::onQuickAccessVolumeSliderEventCallback(lv_event_t *event)

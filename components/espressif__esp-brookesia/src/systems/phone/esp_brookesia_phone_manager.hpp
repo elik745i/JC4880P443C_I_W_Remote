@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <vector>
 #include "lvgl.h"
 #include "core/esp_brookesia_core_manager.hpp"
 #include "widgets/gesture/esp_brookesia_gesture.hpp"
@@ -60,6 +61,8 @@ private:
     void showQuickAccessOverlay(QuickAccessPanelType type);
     void animateQuickAccessHide(void);
     lv_obj_t *getQuickAccessPanel(QuickAccessPanelType type) const;
+    int getQuickAccessPanelShownY(QuickAccessPanelType type) const;
+    int getQuickAccessPanelHiddenY(QuickAccessPanelType type) const;
     static void onQuickAccessAnimateY(void *var, int32_t value);
     static void onQuickAccessAnimateBackdrop(void *var, int32_t value);
     static void onQuickAccessHideAnimationReady(lv_anim_t *anim);
@@ -68,6 +71,7 @@ private:
     static void onQuickAccessAppRowEventCallback(lv_event_t *event);
     static void onQuickAccessCloseAppEventCallback(lv_event_t *event);
     static void onQuickAccessCloseAllEventCallback(lv_event_t *event);
+    static void onQuickAccessCloseAllTimerCallback(lv_timer_t *timer);
     static void onQuickAccessVolumeSliderEventCallback(lv_event_t *event);
     // App Launcher
     static void onAppLauncherGestureEventCallback(lv_event_t *event);
@@ -133,6 +137,8 @@ private:
     QuickAccessPanelType _quick_access_panel_type;
     std::unordered_map<lv_obj_t *, int> _quick_access_close_button_app_id_map;
     std::unordered_map<lv_obj_t *, int> _quick_access_row_app_id_map;
+    lv_timer_t *_quick_access_close_all_timer;
+    std::vector<int> _quick_access_close_all_queue;
     // RecentsScreen
     float _recents_screen_drag_tan_threshold;
     lv_point_t _recents_screen_start_point;

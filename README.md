@@ -1,8 +1,8 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.3 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.4 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
-This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, and a local factory reset flow.
+This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
 ## Hardware And Case Renders
 
@@ -37,6 +37,8 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Firmware settings can browse GitHub releases directly and offer OTA updates from attached `.bin` assets.
 - Dead launcher apps and unreachable video-player sources were removed to reduce maintenance surface and keep OTA builds within budget.
 - MP3 probing and decode fallback behavior are more tolerant of malformed frames and stream sync loss.
+- BLE and ZigBee features are now enabled through a matching ESP32-C6 coprocessor firmware release.
+- The standalone ESP32-C6 release now includes the fixed ZigBee storage partition layout required for stable bring-up.
 
 ## Feature Summary
 
@@ -61,6 +63,12 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Auto timezone mode can update the offset from online geolocation when internet access is available.
 - Factory Reset in Settings > Firmware clears the app preferences namespace and reapplies defaults immediately.
 
+### Wireless Coprocessor
+
+- BLE and ZigBee runtime support depends on the external ESP32-C6 coprocessor firmware published in the matching GitHub release.
+- If the C6 is not flashed with the firmware from the same release, BLE and ZigBee features on the P4 side are not expected to work correctly.
+- The C6 firmware is built from `coprocessor_c6/` and is released alongside the main P4 firmware.
+
 ### Emulator Support
 
 - The SEGA app scans `/sdcard/sega_games` for `.sms`, `.gg`, `.sg`, `.md`, `.gen`, `.bin`, and `.smd` ROMs.
@@ -80,7 +88,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash size is configured for 16 MB.
 - Partition table provides two enlarged OTA app slots of `0x7B0000` each.
 - SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
-- Version 1.1.3 validates at `0x7159A0`, leaving `0x9A660` bytes free in the smallest OTA app slot.
+- Version 1.1.4 validates at `0x743420`, leaving `0x6CBE0` bytes free in the smallest OTA app slot.
 
 ## SD Card Layout
 
@@ -103,6 +111,35 @@ To flash and open the serial monitor:
 ```bash
 idf.py -p PORT flash monitor
 ```
+
+## C6 Firmware Requirement
+
+BLE and ZigBee features require the ESP32-C6 coprocessor to be flashed with the matching firmware from the same GitHub release as the P4 firmware.
+
+Use the release assets for both devices together:
+
+- Flash the P4 with the P4 firmware from the release.
+- Flash the C6 with the C6 firmware from the same release.
+- Do not mix older C6 firmware with a newer P4 release if you expect BLE or ZigBee to work.
+
+## Flashing The ESP32-C6
+
+To flash the C6 from an external UART bridge, connect the bridge to the board header like this:
+
+- `RX -> TX`
+- `TX -> RX`
+- `GND -> GND`
+- `5V -> 5V`
+
+To put the C6 into boot mode:
+
+1. Pull `C6_IO9` to `GND`.
+2. Connect USB to the PC.
+3. Put the P4 side into boot mode as well so it does not interfere with the C6: press `BOOT` and `RST`, then release `RST` so the screen stays in boot mode.
+4. Release `C6_IO9` from `GND`.
+5. Flash the C6 firmware.
+
+This sequence keeps the P4 out of the way while the external UART bridge talks directly to the C6.
 
 ## Project Layout
 

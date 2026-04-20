@@ -38,6 +38,7 @@ private:
         UI_WIFI_SCAN_INDEX,
         UI_WIFI_CONNECT_INDEX,
         UI_BLUETOOTH_SETTING_INDEX,
+        UI_SECURITY_SETTING_INDEX,
         UI_VOLUME_SETTING_INDEX,
         UI_BRIGHTNESS_SETTING_INDEX,
         UI_HARDWARE_SETTING_INDEX,
@@ -102,6 +103,7 @@ private:
     void refreshSavedWifiUi(void);
     void refreshDisplayIdleUi(void);
     void refreshTimezoneUi(void);
+    void refreshBluetoothUi(void);
     void refreshSecurityUi(void);
     void refreshFirmwareUi(void);
     void refreshHardwareMonitorUi(void);
@@ -172,6 +174,7 @@ private:
     static void onWifiPasswordToggleClickedEventCallback(lv_event_t *e);
     static void onForgetSavedWifiClickedEventCallback(lv_event_t *e);
     // Bluetooth
+    static void onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback( lv_event_t * e);
     static void onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback(lv_event_t *e);
     static void onSecurityToggleRequestFinished(bool success, void *user_data);
@@ -214,17 +217,21 @@ private:
     lv_obj_t *_displayAutoTimezoneSwitch;
     lv_obj_t *_displayTimezoneDropdown;
     lv_obj_t *_displayTimezoneInfoLabel;
+    lv_obj_t *_bluetoothMenuItem;
     lv_obj_t *_wifiMenuItem;
     lv_obj_t *_audioMenuItem;
     lv_obj_t *_displayMenuItem;
     lv_obj_t *_hardwareMenuItem;
     lv_obj_t *_securityMenuItem;
     lv_obj_t *_aboutMenuItem;
+    lv_obj_t *_bluetoothInfoLabel;
+    lv_obj_t *_securityDeviceLockSwitch;
     lv_obj_t *_securitySettingsLockSwitch;
     lv_obj_t *_securityInfoLabel;
     lv_obj_t *_firmwareMenuItem;
     lv_obj_t *_firmwareScreen;
     lv_obj_t *_hardwareScreen;
+    lv_obj_t *_securityScreen;
     lv_obj_t *_hardwareCpuSpeedValueLabel;
     lv_obj_t *_hardwareCpuSpeedDetailLabel;
     lv_obj_t *_hardwareCpuSpeedBar;

@@ -4,6 +4,7 @@
 #include "freertos/task.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_codec_dev.h"
 #include "esp_system.h"
 #include <stdlib.h>
@@ -53,7 +54,7 @@ void i2s_echo(void *args)
     }
 
     // 分配缓冲区用于录音和播放
-    uint8_t *buffer = (uint8_t *)malloc(EXAMPLE_RECV_BUF_SIZE);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(EXAMPLE_RECV_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (buffer == NULL) {
         ESP_LOGE(TAG, "Failed to allocate buffer");
         vTaskDelete(NULL);

@@ -14,6 +14,7 @@
 #include <sstream>
 #include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -31,10 +32,18 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
+#include "esp_hosted.h"
+#include "esp_hosted_misc.h"
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 #include "cJSON.h"
 #include "nvs.h"
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "host/ble_hs.h"
+#include "host/util/util.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
 
 #if __has_include("driver/temperature_sensor.h")
 #include "driver/temperature_sensor.h"
@@ -121,6 +130,341 @@ static constexpr uint32_t kSettingScreenAnimTimeMs = 220;
 TaskHandle_t wifi_scan_handle_task;
 
 static EventGroupHandle_t s_wifi_event_group;
+static SemaphoreHandle_t s_ble_mutex;
+static constexpr const char *kBleDisabledMessage = "BLE is off. Enable it to advertise from the ESP32-C6 radio.";
+static constexpr const char *kBleUnsupportedMessage = "BLE is unavailable with the current ESP32-C6 firmware or hosted setup.";
+
+namespace {
+
+constexpr const char *kBleDeviceName = "JC4880P443C Remote";
+
+enum class BleRuntimeState : uint8_t {
+    Disabled = 0,
+    Starting,
+    Advertising,
+    Error,
+};
+
+BleRuntimeState s_bleRuntimeState = BleRuntimeState::Disabled;
+bool s_bleDesiredEnabled = false;
+bool s_bleTransportReady = false;
+bool s_bleControllerReady = false;
+bool s_bleHostReady = false;
+bool s_bleSynced = false;
+bool s_bleAdvertising = false;
+uint8_t s_bleOwnAddrType = BLE_OWN_ADDR_PUBLIC;
+std::string s_bleStatusMessage = "BLE is off. Enable it to advertise from the ESP32-C6 radio.";
+
+extern "C" void ble_store_config_init(void);
+
+static bool bleIsExpectedInitResult(esp_err_t err)
+{
+    return (err == ESP_OK) || (err == ESP_ERR_INVALID_STATE);
+}
+
+static bool bleLock(TickType_t timeout = pdMS_TO_TICKS(1000))
+{
+    if (s_ble_mutex == nullptr) {
+        s_ble_mutex = xSemaphoreCreateMutex();
+    }
+
+    return (s_ble_mutex != nullptr) && (xSemaphoreTake(s_ble_mutex, timeout) == pdTRUE);
+}
+
+static void bleUnlock(void)
+{
+    if (s_ble_mutex != nullptr) {
+        xSemaphoreGive(s_ble_mutex);
+    }
+}
+
+static void bleSetStatusLocked(BleRuntimeState state, const std::string &message)
+{
+    s_bleRuntimeState = state;
+    s_bleStatusMessage = message;
+}
+
+static esp_err_t bleHandleHostedUnsupportedLocked(const char *context)
+{
+    s_bleDesiredEnabled = false;
+    s_bleAdvertising = false;
+    s_bleSynced = false;
+    bleSetStatusLocked(BleRuntimeState::Error,
+                       std::string(context != nullptr ? context : "BLE is unavailable") +
+                           ": " + kBleUnsupportedMessage +
+                           " The ESP32-C6 likely does not expose hosted BLE in its current firmware.");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+static int bleGapEvent(struct ble_gap_event *event, void *arg);
+
+static esp_err_t bleAdvertiseLocked(void)
+{
+    if (!s_bleDesiredEnabled) {
+        bleSetStatusLocked(BleRuntimeState::Disabled, kBleDisabledMessage);
+        return ESP_OK;
+    }
+
+    if (!s_bleSynced) {
+        bleSetStatusLocked(BleRuntimeState::Starting, "Connecting to the ESP32-C6 and waiting for the BLE host stack to sync.");
+        return ESP_OK;
+    }
+
+    if (s_bleAdvertising) {
+        bleSetStatusLocked(BleRuntimeState::Advertising, std::string("BLE is advertising as '") + kBleDeviceName + "'.");
+        return ESP_OK;
+    }
+
+    struct ble_hs_adv_fields fields = {};
+    fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
+    fields.tx_pwr_lvl_is_present = 1;
+    fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+
+    const char *name = ble_svc_gap_device_name();
+    fields.name = reinterpret_cast<uint8_t *>(const_cast<char *>(name));
+    fields.name_len = strlen(name);
+    fields.name_is_complete = 1;
+
+    int rc = ble_gap_adv_set_fields(&fields);
+    if (rc != 0) {
+        bleSetStatusLocked(BleRuntimeState::Error,
+                           std::string("Failed to publish BLE advertisement data (rc=") + std::to_string(rc) + ").");
+        return ESP_FAIL;
+    }
+
+    struct ble_gap_adv_params adv_params = {};
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+
+    rc = ble_gap_adv_start(s_bleOwnAddrType, nullptr, BLE_HS_FOREVER, &adv_params, bleGapEvent, nullptr);
+    if (rc != 0) {
+        bleSetStatusLocked(BleRuntimeState::Error,
+                           std::string("Failed to start BLE advertising (rc=") + std::to_string(rc) + ").");
+        return ESP_FAIL;
+    }
+
+    s_bleAdvertising = true;
+    bleSetStatusLocked(BleRuntimeState::Advertising, std::string("BLE is advertising as '") + kBleDeviceName + "'.");
+    return ESP_OK;
+}
+
+static void bleStopAdvertisingLocked(void)
+{
+    if (s_bleAdvertising) {
+        ble_gap_adv_stop();
+        s_bleAdvertising = false;
+    }
+
+    bleSetStatusLocked(BleRuntimeState::Disabled, kBleDisabledMessage);
+}
+
+static void bleOnReset(int reason)
+{
+    if (bleLock()) {
+        s_bleSynced = false;
+        s_bleAdvertising = false;
+        bleSetStatusLocked(BleRuntimeState::Error,
+                           std::string("BLE host reset (reason=") + std::to_string(reason) + "). Toggle BLE to retry.");
+        bleUnlock();
+    }
+}
+
+static void bleOnSync(void)
+{
+    int rc = ble_hs_util_ensure_addr(0);
+    if (rc != 0) {
+        if (bleLock()) {
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               std::string("BLE address setup failed (rc=") + std::to_string(rc) + ").");
+            bleUnlock();
+        }
+        return;
+    }
+
+    rc = ble_hs_id_infer_auto(0, &s_bleOwnAddrType);
+    if (rc != 0) {
+        if (bleLock()) {
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               std::string("BLE address selection failed (rc=") + std::to_string(rc) + ").");
+            bleUnlock();
+        }
+        return;
+    }
+
+    if (bleLock()) {
+        s_bleSynced = true;
+        if (s_bleDesiredEnabled) {
+            bleAdvertiseLocked();
+        } else {
+            bleSetStatusLocked(BleRuntimeState::Disabled, "BLE is off. Enable it to advertise from the ESP32-C6 radio.");
+        }
+        bleUnlock();
+    }
+}
+
+static void bleHostTask(void *param)
+{
+    (void)param;
+    nimble_port_run();
+
+    if (bleLock()) {
+        s_bleHostReady = false;
+        s_bleSynced = false;
+        s_bleAdvertising = false;
+        if (s_bleDesiredEnabled) {
+            bleSetStatusLocked(BleRuntimeState::Error, "BLE host stopped unexpectedly. Toggle BLE to restart it.");
+        }
+        bleUnlock();
+    }
+
+    nimble_port_freertos_deinit();
+}
+
+static int bleGapEvent(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+
+    if (!bleLock()) {
+        return 0;
+    }
+
+    switch (event->type) {
+        case BLE_GAP_EVENT_CONNECT:
+            if (event->connect.status == 0) {
+                s_bleAdvertising = false;
+                bleSetStatusLocked(BleRuntimeState::Advertising, "BLE connected. Advertising will resume when the link closes.");
+            } else {
+                s_bleAdvertising = false;
+                bleAdvertiseLocked();
+            }
+            break;
+
+        case BLE_GAP_EVENT_DISCONNECT:
+            s_bleAdvertising = false;
+            if (s_bleDesiredEnabled) {
+                bleAdvertiseLocked();
+            } else {
+                bleSetStatusLocked(BleRuntimeState::Disabled, kBleDisabledMessage);
+            }
+            break;
+
+        case BLE_GAP_EVENT_ADV_COMPLETE:
+            s_bleAdvertising = false;
+            if (s_bleDesiredEnabled) {
+                bleAdvertiseLocked();
+            } else {
+                bleSetStatusLocked(BleRuntimeState::Disabled, kBleDisabledMessage);
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    bleUnlock();
+    return 0;
+}
+
+static esp_err_t bleSetEnabled(bool enabled)
+{
+    if (!bleLock()) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    s_bleDesiredEnabled = enabled;
+
+    if (!enabled) {
+        bleStopAdvertisingLocked();
+        bleUnlock();
+        return ESP_OK;
+    }
+
+    bleSetStatusLocked(BleRuntimeState::Starting, "Connecting to the ESP32-C6 and starting BLE.");
+
+    if (!s_bleTransportReady) {
+        int ret = esp_hosted_connect_to_slave();
+        if (ret != ESP_OK) {
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               std::string("Failed to reach the ESP32-C6 radio (err=") + std::to_string(ret) + ").");
+            bleUnlock();
+            return ESP_FAIL;
+        }
+        s_bleTransportReady = true;
+    }
+
+    if (!s_bleControllerReady) {
+        esp_err_t err = esp_hosted_bt_controller_init();
+        if (err == ESP_ERR_NOT_SUPPORTED) {
+            err = bleHandleHostedUnsupportedLocked("Hosted BLE controller init unavailable");
+            bleUnlock();
+            return err;
+        }
+        if (!bleIsExpectedInitResult(err)) {
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               std::string("Hosted BT controller init failed: ") + esp_err_to_name(err));
+            bleUnlock();
+            return err;
+        }
+
+        err = esp_hosted_bt_controller_enable();
+        if (err == ESP_ERR_NOT_SUPPORTED) {
+            err = bleHandleHostedUnsupportedLocked("Hosted BLE controller enable unavailable");
+            bleUnlock();
+            return err;
+        }
+        if (!bleIsExpectedInitResult(err)) {
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               std::string("Hosted BT controller enable failed: ") + esp_err_to_name(err));
+            bleUnlock();
+            return err;
+        }
+
+        s_bleControllerReady = true;
+    }
+
+    if (!s_bleHostReady) {
+        esp_err_t err = nimble_port_init();
+        if (!bleIsExpectedInitResult(err)) {
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               std::string("NimBLE host init failed: ") + esp_err_to_name(err));
+            bleUnlock();
+            return err;
+        }
+
+        ble_hs_cfg.reset_cb = bleOnReset;
+        ble_hs_cfg.sync_cb = bleOnSync;
+
+        ble_svc_gap_init();
+        ble_svc_gatt_init();
+        ble_store_config_init();
+
+        int rc = ble_svc_gap_device_name_set(kBleDeviceName);
+        if (rc != 0) {
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               std::string("Failed to set BLE device name (rc=") + std::to_string(rc) + ").");
+            bleUnlock();
+            return ESP_FAIL;
+        }
+
+        nimble_port_freertos_init(bleHostTask);
+        s_bleHostReady = true;
+    }
+
+    esp_err_t err = bleAdvertiseLocked();
+    bleUnlock();
+    return err;
+}
+
+static std::string bleStatusText(bool preference_enabled)
+{
+    if (!preference_enabled && (s_bleRuntimeState == BleRuntimeState::Disabled)) {
+        return kBleDisabledMessage;
+    }
+
+    return s_bleStatusMessage;
+}
+
+} // namespace
 
 static char st_wifi_ssid[32];
 static char st_wifi_password[64];
@@ -144,6 +488,35 @@ static constexpr const char *kFirmwareGithubReleasesUrl = "https://api.github.co
 static constexpr const char *kFirmwareSdDirectory = "/sdcard/firmware";
 static constexpr const char *kFirmwareUnknownVersion = "unknown";
 static constexpr const char *kSdCardMountPoint = "/sdcard";
+
+static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
+                                                      const char *name,
+                                                      const uint32_t stack_depth,
+                                                      void *arg,
+                                                      const UBaseType_t priority,
+                                                      TaskHandle_t *task_handle,
+                                                      const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        task_handle,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
+}
 
 #if APP_SETTINGS_HAS_TEMPERATURE_SENSOR
 static temperature_sensor_handle_t s_temperatureSensor = nullptr;
@@ -521,17 +894,21 @@ AppSettings::AppSettings():
     _displayAutoTimezoneSwitch(nullptr),
     _displayTimezoneDropdown(nullptr),
     _displayTimezoneInfoLabel(nullptr),
+    _bluetoothMenuItem(nullptr),
     _wifiMenuItem(nullptr),
     _audioMenuItem(nullptr),
     _displayMenuItem(nullptr),
     _hardwareMenuItem(nullptr),
     _securityMenuItem(nullptr),
     _aboutMenuItem(nullptr),
+    _bluetoothInfoLabel(nullptr),
+    _securityDeviceLockSwitch(nullptr),
     _securitySettingsLockSwitch(nullptr),
     _securityInfoLabel(nullptr),
     _firmwareMenuItem(nullptr),
     _firmwareScreen(nullptr),
     _hardwareScreen(nullptr),
+    _securityScreen(nullptr),
     _hardwareCpuSpeedValueLabel(nullptr),
     _hardwareCpuSpeedDetailLabel(nullptr),
     _hardwareCpuSpeedBar(nullptr),
@@ -670,6 +1047,14 @@ bool AppSettings::init(void)
     initializeDefaultNvsParams();
     // Load NVS parameters if exist
     loadNvsParam();
+    if (_nvs_param_map[NVS_KEY_BLE_ENABLE]) {
+        esp_err_t ble_err = bleSetEnabled(true);
+        if (ble_err != ESP_OK) {
+            ESP_LOGW(TAG, "BLE startup failed: %s", esp_err_to_name(ble_err));
+            _nvs_param_map[NVS_KEY_BLE_ENABLE] = false;
+            setNvsParam(NVS_KEY_BLE_ENABLE, 0);
+        }
+    }
     applyManualTimezonePreference();
     // Update System parameters
     bsp_extra_codec_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME], (int *)&_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
@@ -677,9 +1062,12 @@ bool AppSettings::init(void)
     ESP_ERROR_CHECK(bsp_extra_display_idle_init());
     applyDisplayIdleSettings();
 
-    xTaskCreatePinnedToCore(euiRefresTask, "Home Refresh", HOME_REFRESH_TASK_STACK_SIZE, this, HOME_REFRESH_TASK_PRIORITY, NULL,1);
-    xTaskCreatePinnedToCore(euiBatteryTask, "Battey Refresh", HOME_REFRESH_TASK_STACK_SIZE, this, HOME_REFRESH_TASK_PRIORITY, NULL,1);
-    xTaskCreatePinnedToCore(wifiScanTask, "WiFi Scan", WIFI_SCAN_TASK_STACK_SIZE, this, WIFI_SCAN_TASK_PRIORITY, NULL,1);
+    create_background_task_prefer_psram(euiRefresTask, "Home Refresh", HOME_REFRESH_TASK_STACK_SIZE,
+                                        this, HOME_REFRESH_TASK_PRIORITY, nullptr, 1);
+    create_background_task_prefer_psram(euiBatteryTask, "Battey Refresh", HOME_REFRESH_TASK_STACK_SIZE,
+                                        this, HOME_REFRESH_TASK_PRIORITY, nullptr, 1);
+    create_background_task_prefer_psram(wifiScanTask, "WiFi Scan", WIFI_SCAN_TASK_STACK_SIZE,
+                                        this, WIFI_SCAN_TASK_PRIORITY, nullptr, 1);
 
     return true;
 }
@@ -706,6 +1094,7 @@ void AppSettings::extraUiInit(void)
         lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_radius(item, 0, 0);
         lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_pad_all(item, 0, 0);
         lv_obj_set_style_bg_color(item, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_opa(item, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(item, lv_color_hex(0xCBCBCB), LV_PART_MAIN | LV_STATE_PRESSED);
@@ -818,8 +1207,9 @@ void AppSettings::extraUiInit(void)
     _wifiMenuItem = createMainMenuItem("Wi-Fi", &ui_img_wifi_png, nullptr, nullptr);
     _audioMenuItem = createMainMenuItem("Audio", &ui_img_sound_png, nullptr, nullptr);
     _displayMenuItem = createMainMenuItem("Display", &ui_img_light_png, nullptr, nullptr);
+    _bluetoothMenuItem = createMainMenuItem("Bluetooth", &ui_img_bluetooth_png, nullptr, nullptr);
     _hardwareMenuItem = createMainMenuItem("Hardware", nullptr, LV_SYMBOL_SETTINGS, nullptr);
-    _securityMenuItem = createMainMenuItem("Security", &ui_img_bluetooth_png, nullptr, nullptr);
+    _securityMenuItem = createMainMenuItem("Security", nullptr, LV_SYMBOL_WARNING, nullptr);
     _firmwareMenuItem = createMainMenuItem("Firmware OTA", nullptr, LV_SYMBOL_DOWNLOAD, nullptr);
     _aboutMenuItem = createMainMenuItem("About Device", &ui_img_about_png, nullptr, nullptr);
 
@@ -1185,11 +1575,43 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_size(_spinner_wifi_connect, lv_pct(20), lv_pct(20));
     lv_obj_center(_spinner_wifi_connect);
     processWifiConnect(WIFI_CONNECT_HIDE);
+
+    lv_label_set_text(ui_LabelScreenSettingVerification, "Connect to Wi-Fi");
+    lv_obj_set_width(ui_LabelScreenSettingVerification, lv_pct(84));
+    lv_obj_align(ui_LabelScreenSettingVerification, LV_ALIGN_TOP_LEFT, 36, 56);
+    lv_label_set_long_mode(ui_LabelScreenSettingVerification, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(ui_LabelScreenSettingVerification, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(ui_LabelScreenSettingVerification, lv_color_hex(0x0F172A), 0);
+
+    lv_obj_set_width(ui_LabelScreenSettingVerificationSSID, lv_pct(84));
+    lv_obj_align_to(ui_LabelScreenSettingVerificationSSID, ui_LabelScreenSettingVerification, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 14);
+    lv_label_set_long_mode(ui_LabelScreenSettingVerificationSSID, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(ui_LabelScreenSettingVerificationSSID, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(ui_LabelScreenSettingVerificationSSID, lv_color_hex(0x475569), 0);
+    lv_label_set_text(ui_LabelScreenSettingVerificationSSID, "Choose a network to continue");
+
+    lv_obj_t *wifiPasswordTitle = lv_label_create(ui_ScreenSettingVerification);
+    lv_label_set_text(wifiPasswordTitle, "Password");
+    lv_obj_set_style_text_font(wifiPasswordTitle, &lv_font_montserrat_22, 0);
+    lv_obj_set_style_text_color(wifiPasswordTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align_to(wifiPasswordTitle, ui_LabelScreenSettingVerificationSSID, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 34);
+
     // Keyboard
+    lv_obj_set_height(ui_TextAreaScreenSettingVerificationPassword, 64);
     lv_obj_set_width(ui_TextAreaScreenSettingVerificationPassword, 328);
-    lv_obj_set_x(ui_TextAreaScreenSettingVerificationPassword, -40);
+    lv_obj_align_to(ui_TextAreaScreenSettingVerificationPassword, wifiPasswordTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
     lv_textarea_set_one_line(ui_TextAreaScreenSettingVerificationPassword, true);
     lv_textarea_set_password_mode(ui_TextAreaScreenSettingVerificationPassword, true);
+    lv_textarea_set_placeholder_text(ui_TextAreaScreenSettingVerificationPassword, "Enter Wi-Fi password");
+    lv_obj_set_style_radius(ui_TextAreaScreenSettingVerificationPassword, 18, 0);
+    lv_obj_set_style_border_width(ui_TextAreaScreenSettingVerificationPassword, 1, 0);
+    lv_obj_set_style_border_color(ui_TextAreaScreenSettingVerificationPassword, lv_color_hex(0xC6D4E1), 0);
+    lv_obj_set_style_bg_color(ui_TextAreaScreenSettingVerificationPassword, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(ui_TextAreaScreenSettingVerificationPassword, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(ui_TextAreaScreenSettingVerificationPassword, 18, 0);
+    lv_obj_set_style_text_font(ui_TextAreaScreenSettingVerificationPassword, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(ui_TextAreaScreenSettingVerificationPassword, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_text_color(ui_TextAreaScreenSettingVerificationPassword, lv_color_hex(0x94A3B8), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_add_event_cb(ui_TextAreaScreenSettingVerificationPassword, onWifiPasswordFieldEventCallback, LV_EVENT_ALL, this);
 
     _wifiPasswordToggleButton = lv_btn_create(ui_ScreenSettingVerification);
@@ -1205,6 +1627,7 @@ void AppSettings::extraUiInit(void)
 
     _wifiPasswordToggleLabel = lv_label_create(_wifiPasswordToggleButton);
     lv_obj_set_style_text_font(_wifiPasswordToggleLabel, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(_wifiPasswordToggleLabel, lv_color_hex(0x0F172A), 0);
     lv_obj_center(_wifiPasswordToggleLabel);
     updateWifiPasswordVisibility(false);
 
@@ -1223,21 +1646,25 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_event_cb(ui_ScreenSettingVerification, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
     /* Bluetooth */
-    lv_obj_clear_flag(ui_PanelSettingMainContainerItem2, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(ui_LabelPanelScreenSettingBLESwitch, "Device Lock");
-    lv_obj_add_flag(ui_ImagePanelScreenSettingBLESwitch, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align(ui_LabelPanelScreenSettingBLESwitch, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_label_set_text(ui_LabelPanelScreenSettingBLESwitch, "BLE");
+    lv_obj_clear_flag(ui_ImagePanelScreenSettingBLESwitch, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(ui_ImagePanelScreenSettingBLESwitch, LV_ALIGN_LEFT_MID, 16, 0);
+    lv_obj_set_style_img_recolor_opa(ui_ImagePanelScreenSettingBLESwitch, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_text_font(ui_LabelPanelScreenSettingBLESwitch, &lv_font_montserrat_24, 0);
+    lv_obj_align_to(ui_LabelPanelScreenSettingBLESwitch, ui_ImagePanelScreenSettingBLESwitch, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
+    lv_obj_align(ui_SwitchPanelScreenSettingBLESwitch, LV_ALIGN_RIGHT_MID, -12, 0);
     lv_obj_clear_flag(ui_PanelScreenSettingBLEList, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_SpinnerScreenSettingBLE, LV_OBJ_FLAG_HIDDEN);
     lv_obj_align_to(ui_PanelScreenSettingBLEList, ui_PanelScreenSettingBLESwitch, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
-    lv_obj_set_size(ui_PanelScreenSettingBLEList, lv_pct(90), 220);
-    lv_obj_set_style_pad_all(ui_PanelScreenSettingBLEList, 0, 0);
+    lv_obj_set_size(ui_PanelScreenSettingBLEList, lv_pct(90), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(ui_PanelScreenSettingBLEList, 16, 0);
     lv_obj_set_style_pad_row(ui_PanelScreenSettingBLEList, 12, 0);
-    lv_obj_set_style_bg_opa(ui_PanelScreenSettingBLEList, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_color(ui_PanelScreenSettingBLEList, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(ui_PanelScreenSettingBLEList, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(ui_PanelScreenSettingBLEList, 0, 0);
     lv_obj_set_scroll_dir(ui_PanelScreenSettingBLEList, LV_DIR_VER);
 
-    auto createSecuritySettingRow = [](lv_obj_t *parent, const char *title) {
+    auto createSettingsToggleRow = [](lv_obj_t *parent, const char *title) {
         lv_obj_t *row = lv_obj_create(parent);
         lv_obj_set_size(row, lv_pct(100), 72);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
@@ -1259,26 +1686,97 @@ void AppSettings::extraUiInit(void)
         return row;
     };
 
-    lv_obj_t *settingsLockRow = createSecuritySettingRow(ui_PanelScreenSettingBLEList, "Settings Lock");
+    lv_obj_t *bluetoothStatusRow = lv_obj_create(ui_PanelScreenSettingBLEList);
+    lv_obj_set_width(bluetoothStatusRow, lv_pct(100));
+    lv_obj_set_height(bluetoothStatusRow, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(bluetoothStatusRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(bluetoothStatusRow, 18, 0);
+    lv_obj_set_style_border_width(bluetoothStatusRow, 0, 0);
+    lv_obj_set_style_bg_color(bluetoothStatusRow, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(bluetoothStatusRow, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(bluetoothStatusRow, 16, 0);
+
+    lv_obj_t *bluetoothStatusTitle = lv_label_create(bluetoothStatusRow);
+    lv_label_set_text(bluetoothStatusTitle, "Status");
+    lv_obj_set_style_text_font(bluetoothStatusTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(bluetoothStatusTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(bluetoothStatusTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _bluetoothInfoLabel = lv_label_create(bluetoothStatusRow);
+    lv_obj_set_width(_bluetoothInfoLabel, lv_pct(100));
+    lv_label_set_long_mode(_bluetoothInfoLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_bluetoothInfoLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_bluetoothInfoLabel, lv_color_hex(0x475569), 0);
+    lv_obj_align_to(_bluetoothInfoLabel, bluetoothStatusTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+    lv_obj_add_event_cb(ui_SwitchPanelScreenSettingBLESwitch, onSwitchPanelScreenSettingBluetoothValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+    // Record the screen index and install the screen loaded event callback
+    _screen_list[UI_BLUETOOTH_SETTING_INDEX] = ui_ScreenSettingBLE;
+    lv_obj_add_event_cb(ui_ScreenSettingBLE, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+
+    _securityScreen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(_securityScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(_securityScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(_securityScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *securityBackButton = lv_btn_create(_securityScreen);
+    lv_obj_set_size(securityBackButton, 60, 60);
+    lv_obj_align(securityBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_set_style_bg_color(securityBackButton, lv_color_hex(0xE5F3FF), 0);
+    lv_obj_set_style_border_width(securityBackButton, 0, 0);
+    lv_obj_add_event_cb(securityBackButton, [](lv_event_t *e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *securityBackImage = lv_img_create(securityBackButton);
+    lv_img_set_src(securityBackImage, &ui_img_return_png);
+    lv_obj_center(securityBackImage);
+    lv_obj_set_style_img_recolor(securityBackImage, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_img_recolor_opa(securityBackImage, 255, 0);
+
+    lv_obj_t *securityTitle = lv_label_create(_securityScreen);
+    lv_label_set_text(securityTitle, "Security");
+    lv_obj_set_style_text_font(securityTitle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(securityTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(securityTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *securityPanel = lv_obj_create(_securityScreen);
+    lv_obj_set_size(securityPanel, lv_pct(92), 650);
+    lv_obj_align(securityPanel, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(securityPanel, 20, 0);
+    lv_obj_set_style_border_width(securityPanel, 0, 0);
+    lv_obj_set_style_bg_color(securityPanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(securityPanel, 14, 0);
+    lv_obj_set_style_pad_row(securityPanel, 12, 0);
+    lv_obj_set_flex_flow(securityPanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(securityPanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(securityPanel, LV_DIR_VER);
+
+    lv_obj_t *deviceLockRow = createSettingsToggleRow(securityPanel, "Device Lock");
+    _securityDeviceLockSwitch = lv_switch_create(deviceLockRow);
+    lv_obj_align(_securityDeviceLockSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_securityDeviceLockSwitch, onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *settingsLockRow = createSettingsToggleRow(securityPanel, "Settings Lock");
     _securitySettingsLockSwitch = lv_switch_create(settingsLockRow);
     lv_obj_align(_securitySettingsLockSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_add_event_cb(_securitySettingsLockSwitch, onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
 
-    _securityInfoLabel = lv_label_create(ui_ScreenSettingBLE);
-    lv_obj_set_width(_securityInfoLabel, 360);
+    _securityInfoLabel = lv_label_create(securityPanel);
+    lv_obj_set_width(_securityInfoLabel, lv_pct(100));
     lv_label_set_long_mode(_securityInfoLabel, LV_LABEL_LONG_WRAP);
     lv_label_set_text(_securityInfoLabel,
                       "Enabling a lock asks for a new 4-digit PIN. Disabling it asks for the existing PIN.");
     lv_obj_set_style_text_font(_securityInfoLabel, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_securityInfoLabel, lv_color_hex(0x475569), 0);
-    lv_obj_align_to(_securityInfoLabel, ui_PanelScreenSettingBLEList, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
 
-    lv_obj_add_event_cb(ui_SwitchPanelScreenSettingBLESwitch, onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-    // Record the screen index and install the screen loaded event callback
-    _screen_list[UI_BLUETOOTH_SETTING_INDEX] = ui_ScreenSettingBLE;
-    lv_obj_add_event_cb(ui_ScreenSettingBLE, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+    _screen_list[UI_SECURITY_SETTING_INDEX] = _securityScreen;
+    lv_obj_add_event_cb(_securityScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
     /* Display */
     lv_slider_set_range(ui_SliderPanelScreenSettingLightSwitch1, SCREEN_BRIGHTNESS_MIN, SCREEN_BRIGHTNESS_MAX);
@@ -1506,6 +2004,7 @@ void AppSettings::extraUiInit(void)
     snprintf(char_ui_version, sizeof(char_ui_version), "v%d.%d.%d", ESP_BROOKESIA_CONF_VER_MAJOR, ESP_BROOKESIA_CONF_VER_MINOR, ESP_BROOKESIA_CONF_VER_PATCH);
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAbout6, char_ui_version);
     refreshSavedWifiUi();
+    refreshBluetoothUi();
     refreshSecurityUi();
     scanSdFirmwareEntries();
     refreshFirmwareUi();
@@ -1824,16 +2323,42 @@ void AppSettings::refreshTimezoneUi(void)
     }
 }
 
+void AppSettings::refreshBluetoothUi(void)
+{
+    const bool bluetooth_enabled = _nvs_param_map[NVS_KEY_BLE_ENABLE] != 0;
+
+    if (ui_SwitchPanelScreenSettingBLESwitch != nullptr) {
+        if (bluetooth_enabled) {
+            lv_obj_add_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (ui_SpinnerScreenSettingBLE != nullptr) {
+        if (s_bleRuntimeState == BleRuntimeState::Starting) {
+            lv_obj_clear_flag(ui_SpinnerScreenSettingBLE, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ui_SpinnerScreenSettingBLE, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (_bluetoothInfoLabel != nullptr) {
+        const std::string status = bleStatusText(bluetooth_enabled);
+        lv_label_set_text(_bluetoothInfoLabel, status.c_str());
+    }
+}
+
 void AppSettings::refreshSecurityUi(void)
 {
     const bool device_lock_enabled = device_security::isLockEnabled(device_security::LockType::Device);
     const bool settings_lock_enabled = device_security::isLockEnabled(device_security::LockType::Settings);
 
-    if (ui_SwitchPanelScreenSettingBLESwitch != nullptr) {
+    if (_securityDeviceLockSwitch != nullptr) {
         if (device_lock_enabled) {
-            lv_obj_add_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+            lv_obj_add_state(_securityDeviceLockSwitch, LV_STATE_CHECKED);
         } else {
-            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+            lv_obj_clear_state(_securityDeviceLockSwitch, LV_STATE_CHECKED);
         }
     }
 
@@ -2537,8 +3062,8 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
     setFirmwareProgress(0, source == FIRMWARE_UPDATE_SOURCE_OTA ? "Preparing OTA update..." : "Preparing SD flash...");
     setFirmwareStatus(source == FIRMWARE_UPDATE_SOURCE_OTA ? "Starting OTA update..." : "Starting SD flash...");
 
-    if (xTaskCreatePinnedToCore(firmwareUpdateTask, "firmware_update", FIRMWARE_UPDATE_TASK_STACK_SIZE,
-                                context, FIRMWARE_UPDATE_TASK_PRIORITY, nullptr, 1) != pdPASS) {
+    if (create_background_task_prefer_psram(firmwareUpdateTask, "firmware_update", FIRMWARE_UPDATE_TASK_STACK_SIZE,
+                                            context, FIRMWARE_UPDATE_TASK_PRIORITY, nullptr, 1) != pdPASS) {
         delete context;
         _firmwareUpdateInProgress = false;
         refreshFirmwareUi();
@@ -2707,6 +3232,7 @@ void AppSettings::updateUiByNvsParam(void)
     lv_slider_set_value(ui_SliderPanelScreenSettingLightSwitch1, _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], LV_ANIM_OFF);
     lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, _nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
     refreshSavedWifiUi();
+    refreshBluetoothUi();
     refreshSecurityUi();
     refreshDisplayIdleUi();
 }
@@ -3253,6 +3779,7 @@ void AppSettings::wifiConnectTask(void *arg)
             app->setWifiKeyboardVisible(false);
             app->updateWifiPasswordVisibility(false);
             lv_textarea_set_text(ui_TextAreaScreenSettingVerificationPassword, "");
+            app->refreshSavedWifiUi();
             app->back();
             bsp_display_unlock();
         }
@@ -3344,8 +3871,8 @@ void AppSettings::onKeyboardScreenSettingVerificationClickedEventCallback(lv_eve
 
         app->stopWifiScan();
 
-        xTaskCreatePinnedToCore(wifiConnectTask, "wifi Connect", WIFI_CONNECT_TASK_STACK_SIZE, app,
-                                WIFI_CONNECT_TASK_PRIORITY, NULL, WIFI_CONNECT_TASK_STACK_CORE);
+        create_background_task_prefer_psram(wifiConnectTask, "wifi Connect", WIFI_CONNECT_TASK_STACK_SIZE,
+                            app, WIFI_CONNECT_TASK_PRIORITY, nullptr, WIFI_CONNECT_TASK_STACK_CORE);
     }
 
 end:
@@ -3433,10 +3960,19 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     }
 
     if ((app->_screen_index == UI_WIFI_SCAN_INDEX) && (app->_nvs_param_map[NVS_KEY_WIFI_ENABLE] == true)) {
+        app->refreshSavedWifiUi();
         app->startWifiScan();
     }
 
+    if (app->_screen_index == UI_WIFI_SCAN_INDEX) {
+        app->refreshSavedWifiUi();
+    }
+
     if (app->_screen_index == UI_BLUETOOTH_SETTING_INDEX) {
+        app->refreshBluetoothUi();
+    }
+
+    if (app->_screen_index == UI_SECURITY_SETTING_INDEX) {
         app->refreshSecurityUi();
     }
 
@@ -3461,10 +3997,12 @@ void AppSettings::onMainMenuItemClickedEventCallback(lv_event_t *e)
         lv_scr_load_anim(ui_ScreenSettingVolume, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_displayMenuItem) {
         lv_scr_load_anim(ui_ScreenSettingLight, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else if (target == app->_bluetoothMenuItem) {
+        lv_scr_load_anim(ui_ScreenSettingBLE, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_hardwareMenuItem) {
         lv_scr_load_anim(app->_hardwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_securityMenuItem) {
-        lv_scr_load_anim(ui_ScreenSettingBLE, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+        lv_scr_load_anim(app->_securityScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_firmwareMenuItem) {
         lv_scr_load_anim(app->_firmwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else if (target == app->_aboutMenuItem) {
@@ -3704,13 +4242,34 @@ end:
     return;
 }
 
+void AppSettings::onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    bool enabled = false;
+
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    enabled = (lv_obj_get_state(ui_SwitchPanelScreenSettingBLESwitch) & LV_STATE_CHECKED) != 0;
+    if (bleSetEnabled(enabled) != ESP_OK) {
+        enabled = false;
+        lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+    }
+
+    app->_nvs_param_map[NVS_KEY_BLE_ENABLE] = enabled;
+    app->setNvsParam(NVS_KEY_BLE_ENABLE, enabled ? 1 : 0);
+    app->refreshBluetoothUi();
+
+end:
+    return;
+}
+
 void AppSettings::onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback( lv_event_t * e) {
     AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
     bool requested_state = false;
     bool current_state = false;
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
-    requested_state = (lv_obj_get_state(ui_SwitchPanelScreenSettingBLESwitch) & LV_STATE_CHECKED) != 0;
+    requested_state = (lv_obj_get_state(app->_securityDeviceLockSwitch) & LV_STATE_CHECKED) != 0;
     current_state = device_security::isLockEnabled(device_security::LockType::Device);
     if (requested_state == current_state) {
         return;

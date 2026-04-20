@@ -31,6 +31,8 @@
  
 static const char *TAG = "main";
 static constexpr TickType_t kSdcardMonitorPeriod = pdMS_TO_TICKS(2000);
+static constexpr TickType_t kSdcardMountRetryPeriod = pdMS_TO_TICKS(5000);
+static constexpr uint32_t kSdcardMonitorTaskStack = 8192;
 static constexpr uint32_t kSerialCommandTaskStack = 6144;
 static constexpr const char *kNvsStorageNamespace = "storage";
 static constexpr const char *kNvsKeyOtaPendingVersion = "ota_ver";
@@ -50,8 +52,18 @@ struct SdcardRuntimeApps {
 
 static SemaphoreHandle_t s_sdcardMutex = nullptr;
 static bool s_sdcardMounted = false;
+static TickType_t s_nextSdcardMountAttempt = 0;
 static SdcardRuntimeApps s_sdcardRuntimeApps;
 static InternetRadio *s_internetRadioApp = nullptr;
+
+static void set_sdcard_probe_log_levels(esp_log_level_t sdmmc_periph_level,
+                                        esp_log_level_t sdmmc_common_level,
+                                        esp_log_level_t vfs_fat_sdmmc_level)
+{
+    esp_log_level_set("sdmmc_periph", sdmmc_periph_level);
+    esp_log_level_set("sdmmc_common", sdmmc_common_level);
+    esp_log_level_set("vfs_fat_sdmmc", vfs_fat_sdmmc_level);
+}
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
@@ -288,12 +300,23 @@ static bool sync_sdcard_mount_state(bool try_mount)
             ESP_LOGW(TAG, "SD card unmount after removal failed: %s", esp_err_to_name(unmount_ret));
         }
         s_sdcardMounted = false;
+        s_nextSdcardMountAttempt = xTaskGetTickCount() + kSdcardMountRetryPeriod;
     }
 
     if (!s_sdcardMounted && try_mount) {
-        s_sdcardMounted = (bsp_sdcard_mount() == ESP_OK) && probe_sdcard_health();
-        if (!s_sdcardMounted) {
-            bsp_sdcard_unmount();
+        const TickType_t now = xTaskGetTickCount();
+        if ((s_nextSdcardMountAttempt == 0) || (now >= s_nextSdcardMountAttempt)) {
+            set_sdcard_probe_log_levels(ESP_LOG_NONE, ESP_LOG_NONE, ESP_LOG_NONE);
+            const esp_err_t mount_ret = bsp_sdcard_mount();
+            set_sdcard_probe_log_levels(ESP_LOG_INFO, ESP_LOG_ERROR, ESP_LOG_ERROR);
+
+            s_sdcardMounted = (mount_ret == ESP_OK) && probe_sdcard_health();
+            if (!s_sdcardMounted) {
+                bsp_sdcard_unmount();
+                s_nextSdcardMountAttempt = now + kSdcardMountRetryPeriod;
+            } else {
+                s_nextSdcardMountAttempt = 0;
+            }
         }
     }
 
@@ -592,7 +615,7 @@ extern "C" void app_main(void)
     schedule_pending_release_notes_popup();
     if (create_background_task_prefer_psram(sdcard_monitor_task,
                                             "sdcard_monitor",
-                                            4096,
+                                            kSdcardMonitorTaskStack,
                                             nullptr,
                                             1,
                                             0) != pdPASS) {

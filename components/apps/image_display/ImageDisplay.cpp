@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp_check.h"
@@ -59,6 +60,35 @@ static jpeg_decode_memory_alloc_cfg_t tx_mem_cfg = {
 using namespace std;
 
 static const char *TAG = "AppImageDisplay";
+
+static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
+                                                      const char *name,
+                                                      const uint32_t stack_depth,
+                                                      void *arg,
+                                                      const UBaseType_t priority,
+                                                      TaskHandle_t *task_handle,
+                                                      const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        task_handle,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
+}
 
 static EventGroupHandle_t image_event_group;
 static uint8_t *output_buf[APP_IMAMG_BUF];
@@ -164,7 +194,7 @@ bool AppImageDisplay::init(void)
     }
     ESP_LOGI(TAG,"image file count = %d",image_count);
 
-    xTaskCreatePinnedToCore((TaskFunction_t)image_delay_change, "Image Init", 2048, this, 3, NULL, 0);
+    create_background_task_prefer_psram((TaskFunction_t)image_delay_change, "Image Init", 2048, this, 3, nullptr, 0);
 
      const esp_timer_create_args_t time_arg = {
         .callback = &timer_refersh_task,

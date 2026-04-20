@@ -27,4 +27,4 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-project(esp_brookesia_demo VERSION 1.1.3)
+project(esp_brookesia_demo VERSION 1.1.4)

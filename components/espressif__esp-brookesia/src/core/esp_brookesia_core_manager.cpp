@@ -161,6 +161,8 @@ bool ESP_Brookesia_CoreManager::startApp(int id)
     ESP_BROOKESIA_CHECK_FALSE_RETURN(find_ret != _id_installed_app_map.end(), false, "Can't find app in installed app map");
     app = find_ret->second;
 
+    ESP_BROOKESIA_CHECK_FALSE_RETURN(processAppStartPrepare(app), false, "Prepare app start failed");
+
     // Check if the running app num is at the limit
     if ((_core_data.app.max_running_num != 0) && (int)_id_running_app_map.size() >= _core_data.app.max_running_num) {
         for (auto it = _id_running_app_map.begin(); it != _id_running_app_map.end(); it++) {

@@ -39,6 +39,7 @@ public:
     // *INDENT-OFF*
 
 protected:
+    virtual bool processAppStartPrepare(ESP_Brookesia_CoreApp *app) { return true; }
     virtual bool processAppRunExtra(ESP_Brookesia_CoreApp *app)    { return true; }
     virtual bool processAppResumeExtra(ESP_Brookesia_CoreApp *app) { return true; }
     virtual bool processAppPauseExtra(ESP_Brookesia_CoreApp *app)  { return true; }

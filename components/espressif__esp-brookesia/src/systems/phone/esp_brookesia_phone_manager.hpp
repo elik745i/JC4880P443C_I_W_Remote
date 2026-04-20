@@ -6,6 +6,7 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
 #include "lvgl.h"
 #include "core/esp_brookesia_core_manager.hpp"
 #include "widgets/gesture/esp_brookesia_gesture.hpp"
@@ -30,7 +31,14 @@ public:
     const ESP_Brookesia_PhoneManagerData_t &data;
 
 private:
+    enum class QuickAccessPanelType {
+        NONE = 0,
+        APPS,
+        AUDIO,
+    };
+
     // Core
+    bool processAppStartPrepare(ESP_Brookesia_CoreApp *app) override;
     bool processAppRunExtra(ESP_Brookesia_CoreApp *app) override;
     bool processAppResumeExtra(ESP_Brookesia_CoreApp *app) override;
     bool processAppCloseExtra(ESP_Brookesia_CoreApp *app) override;
@@ -43,7 +51,24 @@ private:
     bool processNavigationBarScreenChange(ESP_Brookesia_PhoneManagerScreen_t screen, void *param);
     bool processGestureScreenChange(ESP_Brookesia_PhoneManagerScreen_t screen, void *param);
     bool processHomeScreenChange(ESP_Brookesia_PhoneManagerScreen_t screen, void *param);
+    bool beginQuickAccessOverlay(void);
+    void hideQuickAccessOverlay(bool animate = true);
+    void refreshQuickAccessAppList(void);
+    void refreshQuickAccessVolumePanel(void);
+    void showQuickAccessAppList(void);
+    void showQuickAccessVolumePanel(void);
+    void showQuickAccessOverlay(QuickAccessPanelType type);
+    void animateQuickAccessHide(void);
+    lv_obj_t *getQuickAccessPanel(QuickAccessPanelType type) const;
+    static void onQuickAccessAnimateY(void *var, int32_t value);
+    static void onQuickAccessAnimateBackdrop(void *var, int32_t value);
+    static void onQuickAccessHideAnimationReady(lv_anim_t *anim);
     static void onHomeMainScreenLoadEventCallback(lv_event_t *event);
+    static void onQuickAccessOverlayTouchEventCallback(lv_event_t *event);
+    static void onQuickAccessAppRowEventCallback(lv_event_t *event);
+    static void onQuickAccessCloseAppEventCallback(lv_event_t *event);
+    static void onQuickAccessCloseAllEventCallback(lv_event_t *event);
+    static void onQuickAccessVolumeSliderEventCallback(lv_event_t *event);
     // App Launcher
     static void onAppLauncherGestureEventCallback(lv_event_t *event);
     // Navigation Bar
@@ -95,6 +120,19 @@ private:
     ESP_Brookesia_GestureDirection_t _navigation_bar_gesture_dir;
     // Gesture
     std::unique_ptr<ESP_Brookesia_Gesture> _gesture;
+    // Quick Access Overlay
+    lv_obj_t *_quick_access_overlay;
+    lv_obj_t *_quick_access_app_panel;
+    lv_obj_t *_quick_access_app_list;
+    lv_obj_t *_quick_access_close_all_button;
+    lv_obj_t *_quick_access_volume_panel;
+    lv_obj_t *_quick_access_media_volume_slider;
+    lv_obj_t *_quick_access_media_volume_value_label;
+    lv_obj_t *_quick_access_system_volume_slider;
+    lv_obj_t *_quick_access_system_volume_value_label;
+    QuickAccessPanelType _quick_access_panel_type;
+    std::unordered_map<lv_obj_t *, int> _quick_access_close_button_app_id_map;
+    std::unordered_map<lv_obj_t *, int> _quick_access_row_app_id_map;
     // RecentsScreen
     float _recents_screen_drag_tan_threshold;
     lv_point_t _recents_screen_start_point;

@@ -124,6 +124,8 @@ Use the release assets for both devices together:
 
 ## Flashing The ESP32-C6
 
+![ESP32-C6 flashing reference](3D/C6_Flash.jpeg)
+
 To flash the C6 from an external UART bridge, connect the bridge to the board header like this:
 
 - `RX -> TX`

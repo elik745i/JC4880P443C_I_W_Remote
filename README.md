@@ -117,6 +117,42 @@ To flash and open the serial monitor:
 idf.py -p PORT flash monitor
 ```
 
+## VS Code Flash Target Switch
+
+If you want one simple switch in VS Code to choose whether to flash the main P4 firmware or the external C6 firmware, use the local workspace settings and task created in `.vscode/settings.json` and `.vscode/tasks.json`.
+
+Important:
+
+- This repo keeps the root ESP-IDF target as `esp32p4`.
+- Do not use the ESP-IDF status bar target picker to switch the root project to `esp32c6` just to flash the coprocessor.
+- Instead, switch the local flash selector and run the matching task.
+
+In `.vscode/settings.json`, change:
+
+```jsonc
+"jc4880.flashTarget": "p4"
+```
+
+Valid values are:
+
+- `p4` to flash the main ESP32-P4 firmware.
+- `c6` to flash the ESP32-C6 coprocessor firmware.
+
+The local COM ports are configured with:
+
+```jsonc
+"jc4880.ports.p4": "COM10",
+"jc4880.ports.c6": "COM12"
+```
+
+After changing the selector, run the VS Code task:
+
+```text
+JC4880: Flash Selected Target
+```
+
+That task flashes the latest built image for the selected target.
+
 ## C6 Firmware Requirement
 
 BLE and ZigBee features require the ESP32-C6 coprocessor to be flashed with the matching firmware from the same GitHub release as the P4 firmware.

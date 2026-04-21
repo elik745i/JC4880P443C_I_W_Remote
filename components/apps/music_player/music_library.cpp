@@ -1,4 +1,4 @@
-#include "music_library.h"
+﻿#include "music_library.h"
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +25,7 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
@@ -114,8 +115,11 @@ struct TrackInfo {
     MusicString title;
     MusicString artist;
     MusicString genre;
+    MusicString info;
     MusicString path;
     uint32_t durationSeconds;
+    bool favorite;
+    bool infoResolved;
 };
 
 struct BrowserEntry {
@@ -164,6 +168,8 @@ static const char *kEmptyGenre = "MP3, AAC, M4A, FLAC, WAV";
 static PsramVector<TrackInfo> s_tracks;
 static PsramVector<TrackInfo> s_sdIndexTracks;
 static uint32_t s_currentIndex = 0;
+static bool s_shuffleEnabled = false;
+static bool s_cycleEnabled = false;
 static MusicString s_lastMessage = "Playlist ready";
 static BrowserState s_sdBrowser = {MUSIC_LIBRARY_STORAGE_SD, kSdRoot, {}, false};
 static BrowserState s_spiffsBrowser = {MUSIC_LIBRARY_STORAGE_SPIFFS, kSpiffsRoot, {}, false};
@@ -222,6 +228,10 @@ void scan_directory_recursive(const MusicString &path, music_library_storage_roo
 bool refresh_sd_index_cache(bool forceRebuild);
 bool load_playlist();
 bool save_playlist();
+bool load_playlist_file(const char *filePath, uint32_t *currentIndex, bool *shuffleEnabled, bool *cycleEnabled,
+                        PsramVector<TrackInfo> &tracks);
+bool save_playlist_file(const char *filePath, const char *tempPath, const PsramVector<TrackInfo> &tracks,
+                        uint32_t currentIndex, bool shuffleEnabled, bool cycleEnabled);
 bool playlist_contains_path(const MusicString &path);
 bool build_track_from_path(const MusicString &path, music_library_storage_root_t root, TrackInfo &track);
 bool add_track_to_playlist(const TrackInfo &track, bool persist);
@@ -243,6 +253,8 @@ void set_browser_refresh_status(const MusicString &message);
 void set_download_status(const MusicString &message);
 void folder_scan_progress_cb(uint32_t scannedFiles, uint32_t trackCount, void *context);
 void fill_track_metadata(TrackInfo &track);
+void populate_track_runtime_fields(TrackInfo &track);
+MusicString make_track_info_label(const TrackInfo &track, uint64_t fileSizeBytes);
 void music_library_index_task(void *context);
 void music_library_browser_add_task(void *context);
 void music_library_browser_refresh_task(void *context);
@@ -374,7 +386,7 @@ MusicString make_genre_label(const MusicString &path, music_library_storage_root
     std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char ch) {
         return static_cast<char>(std::toupper(ch));
     });
-    return extension + "  •  " + root_label(root);
+    return extension + "  вЂў  " + root_label(root);
 }
 
 MusicString trim_ascii_whitespace(const MusicString &value)
@@ -497,7 +509,7 @@ MusicString folder_playlist_cache_path(const MusicString &directoryPath, bool te
 bool parse_track_line(const MusicString &line, TrackInfo &track)
 {
     const PsramVector<MusicString> fields = split_index_line(line);
-    if (fields.size() != 5) {
+    if ((fields.size() != 5) && (fields.size() != 6)) {
         return false;
     }
 
@@ -512,6 +524,116 @@ bool parse_track_line(const MusicString &line, TrackInfo &track)
     track.genre = fields[2];
     track.path = fields[3];
     track.durationSeconds = static_cast<uint32_t>(parsedDuration);
+    track.favorite = (fields.size() == 6) && (fields[5] == "1");
+    return true;
+}
+
+bool save_playlist_file(const char *filePath, const char *tempPath, const PsramVector<TrackInfo> &tracks,
+                        uint32_t currentIndex, bool shuffleEnabled, bool cycleEnabled)
+{
+    FILE *file = std::fopen(tempPath, "wb");
+    if (file == nullptr) {
+        return false;
+    }
+
+    const uint32_t persistedIndex = tracks.empty() ? 0 : std::min<uint32_t>(currentIndex, static_cast<uint32_t>(tracks.size() - 1));
+    bool ok = std::fprintf(file, "%s\n", kPlaylistMagic) >= 0;
+    if (ok) {
+        ok = std::fprintf(file, "STATE|%lu|%d|%d\n",
+                          static_cast<unsigned long>(persistedIndex),
+                          shuffleEnabled ? 1 : 0,
+                          cycleEnabled ? 1 : 0) >= 0;
+    }
+
+    for (const TrackInfo &track : tracks) {
+        if (!ok) {
+            break;
+        }
+        ok = std::fprintf(file,
+                          "%s|%s|%s|%s|%lu|%d\n",
+                          escape_index_field(track.title).c_str(),
+                          escape_index_field(track.artist).c_str(),
+                          escape_index_field(track.genre).c_str(),
+                          escape_index_field(track.path).c_str(),
+                          static_cast<unsigned long>(track.durationSeconds),
+                          track.favorite ? 1 : 0) >= 0;
+    }
+
+    if (std::fclose(file) != 0) {
+        ok = false;
+    }
+    if (!ok) {
+        std::remove(tempPath);
+        return false;
+    }
+
+    std::remove(filePath);
+    if (std::rename(tempPath, filePath) != 0) {
+        std::remove(tempPath);
+        return false;
+    }
+
+    return true;
+}
+
+bool load_playlist_file(const char *filePath, uint32_t *currentIndex, bool *shuffleEnabled, bool *cycleEnabled,
+                        PsramVector<TrackInfo> &tracks)
+{
+    tracks.clear();
+    if (currentIndex != nullptr) {
+        *currentIndex = 0;
+    }
+    if (shuffleEnabled != nullptr) {
+        *shuffleEnabled = false;
+    }
+    if (cycleEnabled != nullptr) {
+        *cycleEnabled = false;
+    }
+
+    FILE *file = std::fopen(filePath, "rb");
+    if (file == nullptr) {
+        return false;
+    }
+
+    char line[2048] = {};
+    if (std::fgets(line, sizeof(line), file) == nullptr) {
+        std::fclose(file);
+        return false;
+    }
+    if (trim_ascii_whitespace(line) != kPlaylistMagic) {
+        std::fclose(file);
+        return false;
+    }
+
+    while (std::fgets(line, sizeof(line), file) != nullptr) {
+        const MusicString entryLine = trim_ascii_whitespace(line);
+        if (entryLine.empty()) {
+            continue;
+        }
+
+        const PsramVector<MusicString> fields = split_index_line(entryLine);
+        if ((fields.size() == 4) && (fields[0] == "STATE")) {
+            if (currentIndex != nullptr) {
+                *currentIndex = static_cast<uint32_t>(std::strtoul(fields[1].c_str(), nullptr, 10));
+            }
+            if (shuffleEnabled != nullptr) {
+                *shuffleEnabled = (fields[2] == "1");
+            }
+            if (cycleEnabled != nullptr) {
+                *cycleEnabled = (fields[3] == "1");
+            }
+            continue;
+        }
+
+        TrackInfo track = {};
+        if (!parse_track_line(entryLine, track)) {
+            std::fclose(file);
+            return false;
+        }
+        tracks.push_back(std::move(track));
+    }
+
+    std::fclose(file);
     return true;
 }
 
@@ -665,6 +787,7 @@ bool load_track_file(const char *filePath, const char *magic, PsramVector<TrackI
             std::fclose(file);
             return false;
         }
+        fill_track_metadata(track);
         tracks.push_back(std::move(track));
     }
 
@@ -1006,34 +1129,62 @@ bool refresh_sd_index_cache(bool forceRebuild)
 bool load_playlist()
 {
     PsramVector<TrackInfo> tracks;
-    if (!load_track_file_prefer_sd(kPlaylistFilePath,
-                                   kPlaylistTempFilePath,
-                                   kLegacyPlaylistFilePath,
-                                   kLegacyPlaylistTempFilePath,
-                                   kPlaylistMagic,
-                                   tracks,
-                                   nullptr)) {
+    uint32_t currentIndex = 0;
+    bool shuffleEnabled = false;
+    bool cycleEnabled = false;
+
+    if (prefer_sd_metadata_storage(true)) {
+        if (!load_playlist_file(kPlaylistFilePath, &currentIndex, &shuffleEnabled, &cycleEnabled, tracks)) {
+            if (load_playlist_file(kLegacyPlaylistFilePath, &currentIndex, &shuffleEnabled, &cycleEnabled, tracks)) {
+                (void)save_playlist_file(kPlaylistFilePath, kPlaylistTempFilePath, tracks, currentIndex, shuffleEnabled, cycleEnabled);
+                std::remove(kLegacyPlaylistFilePath);
+                std::remove(kLegacyPlaylistTempFilePath);
+            } else if (!load_track_file(kLegacyPlaylistFilePath, kPlaylistMagic, tracks, nullptr) &&
+                       !load_track_file(kPlaylistFilePath, kPlaylistMagic, tracks, nullptr)) {
+                s_tracks.clear();
+                s_currentIndex = 0;
+                s_shuffleEnabled = false;
+                s_cycleEnabled = false;
+                return false;
+            }
+        }
+    } else if (!load_playlist_file(kLegacyPlaylistFilePath, &currentIndex, &shuffleEnabled, &cycleEnabled, tracks) &&
+               !load_track_file(kLegacyPlaylistFilePath, kPlaylistMagic, tracks, nullptr)) {
         s_tracks.clear();
         s_currentIndex = 0;
+        s_shuffleEnabled = false;
+        s_cycleEnabled = false;
         return false;
     }
 
-    s_tracks = std::move(tracks);
-    if (s_currentIndex >= s_tracks.size()) {
-        s_currentIndex = 0;
+    for (TrackInfo &track : tracks) {
+        fill_track_metadata(track);
     }
+
+    s_tracks = std::move(tracks);
+    s_currentIndex = (s_tracks.empty() || (currentIndex >= s_tracks.size())) ? 0 : currentIndex;
+    s_shuffleEnabled = shuffleEnabled;
+    s_cycleEnabled = cycleEnabled;
     return true;
 }
 
 bool save_playlist()
 {
-    return save_track_file_prefer_sd(kPlaylistFilePath,
-                                     kPlaylistTempFilePath,
-                                     kLegacyPlaylistFilePath,
-                                     kLegacyPlaylistTempFilePath,
-                                     kPlaylistMagic,
-                                     s_tracks,
-                                     nullptr);
+    if (prefer_sd_metadata_storage(true)) {
+        return save_playlist_file(kPlaylistFilePath,
+                                  kPlaylistTempFilePath,
+                                  s_tracks,
+                                  s_currentIndex,
+                                  s_shuffleEnabled,
+                                  s_cycleEnabled);
+    }
+
+    return save_playlist_file(kLegacyPlaylistFilePath,
+                              kLegacyPlaylistTempFilePath,
+                              s_tracks,
+                              s_currentIndex,
+                              s_shuffleEnabled,
+                              s_cycleEnabled);
 }
 
 bool playlist_contains_path(const MusicString &path)
@@ -1058,6 +1209,54 @@ void fill_track_metadata(TrackInfo &track)
     if (track.durationSeconds == 0) {
         track.durationSeconds = 180;
     }
+
+    if (track.info.empty()) {
+        MusicString info = track.genre;
+        const size_t separator = info.find("  вЂў  ");
+        if (separator != MusicString::npos) {
+            info = info.substr(0, separator);
+        }
+        track.info = std::move(info);
+    }
+}
+
+MusicString make_track_info_label(const TrackInfo &track, uint64_t fileSizeBytes)
+{
+    MusicString info = track.genre;
+    const size_t separator = info.find("  вЂў  ");
+    if (separator != MusicString::npos) {
+        info = info.substr(0, separator);
+    }
+
+    if ((track.durationSeconds > 0) && (fileSizeBytes > 0)) {
+        const uint64_t bitrate = (fileSizeBytes * 8ULL) / (static_cast<uint64_t>(track.durationSeconds) * 1000ULL);
+        if (bitrate > 0) {
+            char bitrateBuffer[32] = {};
+            std::snprintf(bitrateBuffer, sizeof(bitrateBuffer), "%llu", static_cast<unsigned long long>(bitrate));
+            info += "  вЂў  ~";
+            info += bitrateBuffer;
+            info += " kbps";
+        }
+    }
+
+    if (fileSizeBytes > 0) {
+        info += "  вЂў  ";
+        info += format_size(fileSizeBytes);
+    }
+
+    return info;
+}
+
+void populate_track_runtime_fields(TrackInfo &track)
+{
+    if (track.infoResolved) {
+        return;
+    }
+
+    struct stat st = {};
+    const uint64_t fileSizeBytes = (stat(track.path.c_str(), &st) == 0) ? static_cast<uint64_t>(st.st_size) : 0;
+    track.info = make_track_info_label(track, fileSizeBytes);
+    track.infoResolved = true;
 }
 
 bool build_track_from_path(const MusicString &path, music_library_storage_root_t root, TrackInfo &track)
@@ -1083,6 +1282,8 @@ bool build_track_from_path(const MusicString &path, music_library_storage_root_t
     track.artist = make_parent_label(path);
     track.genre = make_genre_label(path, root);
     track.durationSeconds = 180;
+    track.favorite = false;
+    track.infoResolved = false;
     fill_track_metadata(track);
     return true;
 }
@@ -1094,13 +1295,12 @@ bool add_track_to_playlist(const TrackInfo &track, bool persist)
     }
 
     s_tracks.push_back(track);
+    if (s_tracks.size() == 1) {
+        s_currentIndex = 0;
+    }
     if (persist && !save_playlist()) {
         s_tracks.pop_back();
         return false;
-    }
-
-    if (s_tracks.size() == 1) {
-        s_currentIndex = 0;
     }
     return true;
 }
@@ -1685,6 +1885,52 @@ const TrackInfo *get_track(uint32_t trackId)
     return (trackId < s_tracks.size()) ? &s_tracks[trackId] : nullptr;
 }
 
+bool step_track_index(music_library_track_step_t step, uint32_t *trackId)
+{
+    if (s_tracks.empty()) {
+        if (trackId != nullptr) {
+            *trackId = 0;
+        }
+        return false;
+    }
+
+    uint32_t candidate = std::min<uint32_t>(s_currentIndex, static_cast<uint32_t>(s_tracks.size() - 1));
+
+    if (s_shuffleEnabled && (s_tracks.size() > 1)) {
+        uint32_t randomIndex = candidate;
+        while (randomIndex == candidate) {
+            randomIndex = esp_random() % s_tracks.size();
+        }
+        candidate = randomIndex;
+    } else if (step == MUSIC_LIBRARY_TRACK_STEP_PREVIOUS) {
+        if (candidate > 0) {
+            candidate--;
+        } else if (s_cycleEnabled) {
+            candidate = static_cast<uint32_t>(s_tracks.size() - 1);
+        }
+    } else {
+        if (candidate + 1 < s_tracks.size()) {
+            candidate++;
+        } else if (s_cycleEnabled || (step == MUSIC_LIBRARY_TRACK_STEP_AUTOPLAY_NEXT)) {
+            candidate = 0;
+        }
+    }
+
+    if ((step == MUSIC_LIBRARY_TRACK_STEP_AUTOPLAY_NEXT) && !s_shuffleEnabled && !s_cycleEnabled &&
+        (candidate == s_currentIndex) && (s_currentIndex + 1 >= s_tracks.size())) {
+        if (trackId != nullptr) {
+            *trackId = s_currentIndex;
+        }
+        return false;
+    }
+
+    s_currentIndex = candidate;
+    if (trackId != nullptr) {
+        *trackId = candidate;
+    }
+    return true;
+}
+
 } // namespace
 
 extern "C" bool music_library_init(void)
@@ -1703,6 +1949,8 @@ extern "C" bool music_library_init(void)
     s_downloadState.store(MUSIC_LIBRARY_DOWNLOAD_STATE_IDLE);
     s_downloadProgress.store(-1);
     set_download_status("Idle");
+    s_shuffleEnabled = false;
+    s_cycleEnabled = false;
 
     const bool loaded = load_playlist();
     if (loaded) {
@@ -1723,6 +1971,8 @@ extern "C" void music_library_deinit(void)
     PsramVector<BrowserEntry>().swap(s_spiffsBrowser.entries);
 
     s_currentIndex = 0;
+    s_shuffleEnabled = false;
+    s_cycleEnabled = false;
     s_lastMessage = "Playlist ready";
     s_sdBrowser.currentPath = kSdRoot;
     s_sdBrowser.available = false;
@@ -1852,6 +2102,15 @@ extern "C" const char *music_library_get_genre(uint32_t trackId)
     return (track == nullptr) ? kEmptyGenre : track->genre.c_str();
 }
 
+extern "C" const char *music_library_get_info(uint32_t trackId)
+{
+    TrackInfo *track = (trackId < s_tracks.size()) ? &s_tracks[trackId] : nullptr;
+    if (track != nullptr) {
+        populate_track_runtime_fields(*track);
+    }
+    return (track == nullptr) ? kEmptyGenre : track->info.c_str();
+}
+
 extern "C" uint32_t music_library_get_track_length(uint32_t trackId)
 {
     const TrackInfo *track = get_track(trackId);
@@ -1891,6 +2150,7 @@ extern "C" bool music_library_play(uint32_t trackId)
     }
 
     s_currentIndex = trackId;
+    (void)save_playlist();
     set_last_message(MusicString("Playing ") + track->title);
     return true;
 }
@@ -1915,10 +2175,77 @@ extern "C" bool music_library_set_current_index(uint32_t trackId)
     return true;
 }
 
+extern "C" bool music_library_persist_state(void)
+{
+    return save_playlist();
+}
+
+extern "C" bool music_library_step_current_track(music_library_track_step_t step, uint32_t *trackId)
+{
+    return step_track_index(step, trackId);
+}
+
+extern "C" bool music_library_is_shuffle_enabled(void)
+{
+    return s_shuffleEnabled;
+}
+
+extern "C" bool music_library_set_shuffle_enabled(bool enabled)
+{
+    s_shuffleEnabled = enabled;
+    return save_playlist();
+}
+
+extern "C" bool music_library_toggle_shuffle(void)
+{
+    return music_library_set_shuffle_enabled(!s_shuffleEnabled);
+}
+
+extern "C" bool music_library_is_cycle_enabled(void)
+{
+    return s_cycleEnabled;
+}
+
+extern "C" bool music_library_set_cycle_enabled(bool enabled)
+{
+    s_cycleEnabled = enabled;
+    return save_playlist();
+}
+
+extern "C" bool music_library_toggle_cycle(void)
+{
+    return music_library_set_cycle_enabled(!s_cycleEnabled);
+}
+
+extern "C" bool music_library_is_favorite(uint32_t trackId)
+{
+    const TrackInfo *track = get_track(trackId);
+    return (track != nullptr) && track->favorite;
+}
+
+extern "C" bool music_library_toggle_favorite(uint32_t trackId)
+{
+    if (trackId >= s_tracks.size()) {
+        return false;
+    }
+
+    s_tracks[trackId].favorite = !s_tracks[trackId].favorite;
+    if (!save_playlist()) {
+        s_tracks[trackId].favorite = !s_tracks[trackId].favorite;
+        return false;
+    }
+
+    set_last_message(s_tracks[trackId].favorite ? MusicString("Added to favorites: ") + s_tracks[trackId].title
+                                                : MusicString("Removed from favorites: ") + s_tracks[trackId].title);
+    return true;
+}
+
 extern "C" bool music_library_playlist_clear(void)
 {
     s_tracks.clear();
     s_currentIndex = 0;
+    s_shuffleEnabled = false;
+    s_cycleEnabled = false;
     if (!save_playlist()) {
         set_last_message("Failed to clear playlist");
         return false;

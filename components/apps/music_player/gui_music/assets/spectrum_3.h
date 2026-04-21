@@ -1,4 +1,4 @@
-const uint16_t spectrum_3[][4] = {
+﻿const uint16_t spectrum_3[][4] = {
 { 0, 0, 0, 0, },
 { 0, 0, 0, 0, },
 { 0, 0, 0, 0, },

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -45,6 +45,12 @@ typedef enum {
 	MUSIC_LIBRARY_BROWSER_REFRESH_STATE_FAILED,
 } music_library_browser_refresh_state_t;
 
+typedef enum {
+	MUSIC_LIBRARY_TRACK_STEP_PREVIOUS = 0,
+	MUSIC_LIBRARY_TRACK_STEP_NEXT,
+	MUSIC_LIBRARY_TRACK_STEP_AUTOPLAY_NEXT,
+} music_library_track_step_t;
+
 bool music_library_init(void);
 void music_library_deinit(void);
 bool music_library_refresh(void);
@@ -59,12 +65,23 @@ uint32_t music_library_get_count(void);
 const char *music_library_get_title(uint32_t track_id);
 const char *music_library_get_artist(uint32_t track_id);
 const char *music_library_get_genre(uint32_t track_id);
+const char *music_library_get_info(uint32_t track_id);
 uint32_t music_library_get_track_length(uint32_t track_id);
 const char *music_library_get_path(uint32_t track_id);
 bool music_library_play(uint32_t track_id);
 bool music_library_is_playing(uint32_t track_id);
 uint32_t music_library_get_current_index(void);
 bool music_library_set_current_index(uint32_t track_id);
+bool music_library_persist_state(void);
+bool music_library_step_current_track(music_library_track_step_t step, uint32_t *track_id);
+bool music_library_is_shuffle_enabled(void);
+bool music_library_set_shuffle_enabled(bool enabled);
+bool music_library_toggle_shuffle(void);
+bool music_library_is_cycle_enabled(void);
+bool music_library_set_cycle_enabled(bool enabled);
+bool music_library_toggle_cycle(void);
+bool music_library_is_favorite(uint32_t track_id);
+bool music_library_toggle_favorite(uint32_t track_id);
 
 bool music_library_playlist_clear(void);
 const char *music_library_get_last_message(void);

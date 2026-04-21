@@ -1,4 +1,4 @@
-/*
+﻿/*
  * SPDX-FileCopyrightText: 2023 Espressif Systems (Shanghai) CO LTD
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -9,8 +9,8 @@
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 
-#include "gui_music/lv_demo_music.h"
-#include "gui_music/lv_demo_music_main.h"
+#include "gui_music/music_player_ui.h"
+#include "gui_music/music_player_main_ui.h"
 #include "MusicPlayer.hpp"
 #include "music_library.h"
 #include "storage_access.h"
@@ -33,7 +33,7 @@ MusicPlayer::~MusicPlayer()
 bool MusicPlayer::run(void)
 {
     music_library_init();
-    lv_demo_music(lv_scr_act());
+    music_player_ui_create(lv_scr_act());
 
     return true;
 }
@@ -48,7 +48,7 @@ bool MusicPlayer::pause(void)
 bool MusicPlayer::back(void)
 {
     ESP_LOGI(TAG, "back");
-    _lv_demo_music_exit_pause();
+    _music_player_ui_exit_pause();
 
     const esp_err_t ret = audio_player_pause();
     if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
@@ -64,7 +64,7 @@ bool MusicPlayer::close(void)
     ESP_LOGI(TAG, "close");
     stop_audio_fully();
 
-    lv_demo_music_close();
+    music_player_ui_close();
     music_library_deinit();
 
     return true;
@@ -76,19 +76,19 @@ bool MusicPlayer::init(void)
 }
 void MusicPlayer::stop_audio_fully(void)
 {
-    /* 1. 退出 LV music（停 UI + 停内部状态机） */
-    _lv_demo_music_exit_pause();
+    /* 1. Stop the LVGL music UI state machine. */
+    _music_player_ui_exit_pause();
 
-    /* 2. 停 audio_player 任务 */
+    /* 2. Stop the shared audio player task. */
     audio_player_stop();
 
-    /* 3. 停 I2S 硬件 */
+    /* 3. Stop the I2S hardware path. */
     bsp_extra_codec_dev_stop();
 
-    /* 4. 静音 codec（防止残音） */
+    /* 4. Mute the codec to avoid residual output. */
     bsp_extra_codec_mute_set(true);
 
-    /* 5. 给一点时间让 DMA / I2S 真正停干净 */
+    /* 5. Give DMA and I2S time to settle fully. */
     vTaskDelay(pdMS_TO_TICKS(50));
 
     ESP_LOGI(TAG, "Music audio fully stopped");

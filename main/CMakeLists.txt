@@ -1,4 +1,4 @@
-idf_component_register(
+﻿idf_component_register(
     SRCS main.cpp  
     INCLUDE_DIRS . )
 
@@ -7,7 +7,7 @@ target_compile_options(
     ${LVGL_LIB} 
     PRIVATE 
         -DLV_LVGL_H_INCLUDE_SIMPLE
-        -DLV_USE_DEMO_MUSIC
+        -DLV_USE_MUSIC_PLAYER
 )
 
 if(CONFIG_ESP_BROOKESIA_MEMORY_USE_CUSTOM)

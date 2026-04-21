@@ -239,3 +239,9 @@ GitHub repository:
 ```text
 https://github.com/elik745i/JC4880P443C_I_W_Remote
 ```
+
+## Development Article
+
+External write-up covering the device bring-up, hardware experiments, ESP-IDF migration, case work, and overall project direction:
+
+- DRIVE2: [Очень экспериментальный проект, на этот раз все ближе.кудато.](https://www.drive2.ru/c/731630706236595501/)

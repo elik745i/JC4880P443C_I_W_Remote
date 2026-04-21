@@ -215,6 +215,20 @@ esp_err_t bsp_extra_player_init(void);
 esp_err_t bsp_extra_player_del(void);
 
 /**
+ * @brief Check whether the Wi-Fi station interface currently has an IPv4 address.
+ *
+ * @return true when the station netif has a non-zero IPv4 address assigned.
+ */
+bool bsp_extra_network_has_ip(void);
+
+/**
+ * @brief Check whether the Wi-Fi station interface has at least one DNS server configured.
+ *
+ * @return true when the station netif has a usable DNS server entry.
+ */
+bool bsp_extra_network_has_dns(void);
+
+/**
  * @brief Initialize a file iterator instance
  *
  * @param path The file path for the iterator.

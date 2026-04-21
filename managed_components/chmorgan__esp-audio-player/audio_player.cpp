@@ -106,14 +106,42 @@ static void *audio_psram_realloc(void *ptr, size_t size, const char *label)
     return new_ptr;
 }
 
-static BaseType_t create_audio_task_internal(TaskFunction_t task,
-                                             const char *name,
-                                             const uint32_t stack_depth,
-                                             void *arg,
-                                             const UBaseType_t priority,
-                                             const BaseType_t core_id)
+static BaseType_t create_audio_task_psram_preferred(TaskFunction_t task,
+                                                    const char *name,
+                                                    const uint32_t stack_depth,
+                                                    void *arg,
+                                                    const UBaseType_t priority,
+                                                    const BaseType_t core_id,
+                                                    bool *used_caps_stack)
 {
-    BaseType_t ret = xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, NULL, core_id);
+    if (used_caps_stack != NULL) {
+        *used_caps_stack = false;
+    }
+
+    BaseType_t ret = xTaskCreatePinnedToCoreWithCaps(task,
+                                                     name,
+                                                     stack_depth,
+                                                     arg,
+                                                     priority,
+                                                     NULL,
+                                                     core_id,
+                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ret == pdPASS) {
+        if (used_caps_stack != NULL) {
+            *used_caps_stack = true;
+        }
+        ESP_LOGI(TAG, "Started %s with a PSRAM-backed stack", name);
+        return ret;
+    }
+
+    ESP_LOGW(TAG,
+             "Failed to start %s with a PSRAM-backed stack, falling back to internal RAM. Internal free=%u largest=%u psram free=%u",
+             name,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
+    ret = xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, NULL, core_id);
     if (ret == pdPASS) {
         ESP_LOGI(TAG, "Started %s with an internal RAM stack", name);
         return ret;
@@ -191,6 +219,7 @@ typedef struct audio_instance {
     audio_player_state_t state;
 
     audio_player_config_t config;
+    bool task_uses_caps_stack;
 
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_WAV)
     wav_instance wav_data;
@@ -299,6 +328,7 @@ static void audio_instance_init(audio_instance_t &i) {
     i.s_audio_cb = NULL;
     i.audio_cb_usrt_ctx = NULL;
     i.state = AUDIO_PLAYER_STATE_IDLE;
+    i.task_uses_caps_stack = false;
 }
 
 static esp_err_t mono_to_stereo(uint32_t output_bits_per_sample, decode_data &adata)
@@ -1037,7 +1067,11 @@ static void audio_task(void *pvParam)
                     i->running = false;
 
                     // should never return
-                    vTaskDelete(NULL);
+                    if (i->task_uses_caps_stack) {
+                        vTaskDeleteWithCaps(NULL);
+                    } else {
+                        vTaskDelete(NULL);
+                    }
                     break;
                 } else {
                     // ignore other events when not playing
@@ -1182,7 +1216,7 @@ esp_err_t audio_player_new(audio_player_config_t config)
     /** See https://github.com/ultraembedded/libhelix-mp3/blob/0a0e0673f82bc6804e5a3ddb15fb6efdcde747cd/testwrap/main.c#L74 */
     instance.output.samples_capacity = MAX_NCHAN * MAX_NGRAN * MAX_NSAMP;
     instance.output.samples_capacity_max = instance.output.samples_capacity * 2;
-    instance.output.samples = static_cast<uint8_t*>(audio_internal_malloc(instance.output.samples_capacity_max, "audio output buffer"));
+    instance.output.samples = static_cast<uint8_t*>(audio_psram_malloc(instance.output.samples_capacity_max, "audio output buffer"));
     LOGI_1("samples_capacity %d bytes", instance.output.samples_capacity_max);
     int ret = ESP_OK;
     ESP_GOTO_ON_FALSE(NULL != instance.output.samples, ESP_ERR_NO_MEM, cleanup,
@@ -1195,7 +1229,7 @@ esp_err_t audio_player_new(audio_player_config_t config)
 
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
     instance.mp3_data.data_buf_size = MAINBUF_SIZE * kMp3StreamBufferMultiplier;
-    instance.mp3_data.data_buf = static_cast<uint8_t*>(audio_internal_malloc(instance.mp3_data.data_buf_size, "mp3 data buffer"));
+    instance.mp3_data.data_buf = static_cast<uint8_t*>(audio_psram_malloc(instance.mp3_data.data_buf_size, "mp3 data buffer"));
     ESP_GOTO_ON_FALSE(NULL != instance.mp3_data.data_buf, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed allocate mp3 data buffer");
 
@@ -1205,13 +1239,14 @@ esp_err_t audio_player_new(audio_player_config_t config)
 #endif
 
     instance.running = true;
-    task_val = create_audio_task_internal(
+    task_val = create_audio_task_psram_preferred(
         (TaskFunction_t)        audio_task,
                                 "Audio Task",
                                 10 * 1024,
                                 &instance,
         (UBaseType_t)           instance.config.priority,
-        (BaseType_t)            instance.config.coreID);
+        (BaseType_t)            instance.config.coreID,
+                                &instance.task_uses_caps_stack);
 
     ESP_GOTO_ON_FALSE(pdPASS == task_val, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed create audio task");

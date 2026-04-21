@@ -7,6 +7,7 @@
 #include <cstring>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 
 #include "audio_player.h"
 #include "bsp/esp-bsp.h"
@@ -37,7 +38,8 @@ static constexpr TickType_t kCodecResetDelay = pdMS_TO_TICKS(50);
 static constexpr TickType_t kCodecResumeDelay = pdMS_TO_TICKS(100);
 static constexpr int kStreamTimeoutMs = 3000;
 static constexpr int kMaxHttpRedirects = 5;
-static constexpr int kHttpClientBufferSize = 16 * 1024;
+static constexpr int kHttpClientRxBufferSize = 4 * 1024;
+static constexpr int kHttpClientTxBufferSize = 1024;
 static constexpr size_t kStreamBufferPreferredSize = 192 * 1024;
 static constexpr size_t kStreamBufferMinimumSize = 32 * 1024;
 static constexpr size_t kStreamBufferStepSize = 16 * 1024;
@@ -48,7 +50,7 @@ static constexpr size_t kStreamSteadyStateRefillBytes = 64 * 1024;
 static constexpr size_t kStreamLowWaterBytes = 64 * 1024;
 static constexpr uint32_t kStreamRefillTaskStackSize = 6 * 1024;
 static constexpr UBaseType_t kStreamRefillTaskPriority = 2;
-static constexpr TickType_t kStreamRefillTaskStopWait = pdMS_TO_TICKS(500);
+static constexpr TickType_t kStreamRefillTaskStopWait = pdMS_TO_TICKS(kStreamTimeoutMs + 2000);
 static constexpr int kStreamReadRetryCount = 6;
 static constexpr TickType_t kStreamReadRetryDelay = pdMS_TO_TICKS(25);
 static constexpr size_t kAsyncStatusTextCapacity = 192;
@@ -681,7 +683,7 @@ bool ensure_radio_audio_output_ready()
     return true;
 }
 
-bool decode_utf8_codepoint(const std::string &text, size_t &offset, uint32_t &codepoint)
+bool decode_utf8_codepoint(std::string_view text, size_t &offset, uint32_t &codepoint)
 {
     if (offset >= text.size()) {
         return false;
@@ -768,7 +770,7 @@ std::string transliterate_codepoint(uint32_t codepoint)
     }
 }
 
-std::string normalize_text(const std::string &input)
+std::string normalize_text(std::string_view input)
 {
     std::string output;
     output.reserve(input.size());
@@ -804,14 +806,28 @@ std::string normalize_text(const std::string &input)
 
 std::string lowercase_copy(const std::string &text)
 {
-    std::string copy = text;
+    std::string copy(text);
     std::transform(copy.begin(), copy.end(), copy.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
     return copy;
 }
 
-bool is_mp3_preview_candidate(const std::string &codec, const std::string &url)
+std::string to_std_string(std::string_view text)
+{
+    return std::string(text);
+}
+
+std::string lowercase_copy(std::string_view text)
+{
+    std::string copy(text);
+    std::transform(copy.begin(), copy.end(), copy.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return copy;
+}
+
+bool is_mp3_preview_candidate(std::string_view codec, std::string_view url)
 {
     const std::string codec_lower = lowercase_copy(codec);
     const std::string url_lower = lowercase_copy(url);
@@ -820,12 +836,12 @@ bool is_mp3_preview_candidate(const std::string &codec, const std::string &url)
            (url_lower.find(".mp3") != std::string::npos);
 }
 
-bool url_uses_https(const std::string &url)
+bool url_uses_https(std::string_view url)
 {
     return url.rfind("https://", 0) == 0;
 }
 
-void configure_http_client_security(const std::string &url, esp_http_client_config_t &config)
+void configure_http_client_security(std::string_view url, esp_http_client_config_t &config)
 {
     if (url_uses_https(url)) {
         config.crt_bundle_attach = esp_crt_bundle_attach;
@@ -914,6 +930,13 @@ void InternetRadio::updateStreamBufferMetrics(uint32_t capacity,
 
 void InternetRadio::refreshPlayerDialogBufferInfo(void)
 {
+    if ((_playerDialogBufferLabel != nullptr) && !lv_obj_is_valid(_playerDialogBufferLabel)) {
+        _playerDialogBufferLabel = nullptr;
+    }
+    if ((_playerDialogBufferBar != nullptr) && !lv_obj_is_valid(_playerDialogBufferBar)) {
+        _playerDialogBufferBar = nullptr;
+    }
+
     if ((_playerDialogBufferLabel == nullptr) || (_playerDialogBufferBar == nullptr)) {
         return;
     }
@@ -965,11 +988,8 @@ bool InternetRadio::init(void)
 
 bool InternetRadio::run(void)
 {
-    if (_screen == nullptr) {
-        if (!buildUi()) {
-            return false;
-        }
-        showRootMenu();
+    if (!ensureUiReady()) {
+        return false;
     }
 
     audio_player_callback_register(radioAudioCallback, this);
@@ -1011,6 +1031,10 @@ bool InternetRadio::back(void)
 
 bool InternetRadio::close(void)
 {
+    if ((_screen != nullptr) && !lv_obj_is_valid(_screen)) {
+        resetUiPointers();
+    }
+
     closePlayerDialog();
     stopPreviewPlayback();
     bsp_extra_codec_dev_stop();
@@ -1019,6 +1043,10 @@ bool InternetRadio::close(void)
 
 bool InternetRadio::pause(void)
 {
+    if ((_screen != nullptr) && !lv_obj_is_valid(_screen)) {
+        resetUiPointers();
+    }
+
     closePlayerDialog();
     ESP_LOGI(TAG, "pause");
     ESP_LOGI(TAG, "Keeping radio playback active while the app is minimized");
@@ -1027,8 +1055,75 @@ bool InternetRadio::pause(void)
 
 bool InternetRadio::resume(void)
 {
+    if (!ensureUiReady()) {
+        return false;
+    }
+
     audio_player_callback_register(radioAudioCallback, this);
     return true;
+}
+
+std::vector<ESP_Brookesia_PhoneQuickAccessActionData_t> InternetRadio::getQuickAccessActions(void) const
+{
+    if (!checkInitialized() || !hasCountryStationQuickAccessTargets()) {
+        return {};
+    }
+
+    return {
+        {QUICK_ACCESS_ACTION_PREVIOUS, LV_SYMBOL_PREV, true},
+        {QUICK_ACCESS_ACTION_NEXT, LV_SYMBOL_NEXT, true},
+    };
+}
+
+ESP_Brookesia_PhoneQuickAccessDetailData_t InternetRadio::getQuickAccessDetail(void) const
+{
+    if (!checkInitialized() || !hasCountryStationQuickAccessTargets() || _entries.empty()) {
+        return {};
+    }
+
+    size_t index = 0;
+    if (!resolveQuickAccessStationIndex(&index) || (index >= _entries.size())) {
+        return {};
+    }
+
+    const uint32_t capacity = _streamBufferCapacity.load();
+    const uint32_t buffered = _streamBytesBuffered.load();
+    const uint32_t read_offset = _streamReadOffset.load();
+    const uint32_t remaining = (buffered > read_offset) ? (buffered - read_offset) : 0;
+    const int progress_percent = (capacity > 0)
+                                     ? std::min<int>(static_cast<int>((remaining * 100U) / capacity), 100)
+                                     : 0;
+
+    const std::string display_title = _activeStationTitle.empty() ? to_std_string(_entries[index].title) : _activeStationTitle;
+
+    return {
+        .text = display_title,
+        .scroll_text = true,
+        .progress_percent = progress_percent,
+    };
+}
+
+bool InternetRadio::handleQuickAccessAction(int action_id)
+{
+    if (!hasCountryStationQuickAccessTargets()) {
+        return false;
+    }
+
+    size_t index = 0;
+    switch (action_id) {
+    case QUICK_ACCESS_ACTION_PREVIOUS:
+        if (!findAdjacentQuickAccessStationIndex(-1, &index)) {
+            return false;
+        }
+        return playQuickAccessStation(index);
+    case QUICK_ACCESS_ACTION_NEXT:
+        if (!findAdjacentQuickAccessStationIndex(1, &index)) {
+            return false;
+        }
+        return playQuickAccessStation(index);
+    default:
+        return false;
+    }
 }
 
 bool InternetRadio::buildUi(void)
@@ -1037,6 +1132,8 @@ bool InternetRadio::buildUi(void)
     if (_screen == nullptr) {
         return false;
     }
+
+    lv_obj_add_event_cb(_screen, onScreenDeleted, LV_EVENT_DELETE, this);
 
     lv_obj_set_style_bg_color(_screen, lv_color_hex(0x0B1220), 0);
     lv_obj_set_style_bg_opa(_screen, LV_OPA_COVER, 0);
@@ -1079,6 +1176,32 @@ bool InternetRadio::buildUi(void)
     return true;
 }
 
+bool InternetRadio::ensureUiReady(void)
+{
+    if ((_screen != nullptr) && !lv_obj_is_valid(_screen)) {
+        resetUiPointers();
+    }
+
+    if (_screen == nullptr) {
+        if (!buildUi()) {
+            return false;
+        }
+        showRootMenu();
+    }
+
+    return _list != nullptr;
+}
+
+bool InternetRadio::hasLiveScreen(void) const
+{
+    return (_screen != nullptr) && lv_obj_is_valid(_screen);
+}
+
+bool InternetRadio::hasInternetPrerequisites(void) const
+{
+    return bsp_extra_network_has_ip() && bsp_extra_network_has_dns();
+}
+
 void InternetRadio::setStatus(const std::string &text)
 {
     bsp_display_lock(0);
@@ -1092,12 +1215,21 @@ void InternetRadio::applyStatusText(const char *text)
         text = "";
     }
 
-    if (_statusLabel != nullptr) {
-        lv_label_set_text(_statusLabel, text);
+    if ((_screen != nullptr) && !lv_obj_is_valid(_screen)) {
+        resetUiPointers();
+        return;
     }
 
-    if (_playerDialogStatusLabel != nullptr) {
+    if ((_statusLabel != nullptr) && lv_obj_is_valid(_statusLabel)) {
+        lv_label_set_text(_statusLabel, text);
+    } else {
+        _statusLabel = nullptr;
+    }
+
+    if ((_playerDialogStatusLabel != nullptr) && lv_obj_is_valid(_playerDialogStatusLabel)) {
         lv_label_set_text(_playerDialogStatusLabel, text);
+    } else {
+        _playerDialogStatusLabel = nullptr;
     }
 
     refreshPlayerDialogBufferInfo();
@@ -1162,7 +1294,7 @@ void InternetRadio::showRootMenu(void)
 
 void InternetRadio::loadCountries(void)
 {
-    std::vector<ListEntry> entries;
+    EntryList entries;
     const std::string url = std::string(kApiBaseUrl) + "/countries?hidebroken=true&order=name&reverse=false&limit=" + std::to_string(kListLimit);
     if (!fetchEntries(url, ViewMode::Countries, StationSource::Country, "Loading countries...", entries)) {
         return;
@@ -1180,7 +1312,7 @@ void InternetRadio::loadCountries(void)
 
 void InternetRadio::loadLanguages(void)
 {
-    std::vector<ListEntry> entries;
+    EntryList entries;
     const std::string url = std::string(kApiBaseUrl) + "/languages?hidebroken=true&order=stationcount&reverse=true&limit=" + std::to_string(kListLimit);
     if (!fetchEntries(url, ViewMode::Languages, StationSource::Language, "Loading languages...", entries)) {
         return;
@@ -1195,7 +1327,7 @@ void InternetRadio::loadLanguages(void)
 
 void InternetRadio::loadTags(void)
 {
-    std::vector<ListEntry> entries;
+    EntryList entries;
     const std::string url = std::string(kApiBaseUrl) + "/tags?hidebroken=true&order=stationcount&reverse=true&limit=" + std::to_string(kListLimit);
     if (!fetchEntries(url, ViewMode::Tags, StationSource::Tag, "Loading categories...", entries)) {
         return;
@@ -1213,9 +1345,9 @@ void InternetRadio::loadPopularStations(void)
     loadStationsForFilter(StationSource::Popular, "Popular", "topvote");
 }
 
-void InternetRadio::loadStationsForFilter(StationSource source, const std::string &display_name, const std::string &value)
+void InternetRadio::loadStationsForFilter(StationSource source, std::string_view display_name, std::string_view value)
 {
-    std::vector<ListEntry> entries;
+    EntryList entries;
     std::string url;
 
     switch (source) {
@@ -1223,13 +1355,13 @@ void InternetRadio::loadStationsForFilter(StationSource source, const std::strin
         url = std::string(kApiBaseUrl) + "/stations/topvote/" + std::to_string(kListLimit);
         break;
     case StationSource::Country:
-        url = std::string(kApiBaseUrl) + "/stations/bycountryexact/" + percentEncode(value) + "?hidebroken=true&order=votes&reverse=true&limit=" + std::to_string(kListLimit);
+        url = std::string(kApiBaseUrl) + "/stations/bycountryexact/" + percentEncode(std::string(value)) + "?hidebroken=true&order=votes&reverse=true&limit=" + std::to_string(kListLimit);
         break;
     case StationSource::Language:
-        url = std::string(kApiBaseUrl) + "/stations/bylanguageexact/" + percentEncode(value) + "?hidebroken=true&order=votes&reverse=true&limit=" + std::to_string(kListLimit);
+        url = std::string(kApiBaseUrl) + "/stations/bylanguageexact/" + percentEncode(std::string(value)) + "?hidebroken=true&order=votes&reverse=true&limit=" + std::to_string(kListLimit);
         break;
     case StationSource::Tag:
-        url = std::string(kApiBaseUrl) + "/stations/bytagexact/" + percentEncode(value) + "?hidebroken=true&order=votes&reverse=true&limit=" + std::to_string(kListLimit);
+        url = std::string(kApiBaseUrl) + "/stations/bytagexact/" + percentEncode(std::string(value)) + "?hidebroken=true&order=votes&reverse=true&limit=" + std::to_string(kListLimit);
         break;
     case StationSource::None:
         return;
@@ -1248,8 +1380,8 @@ void InternetRadio::loadStationsForFilter(StationSource source, const std::strin
     });
     _viewMode = ViewMode::Stations;
     _stationSource = source;
-    _activeFilterDisplay = display_name;
-    _activeFilterValue = value;
+    _activeFilterDisplay = std::string(display_name);
+    _activeFilterValue = std::string(value);
     setStatus("Select a station to start an MP3 preview or inspect details.");
     renderEntries();
 }
@@ -1271,7 +1403,9 @@ void InternetRadio::renderEntries(void)
     }
 
     for (size_t i = 0; i < _entries.size(); ++i) {
-        std::string button_text = _entries[i].subtitle.empty() ? _entries[i].title : (_entries[i].title + "\n" + _entries[i].subtitle);
+        std::string button_text = _entries[i].subtitle.empty()
+                          ? to_std_string(_entries[i].title)
+                          : (to_std_string(_entries[i].title) + "\n" + to_std_string(_entries[i].subtitle));
         lv_obj_t *button = lv_list_add_btn(_list, entrySymbol(_entries[i]), button_text.c_str());
         lv_obj_set_height(button, 76);
         lv_obj_set_style_radius(button, 18, 0);
@@ -1299,7 +1433,7 @@ void InternetRadio::showEntryDetails(size_t index)
     }
 
     const ListEntry &entry = _entries[index];
-    std::string message = entry.subtitle;
+    std::string message = to_std_string(entry.subtitle);
     if (!entry.detail.empty()) {
         if (!message.empty()) {
             message += "\n\n";
@@ -1388,15 +1522,15 @@ void InternetRadio::showPlayerDialog(size_t index)
     lv_obj_set_scroll_dir(content, LV_DIR_VER);
 
     _playerDialogDetailLabel = lv_label_create(content);
-    std::string detail = entry.subtitle.empty() ? entry.detail : entry.subtitle;
-    if (!entry.detail.empty() && (detail != entry.detail)) {
-        detail += "\n" + entry.detail;
+    std::string detail = entry.subtitle.empty() ? to_std_string(entry.detail) : to_std_string(entry.subtitle);
+    if (!entry.detail.empty() && (detail != to_std_string(entry.detail))) {
+        detail += "\n" + to_std_string(entry.detail);
     }
     if (!entry.codec.empty()) {
         if (!detail.empty()) {
             detail += "\n";
         }
-        detail += std::string("Codec: ") + entry.codec;
+        detail += std::string("Codec: ") + to_std_string(entry.codec);
     }
     if (detail.empty()) {
         detail = entry.canPreview ? "MP3 stream candidate." : "Stream format may be unsupported.";
@@ -1465,9 +1599,9 @@ void InternetRadio::showPlayerDialog(size_t index)
     if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {
         setStatus(std::string("Playing: ") + _activeStationTitle);
     } else if (_previewStartInProgress.load()) {
-        setStatus(std::string("Opening stream: ") + entry.title);
+        setStatus(std::string("Opening stream: ") + entry.title.c_str());
     } else {
-        setStatus(std::string("Selected station: ") + entry.title);
+        setStatus(std::string("Selected station: ") + entry.title.c_str());
     }
 
     if (_playerDialogBufferTimer == nullptr) {
@@ -1495,6 +1629,45 @@ void InternetRadio::closePlayerDialog(void)
     _playerDialogBufferBar = nullptr;
     _playerDialogPlayButton = nullptr;
     _playerDialogStopButton = nullptr;
+}
+
+void InternetRadio::resetUiPointers(void)
+{
+    if (_playerDialogBufferTimer != nullptr) {
+        lv_timer_del(_playerDialogBufferTimer);
+        _playerDialogBufferTimer = nullptr;
+    }
+
+    _screen = nullptr;
+    _titleLabel = nullptr;
+    _subtitleLabel = nullptr;
+    _statusLabel = nullptr;
+    _list = nullptr;
+    _playerDialog = nullptr;
+    _playerDialogTitleLabel = nullptr;
+    _playerDialogDetailLabel = nullptr;
+    _playerDialogStatusLabel = nullptr;
+    _playerDialogBufferLabel = nullptr;
+    _playerDialogBufferBar = nullptr;
+    _playerDialogPlayButton = nullptr;
+    _playerDialogStopButton = nullptr;
+    _buttonIndexMap.clear();
+    _entries.clear();
+    _viewMode = ViewMode::Root;
+    _stationSource = StationSource::None;
+    _activeFilterDisplay.clear();
+    _activeFilterValue.clear();
+    _selectedStationIndex = 0;
+}
+
+void InternetRadio::onScreenDeleted(lv_event_t *event)
+{
+    auto *self = static_cast<InternetRadio *>(lv_event_get_user_data(event));
+    if ((self == nullptr) || (lv_event_get_target(event) != self->_screen)) {
+        return;
+    }
+
+    self->resetUiPointers();
 }
 
 void InternetRadio::playStationPreview(size_t index)
@@ -1564,6 +1737,82 @@ bool InternetRadio::ensurePreviewWorkerReady(void)
     return true;
 }
 
+bool InternetRadio::hasCountryStationQuickAccessTargets(void) const
+{
+    if ((_viewMode != ViewMode::Stations) || (_stationSource != StationSource::Country)) {
+        return false;
+    }
+
+    return std::any_of(_entries.begin(), _entries.end(), [](const ListEntry &entry) {
+        return entry.canPreview;
+    });
+}
+
+bool InternetRadio::resolveQuickAccessStationIndex(size_t *out_index) const
+{
+    if ((out_index == nullptr) || !hasCountryStationQuickAccessTargets() || _entries.empty()) {
+        return false;
+    }
+
+    if ((_selectedStationIndex < _entries.size()) && _entries[_selectedStationIndex].canPreview) {
+        *out_index = _selectedStationIndex;
+        return true;
+    }
+
+    for (size_t index = 0; index < _entries.size(); ++index) {
+        if (_entries[index].canPreview) {
+            *out_index = index;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool InternetRadio::findAdjacentQuickAccessStationIndex(int direction, size_t *out_index) const
+{
+    if ((out_index == nullptr) || (direction == 0) || _entries.empty()) {
+        return false;
+    }
+
+    size_t current_index = 0;
+    if (!resolveQuickAccessStationIndex(&current_index)) {
+        return false;
+    }
+
+    const size_t entry_count = _entries.size();
+    size_t candidate_index = current_index;
+    for (size_t attempt = 0; attempt < entry_count; ++attempt) {
+        if (direction < 0) {
+            candidate_index = (candidate_index == 0) ? (entry_count - 1) : (candidate_index - 1);
+        } else {
+            candidate_index = (candidate_index + 1) % entry_count;
+        }
+
+        if (_entries[candidate_index].canPreview) {
+            *out_index = candidate_index;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool InternetRadio::playQuickAccessStation(size_t index)
+{
+    if ((index >= _entries.size()) || !_entries[index].canPreview) {
+        return false;
+    }
+
+    _selectedStationIndex = index;
+    if (_playerDialog != nullptr) {
+        showPlayerDialog(index);
+    }
+
+    setStatus(std::string("Opening stream: ") + _entries[index].title.c_str());
+    return queuePreviewPlayback(_entries[index], false);
+}
+
 void InternetRadio::destroyPreviewWorker(void)
 {
     if ((_previewTaskHandle != nullptr) && (_previewTaskHandle != xTaskGetCurrentTaskHandle())) {
@@ -1585,7 +1834,7 @@ void InternetRadio::destroyPreviewWorker(void)
 
 bool InternetRadio::queuePreviewPlayback(const ListEntry &entry, bool from_task)
 {
-    _activeStationTitle = entry.title;
+    _activeStationTitle = entry.title.c_str();
     if (entry.value.empty()) {
         setStatusForContext("Station does not provide a playable stream URL.", from_task);
         return false;
@@ -1602,7 +1851,9 @@ bool InternetRadio::queuePreviewPlayback(const ListEntry &entry, bool from_task)
         return false;
     }
 
-    auto *task_context = new_psram_preferred<PreviewTaskContext>(PreviewTaskContext{this, entry.title, entry.value, entry.canPreview});
+    resetStreamBufferMetrics();
+
+    auto *task_context = new_psram_preferred<PreviewTaskContext>(PreviewTaskContext{this, to_std_string(entry.title), to_std_string(entry.value), entry.canPreview});
     if (task_context == nullptr) {
         _previewStartInProgress.store(false);
         setStatusForContext("Unable to allocate station preview context.", from_task);
@@ -1631,7 +1882,7 @@ bool InternetRadio::queuePreviewPlayback(const ListEntry &entry, bool from_task)
         return false;
     }
 
-    setStatusForContext(std::string("Opening stream: ") + entry.title, from_task);
+    setStatusForContext(std::string("Opening stream: ") + entry.title.c_str(), from_task);
     return true;
 }
 
@@ -1639,6 +1890,11 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
 {
     if (entry.value.empty()) {
         setStatusFromTask("Station does not provide a stream URL.");
+        return false;
+    }
+
+    if (!hasInternetPrerequisites()) {
+        setStatusFromTask("Wi-Fi has no internet/DNS yet. Check connection and try again.");
         return false;
     }
 
@@ -1674,8 +1930,8 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
     config.method = HTTP_METHOD_GET;
     config.timeout_ms = kStreamTimeoutMs;
     config.disable_auto_redirect = false;
-    config.buffer_size = kHttpClientBufferSize;
-    config.buffer_size_tx = kHttpClientBufferSize;
+    config.buffer_size = kHttpClientRxBufferSize;
+    config.buffer_size_tx = kHttpClientTxBufferSize;
     config.user_data = stream_context;
     config.event_handler = [](esp_http_client_event_t *event) {
         if ((event == nullptr) || (event->user_data == nullptr) || (event->event_id != HTTP_EVENT_ON_HEADER) ||
@@ -1920,7 +2176,7 @@ bool InternetRadio::debugPlayStation(const std::string &country, const std::stri
 
     const std::string url = std::string(kApiBaseUrl) + "/stations/bycountryexact/" + percentEncode(normalized_country) +
                             "?hidebroken=true&order=votes&reverse=true&limit=200";
-    std::vector<ListEntry> entries;
+    EntryList entries;
     ESP_LOGI(TAG, "Debug station lookup: country='%s' station='%s'", normalized_country.c_str(), normalized_station.c_str());
     if (!fetchJsonArray(url, entries, ViewMode::Stations)) {
         setStatusFromTask("Debug station lookup failed. Check Wi-Fi.");
@@ -2134,10 +2390,20 @@ std::string InternetRadio::percentEncode(const std::string &value)
 }
 
 bool InternetRadio::fetchEntries(const std::string &url, ViewMode next_mode, StationSource next_source,
-                                 const std::string &status_text, std::vector<ListEntry> &out_entries)
+                                 const std::string &status_text, EntryList &out_entries)
 {
     (void)next_mode;
     (void)next_source;
+
+    if (!bsp_extra_network_has_ip()) {
+        setStatus("Wi-Fi is not ready yet. Connect and wait for an IP address.");
+        return false;
+    }
+
+    if (!bsp_extra_network_has_dns()) {
+        setStatus("Wi-Fi has no internet/DNS yet. Check connection and try again.");
+        return false;
+    }
 
     setStatus(status_text);
     if (!fetchJsonArray(url, out_entries, next_mode)) {
@@ -2153,8 +2419,13 @@ bool InternetRadio::fetchEntries(const std::string &url, ViewMode next_mode, Sta
     return true;
 }
 
-bool InternetRadio::fetchJsonArray(const std::string &url, std::vector<ListEntry> &out_entries, ViewMode mode)
+bool InternetRadio::fetchJsonArray(const std::string &url, EntryList &out_entries, ViewMode mode)
 {
+    if (!hasInternetPrerequisites()) {
+        ESP_LOGW(TAG, "Skipping HTTP request without IP/DNS readiness for %s", url.c_str());
+        return false;
+    }
+
     std::string response;
     esp_http_client_config_t config = {};
     config.url = url.c_str();

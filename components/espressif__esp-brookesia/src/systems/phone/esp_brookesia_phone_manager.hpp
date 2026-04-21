@@ -77,6 +77,7 @@ private:
     static void onQuickAccessCloseAppEventCallback(lv_event_t *event);
     static void onQuickAccessActionEventCallback(lv_event_t *event);
     static void onQuickAccessCloseAllEventCallback(lv_event_t *event);
+    static void onQuickAccessRefreshTimerCallback(lv_timer_t *timer);
     static void onQuickAccessCloseAllTimerCallback(lv_timer_t *timer);
     static void onQuickAccessVolumeSliderEventCallback(lv_event_t *event);
     // App Launcher
@@ -144,6 +145,7 @@ private:
     std::unordered_map<lv_obj_t *, int> _quick_access_close_button_app_id_map;
     std::unordered_map<lv_obj_t *, int> _quick_access_row_app_id_map;
     std::unordered_map<lv_obj_t *, QuickAccessActionBinding> _quick_access_action_button_map;
+    lv_timer_t *_quick_access_refresh_timer;
     lv_timer_t *_quick_access_close_all_timer;
     std::vector<int> _quick_access_close_all_queue;
     // RecentsScreen

@@ -1,27 +1,23 @@
 dependencies:
   chmorgan/esp-audio-player:
-    component_hash: c8ac1998e9af863bc41b57e592f88d1a5791a0f891485122336ddabbf7a65033
     dependencies:
     - name: chmorgan/esp-libhelix-mp3
-      registry_url: https://components.espressif.com
-      require: private
       version: '>=1.0.0,<2.0.0'
+    - name: espressif/esp_audio_codec
+      version: '>=2.4.0'
     - name: idf
-      require: private
       version: '>=5.0'
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\managed_components\chmorgan__esp-audio-player
+      type: local
     version: 1.0.7
   chmorgan/esp-file-iterator:
-    component_hash: 327091394b9ef5c2cd395a960ab70ae64479e0a8831cbd9925e38895fad93719
     dependencies:
     - name: idf
-      require: private
       version: '>=4.1.0'
     source:
-      registry_url: https://components.espressif.com/
-      type: service
+      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\managed_components\chmorgan__esp-file-iterator
+      type: local
     version: 1.0.0
   chmorgan/esp-libhelix-mp3:
     component_hash: cbb76089dc2c5749f7b470e2e70aedc44c9da519e04eb9a67d4c7ec275229e53
@@ -30,7 +26,7 @@ dependencies:
       require: private
       version: '>=4.1.0'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.0.3
   esp_lcd_st7701:
@@ -285,6 +281,6 @@ direct_dependencies:
 - espressif/esp_wifi_remote
 - idf
 - lvgl/lvgl
-manifest_hash: ff73cd502251eaf974c540aee6fc650ebb6a74a6ed9ea24362fea8dac2e3fd8d
+manifest_hash: 8d2d2cc5f349cf5426d5db9088db3746d244749ed2edd245a5bd004402fc543f
 target: esp32p4
 version: 2.0.0

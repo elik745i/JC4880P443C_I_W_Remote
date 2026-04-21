@@ -22,7 +22,9 @@
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_netif.h"
 #include "esp_sleep.h"
+#include "lwip/dns.h"
 
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -112,6 +114,11 @@ static display_idle_state_t s_display_idle_state = {
 };
 static bool s_deep_sleep_warning_logged = false;
 
+static bool bsp_extra_dns_server_configured(const ip_addr_t *address)
+{
+    return (address != NULL) && !ip_addr_isany(address);
+}
+
 static int audio_clamp_volume(int volume)
 {
     if (volume < 0) {
@@ -121,6 +128,32 @@ static int audio_clamp_volume(int volume)
         return 100;
     }
     return volume;
+}
+
+bool bsp_extra_network_has_ip(void)
+{
+    esp_netif_t *station_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (station_netif == NULL) {
+        return false;
+    }
+
+    esp_netif_ip_info_t ip_info = {0};
+    if (esp_netif_get_ip_info(station_netif, &ip_info) != ESP_OK) {
+        return false;
+    }
+
+    return ip_info.ip.addr != 0;
+}
+
+bool bsp_extra_network_has_dns(void)
+{
+    if (!bsp_extra_network_has_ip()) {
+        return false;
+    }
+
+    return bsp_extra_dns_server_configured(dns_getserver(0)) ||
+           bsp_extra_dns_server_configured(dns_getserver(1)) ||
+           bsp_extra_dns_server_configured(dns_getserver(2));
 }
 
 static bool audio_mix_lock(TickType_t timeout)

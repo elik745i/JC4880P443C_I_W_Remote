@@ -52,6 +52,7 @@ static constexpr uint16_t kQuickAccessIconZoom = 128;
 static constexpr int kQuickAccessIconSlotWidth = 28;
 static constexpr int kQuickAccessMusicButtonSize = 34;
 static constexpr int kQuickAccessMusicButtonGap = 8;
+static constexpr uint32_t kQuickAccessRefreshMs = 250;
 
 static lv_obj_t *create_quick_access_symbol_button(lv_obj_t *parent, const char *symbol)
 {
@@ -118,6 +119,7 @@ ESP_Brookesia_PhoneManager::ESP_Brookesia_PhoneManager(ESP_Brookesia_Core &core_
     _quick_access_close_button_app_id_map(),
     _quick_access_row_app_id_map(),
     _quick_access_action_button_map(),
+    _quick_access_refresh_timer(nullptr),
     _quick_access_close_all_timer(nullptr),
     _quick_access_close_all_queue(),
     _recents_screen_drag_tan_threshold(0),
@@ -279,6 +281,10 @@ bool ESP_Brookesia_PhoneManager::del(void)
     _quick_access_system_volume_slider = nullptr;
     _quick_access_system_volume_value_label = nullptr;
     _quick_access_panel_type = QuickAccessPanelType::NONE;
+    if (_quick_access_refresh_timer != nullptr) {
+        lv_timer_del(_quick_access_refresh_timer);
+        _quick_access_refresh_timer = nullptr;
+    }
     if (_quick_access_close_all_timer != nullptr) {
         lv_timer_del(_quick_access_close_all_timer);
         _quick_access_close_all_timer = nullptr;
@@ -645,6 +651,10 @@ void ESP_Brookesia_PhoneManager::hideQuickAccessOverlay(bool animate)
         return;
     }
 
+    if (_quick_access_refresh_timer != nullptr) {
+        lv_timer_pause(_quick_access_refresh_timer);
+    }
+
     lv_obj_add_flag(_quick_access_overlay, LV_OBJ_FLAG_HIDDEN);
     if ((_quick_access_app_panel != nullptr) && lv_obj_is_valid(_quick_access_app_panel)) {
         lv_obj_add_flag(_quick_access_app_panel, LV_OBJ_FLAG_HIDDEN);
@@ -900,6 +910,18 @@ void ESP_Brookesia_PhoneManager::showQuickAccessOverlay(QuickAccessPanelType typ
     }
     _quick_access_panel_type = type;
 
+    if (_quick_access_refresh_timer == nullptr) {
+        _quick_access_refresh_timer = lv_timer_create(onQuickAccessRefreshTimerCallback, kQuickAccessRefreshMs, this);
+    }
+    if (_quick_access_refresh_timer != nullptr) {
+        if (type == QuickAccessPanelType::APPS) {
+            lv_timer_resume(_quick_access_refresh_timer);
+            lv_timer_ready(_quick_access_refresh_timer);
+        } else {
+            lv_timer_pause(_quick_access_refresh_timer);
+        }
+    }
+
     lv_anim_t panel_anim;
     lv_anim_init(&panel_anim);
     lv_anim_set_var(&panel_anim, panel);
@@ -917,6 +939,26 @@ void ESP_Brookesia_PhoneManager::showQuickAccessOverlay(QuickAccessPanelType typ
     lv_anim_set_time(&backdrop_anim, kQuickAccessAnimTimeMs);
     lv_anim_set_path_cb(&backdrop_anim, lv_anim_path_ease_out);
     lv_anim_start(&backdrop_anim);
+}
+
+void ESP_Brookesia_PhoneManager::onQuickAccessRefreshTimerCallback(lv_timer_t *timer)
+{
+    ESP_Brookesia_PhoneManager *manager = (timer != nullptr) ? static_cast<ESP_Brookesia_PhoneManager *>(timer->user_data) : nullptr;
+    if (manager == nullptr) {
+        return;
+    }
+
+    if ((manager->_quick_access_panel_type != QuickAccessPanelType::APPS) ||
+        (manager->_quick_access_overlay == nullptr) ||
+        !lv_obj_is_valid(manager->_quick_access_overlay) ||
+        lv_obj_has_flag(manager->_quick_access_overlay, LV_OBJ_FLAG_HIDDEN)) {
+        if (manager->_quick_access_refresh_timer != nullptr) {
+            lv_timer_pause(manager->_quick_access_refresh_timer);
+        }
+        return;
+    }
+
+    manager->refreshQuickAccessAppList();
 }
 
 void ESP_Brookesia_PhoneManager::onQuickAccessOverlayTouchEventCallback(lv_event_t *event)

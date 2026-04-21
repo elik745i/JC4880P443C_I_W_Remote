@@ -21,7 +21,7 @@
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
 
-LV_IMG_DECLARE(img_app_music_player);
+LV_IMG_DECLARE(img_app_radio_browser);
 
 namespace {
 
@@ -544,7 +544,7 @@ int safe_int(cJSON *object, const char *key)
 } // namespace
 
 InternetRadio::InternetRadio()
-    : ESP_Brookesia_PhoneApp("Radio Browser", &img_app_music_player, true),
+    : ESP_Brookesia_PhoneApp("Radio Browser", &img_app_radio_browser, true),
       _screen(nullptr),
       _titleLabel(nullptr),
       _subtitleLabel(nullptr),

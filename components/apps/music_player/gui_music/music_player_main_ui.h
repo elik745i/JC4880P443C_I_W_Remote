@@ -34,6 +34,8 @@ void _music_player_ui_resume(void);
 void _music_player_ui_pause(void);
 void _music_player_ui_exit_pause(void);
 void _music_player_ui_album_next(bool next);
+bool _music_player_ui_has_active_session(void);
+uint32_t _music_player_ui_get_elapsed_time(void);
 void _music_player_main_ui_sync_state(void);
 
 /**********************

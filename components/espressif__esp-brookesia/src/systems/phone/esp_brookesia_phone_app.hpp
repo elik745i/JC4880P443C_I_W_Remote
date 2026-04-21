@@ -6,11 +6,24 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include "core/esp_brookesia_core_app.hpp"
 #include "widgets/gesture/esp_brookesia_gesture.hpp"
 #include "esp_brookesia_phone_type.h"
 
 class ESP_Brookesia_Phone;
+
+struct ESP_Brookesia_PhoneQuickAccessActionData_t {
+    int action_id;
+    const char *symbol;
+    bool enabled;
+};
+
+struct ESP_Brookesia_PhoneQuickAccessDetailData_t {
+    std::string text;
+    bool scroll_text = false;
+    int progress_percent = -1;
+};
 
 // *INDENT-OFF*
 /**
@@ -106,6 +119,11 @@ public:
      *
      */
     ESP_Brookesia_Phone *getPhone(void);
+
+    virtual const void *getQuickAccessIconResource(void) const;
+    virtual std::vector<ESP_Brookesia_PhoneQuickAccessActionData_t> getQuickAccessActions(void) const;
+    virtual ESP_Brookesia_PhoneQuickAccessDetailData_t getQuickAccessDetail(void) const;
+    virtual bool handleQuickAccessAction(int action_id);
 
 private:
     bool beginExtra(void) override;

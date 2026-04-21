@@ -74,6 +74,82 @@ bool MusicPlayer::init(void)
 {
     return true;
 }
+
+std::vector<ESP_Brookesia_PhoneQuickAccessActionData_t> MusicPlayer::getQuickAccessActions(void) const
+{
+    if (!checkInitialized()) {
+        return {};
+    }
+
+    const bool has_tracks = (_music_player_ui_get_track_count() > 0);
+    const char *playback_symbol = (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY;
+    return {
+        {QUICK_ACCESS_ACTION_PREVIOUS, LV_SYMBOL_PREV, has_tracks},
+        {QUICK_ACCESS_ACTION_TOGGLE_PLAYBACK, playback_symbol, has_tracks},
+        {QUICK_ACCESS_ACTION_NEXT, LV_SYMBOL_NEXT, has_tracks},
+    };
+}
+
+ESP_Brookesia_PhoneQuickAccessDetailData_t MusicPlayer::getQuickAccessDetail(void) const
+{
+    if (!checkInitialized()) {
+        return {};
+    }
+
+    const uint32_t track_count = _music_player_ui_get_track_count();
+    if (track_count == 0) {
+        return {
+            .text = "No tracks",
+            .scroll_text = false,
+            .progress_percent = 0,
+        };
+    }
+
+    uint32_t track_index = music_library_get_current_index();
+    if (track_index >= track_count) {
+        track_index = 0;
+    }
+
+    const char *title = _music_player_ui_get_title(track_index);
+    const uint32_t elapsed = _music_player_ui_get_elapsed_time();
+    const uint32_t duration = _music_player_ui_get_track_length(track_index);
+    const int progress_percent = (duration > 0) ? std::min<int>((elapsed * 100U) / duration, 100U) : 0;
+
+    return {
+        .text = ((title != nullptr) && (title[0] != '\0')) ? title : getName(),
+        .scroll_text = true,
+        .progress_percent = progress_percent,
+    };
+}
+
+bool MusicPlayer::handleQuickAccessAction(int action_id)
+{
+    switch (action_id) {
+    case QUICK_ACCESS_ACTION_PREVIOUS:
+        _music_player_ui_album_next(false);
+        return true;
+    case QUICK_ACCESS_ACTION_TOGGLE_PLAYBACK:
+        if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {
+            _music_player_ui_pause();
+            return true;
+        }
+        if (audio_player_get_state() == AUDIO_PLAYER_STATE_PAUSE) {
+            _music_player_ui_resume();
+            return true;
+        }
+        if (_music_player_ui_get_track_count() > 0) {
+            _music_player_ui_resume();
+            return true;
+        }
+        return false;
+    case QUICK_ACCESS_ACTION_NEXT:
+        _music_player_ui_album_next(true);
+        return true;
+    default:
+        return false;
+    }
+}
+
 void MusicPlayer::stop_audio_fully(void)
 {
     /* 1. Stop the LVGL music UI state machine. */

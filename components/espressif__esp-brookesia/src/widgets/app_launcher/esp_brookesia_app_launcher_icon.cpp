@@ -42,7 +42,6 @@ bool ESP_Brookesia_AppLauncherIcon::begin(lv_obj_t *parent)
     ESP_Brookesia_LvObj_t main_obj = nullptr;
     ESP_Brookesia_LvObj_t icon_main_obj = nullptr;
     ESP_Brookesia_LvObj_t icon_image_obj = nullptr;
-    ESP_Brookesia_LvObj_t name_label = nullptr;
 
     ESP_BROOKESIA_LOGD("Begin(%d: @0x%p)", _info.id, this);
     ESP_BROOKESIA_CHECK_NULL_RETURN(parent, false, "Invalid parent object");
@@ -60,10 +59,6 @@ bool ESP_Brookesia_AppLauncherIcon::begin(lv_obj_t *parent)
     // Image
     icon_image_obj = ESP_BROOKESIA_LV_OBJ(img, icon_main_obj.get());
     ESP_BROOKESIA_CHECK_NULL_RETURN(icon_image_obj, false, "Create icon_image_obj failed");
-    // Name
-    name_label = ESP_BROOKESIA_LV_OBJ(label, main_obj.get());
-    ESP_BROOKESIA_CHECK_NULL_RETURN(name_label, false, "Create name_label failed");
-
     /* Setup objects style */
     // Main
     lv_obj_add_style(main_obj.get(), _core.getCoreHome().getCoreContainerStyle(), 0);
@@ -89,15 +84,10 @@ bool ESP_Brookesia_AppLauncherIcon::begin(lv_obj_t *parent)
     lv_obj_add_event_cb(icon_image_obj.get(), onIconTouchEventCallback, LV_EVENT_PRESS_LOST, this);
     lv_obj_add_event_cb(icon_image_obj.get(), onIconTouchEventCallback, LV_EVENT_RELEASED, this);
     lv_obj_add_event_cb(icon_image_obj.get(), onIconTouchEventCallback, LV_EVENT_CLICKED, this);
-    // Name
-    lv_obj_add_style(name_label.get(), _core.getCoreHome().getCoreContainerStyle(), 0);
-    lv_label_set_text_static(name_label.get(), _info.name);
-
     /* Save objects */
     _main_obj = main_obj;
     _icon_main_obj = icon_main_obj;
     _icon_image_obj = icon_image_obj;
-    _name_label = name_label;
 
     /* Update style */
     ESP_BROOKESIA_CHECK_FALSE_GOTO(updateByNewData(), err, "Update object style failed");
@@ -121,8 +111,6 @@ bool ESP_Brookesia_AppLauncherIcon::del(void)
     _main_obj.reset();
     _icon_main_obj.reset();
     _icon_image_obj.reset();
-    _name_label.reset();
-
     return true;
 }
 
@@ -154,10 +142,6 @@ bool ESP_Brookesia_AppLauncherIcon::updateByNewData(void)
     lv_obj_set_style_pad_row(_main_obj.get(), _data.main.layout_row_pad, 0);
     // Icon
     lv_obj_set_size(_icon_main_obj.get(), _data.image.default_size.width, _data.image.default_size.height);
-    // Label
-    lv_obj_set_style_text_font(_name_label.get(), (lv_font_t *)_data.label.text_font.font_resource, 0);
-    lv_obj_set_style_text_color(_name_label.get(), lv_color_hex(_data.label.text_color.color), 0);
-    lv_obj_set_style_text_opa(_name_label.get(), _data.label.text_color.opacity, 0);
     // Image
     // Calculate the multiple of the size between the target and the image.
     h_factor = (float)(_data.image.default_size.width) / ((lv_img_dsc_t *)_info.image.resource)->header.h;

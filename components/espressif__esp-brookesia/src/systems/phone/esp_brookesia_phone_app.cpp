@@ -64,6 +64,31 @@ ESP_Brookesia_Phone *ESP_Brookesia_PhoneApp::getPhone(void)
     return static_cast<ESP_Brookesia_Phone *>(getCore());
 }
 
+const void *ESP_Brookesia_PhoneApp::getQuickAccessIconResource(void) const
+{
+    if ((_active_data.status_icon_data.icon.image_num > 0) && (_active_data.status_icon_data.icon.images[0].resource != nullptr)) {
+        return _active_data.status_icon_data.icon.images[0].resource;
+    }
+
+    return getLauncherIcon().resource;
+}
+
+std::vector<ESP_Brookesia_PhoneQuickAccessActionData_t> ESP_Brookesia_PhoneApp::getQuickAccessActions(void) const
+{
+    return {};
+}
+
+ESP_Brookesia_PhoneQuickAccessDetailData_t ESP_Brookesia_PhoneApp::getQuickAccessDetail(void) const
+{
+    return {};
+}
+
+bool ESP_Brookesia_PhoneApp::handleQuickAccessAction(int action_id)
+{
+    LV_UNUSED(action_id);
+    return false;
+}
+
 bool ESP_Brookesia_PhoneApp::beginExtra(void)
 {
     ESP_BROOKESIA_LOGD("Begin extra(@0x%p)", this);

@@ -518,6 +518,16 @@ void _music_player_ui_exit_pause(void)
     pause_exit = true;
 }
 
+bool _music_player_ui_has_active_session(void)
+{
+    return playing || pause;
+}
+
+uint32_t _music_player_ui_get_elapsed_time(void)
+{
+    return time_act;
+}
+
 void _music_player_main_ui_sync_state(void)
 {
     if ((title_label == NULL) || (artist_label == NULL) || (genre_label == NULL) || (time_obj == NULL) || (slider_obj == NULL) || (play_obj == NULL)) {

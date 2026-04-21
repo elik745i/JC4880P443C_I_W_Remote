@@ -32,6 +32,11 @@ public:
     const ESP_Brookesia_PhoneManagerData_t &data;
 
 private:
+    struct QuickAccessActionBinding {
+        int app_id;
+        int action_id;
+    };
+
     enum class QuickAccessPanelType {
         NONE = 0,
         APPS,
@@ -70,6 +75,7 @@ private:
     static void onQuickAccessOverlayTouchEventCallback(lv_event_t *event);
     static void onQuickAccessAppRowEventCallback(lv_event_t *event);
     static void onQuickAccessCloseAppEventCallback(lv_event_t *event);
+    static void onQuickAccessActionEventCallback(lv_event_t *event);
     static void onQuickAccessCloseAllEventCallback(lv_event_t *event);
     static void onQuickAccessCloseAllTimerCallback(lv_timer_t *timer);
     static void onQuickAccessVolumeSliderEventCallback(lv_event_t *event);
@@ -137,6 +143,7 @@ private:
     QuickAccessPanelType _quick_access_panel_type;
     std::unordered_map<lv_obj_t *, int> _quick_access_close_button_app_id_map;
     std::unordered_map<lv_obj_t *, int> _quick_access_row_app_id_map;
+    std::unordered_map<lv_obj_t *, QuickAccessActionBinding> _quick_access_action_button_map;
     lv_timer_t *_quick_access_close_all_timer;
     std::vector<int> _quick_access_close_all_queue;
     // RecentsScreen

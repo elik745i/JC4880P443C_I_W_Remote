@@ -4,12 +4,13 @@ file(GLOB_RECURSE APPS_CPP_SRCS ${APPS_DIR}/*.cpp)
 set(APPS_SHARED_SRCS ${APPS_DIR}/system_ui_service.cpp)
 file(GLOB_RECURSE APPS_CAMERA_C_SRCS ${APPS_DIR}/camera/*.c)
 file(GLOB_RECURSE APPS_CAMERA_CPP_SRCS ${APPS_DIR}/camera/*.cpp)
+set(APPS_EXTRA_SRCS ${APPS_DIR}/internet_radio/assets/img_app_radio_browser.c/radio.c)
 list(REMOVE_ITEM APPS_C_SRCS ${APPS_CAMERA_C_SRCS})
 list(REMOVE_ITEM APPS_CPP_SRCS ${APPS_CAMERA_CPP_SRCS})
 list(REMOVE_ITEM APPS_CPP_SRCS ${APPS_SHARED_SRCS})
 
 idf_component_register(
-    SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS} ${APPS_SHARED_SRCS}
+    SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS} ${APPS_SHARED_SRCS} ${APPS_EXTRA_SRCS}
     INCLUDE_DIRS ${APPS_DIR}
                  ${APPS_DIR}/music_player
                  ${APPS_DIR}/sega_emulator/smsplus

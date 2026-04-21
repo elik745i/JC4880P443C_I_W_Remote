@@ -5,6 +5,9 @@ dependencies:
   espressif/esp_hosted:
     path: "../managed_components/espressif__esp_hosted"
 
+  espressif/esp_audio_codec:
+    version: ^2.4.1
+
   espressif/esp-brookesia:
     version: 0.4.*
 

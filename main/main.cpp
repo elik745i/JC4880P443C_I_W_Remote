@@ -963,6 +963,7 @@ extern "C" void app_main(void)
             .sw_rotate = false,
         }
     };
+    cfg.lvgl_port_cfg.task_affinity = 0;
     bsp_display_start_with_config(&cfg);
     bsp_display_backlight_on();
 

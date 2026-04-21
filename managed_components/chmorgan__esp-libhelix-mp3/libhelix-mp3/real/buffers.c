@@ -46,9 +46,23 @@
  **************************************************************************************/
 
 //#include "hlxclib/stdlib.h"		/* for malloc, free */ 
-#include <stdlib.h>
 #include <string.h>
+#include "esp_heap_caps.h"
 #include "coder.h"
+
+static void *helix_alloc(size_t size)
+{
+	void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+	if (ptr == NULL) {
+		ptr = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+	}
+	return ptr;
+}
+
+static void helix_free(void *ptr)
+{
+	heap_caps_free(ptr);
+}
 
 /**************************************************************************************
  * Function:    ClearBuffer
@@ -102,18 +116,18 @@ MP3DecInfo *AllocateBuffers(void)
 	IMDCTInfo *mi;
 	SubbandInfo *sbi;
 
-	mp3DecInfo = (MP3DecInfo *)malloc(sizeof(MP3DecInfo));
+	mp3DecInfo = (MP3DecInfo *)helix_alloc(sizeof(MP3DecInfo));
 	if (!mp3DecInfo)
 		return 0;
 	ClearBuffer(mp3DecInfo, sizeof(MP3DecInfo));
 	
-	fh =  (FrameHeader *)     malloc(sizeof(FrameHeader));
-	si =  (SideInfo *)        malloc(sizeof(SideInfo));
-	sfi = (ScaleFactorInfo *) malloc(sizeof(ScaleFactorInfo));
-	hi =  (HuffmanInfo *)     malloc(sizeof(HuffmanInfo));
-	di =  (DequantInfo *)     malloc(sizeof(DequantInfo));
-	mi =  (IMDCTInfo *)       malloc(sizeof(IMDCTInfo));
-	sbi = (SubbandInfo *)     malloc(sizeof(SubbandInfo));
+	fh =  (FrameHeader *)     helix_alloc(sizeof(FrameHeader));
+	si =  (SideInfo *)        helix_alloc(sizeof(SideInfo));
+	sfi = (ScaleFactorInfo *) helix_alloc(sizeof(ScaleFactorInfo));
+	hi =  (HuffmanInfo *)     helix_alloc(sizeof(HuffmanInfo));
+	di =  (DequantInfo *)     helix_alloc(sizeof(DequantInfo));
+	mi =  (IMDCTInfo *)       helix_alloc(sizeof(IMDCTInfo));
+	sbi = (SubbandInfo *)     helix_alloc(sizeof(SubbandInfo));
 
 	mp3DecInfo->FrameHeaderPS =     (void *)fh;
 	mp3DecInfo->SideInfoPS =        (void *)si;
@@ -140,7 +154,7 @@ MP3DecInfo *AllocateBuffers(void)
 	return mp3DecInfo;
 }
 
-#define SAFE_FREE(x)	{if (x)	free(x);	(x) = 0;}	/* helper macro */
+#define SAFE_FREE(x)	{if (x)	helix_free(x);	(x) = 0;}	/* helper macro */
 
 /**************************************************************************************
  * Function:    FreeBuffers

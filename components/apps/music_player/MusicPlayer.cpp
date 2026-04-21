@@ -41,8 +41,7 @@ bool MusicPlayer::run(void)
 bool MusicPlayer::pause(void)
 {
     ESP_LOGI(TAG, "pause");
-    _lv_demo_music_pause();
-
+    ESP_LOGI(TAG, "Keeping playback active while the app is minimized");
     return true;
 }
 

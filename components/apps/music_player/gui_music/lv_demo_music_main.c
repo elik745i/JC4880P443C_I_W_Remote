@@ -71,6 +71,8 @@ static void spectrum_end_cb(lv_anim_t * a);
 static void album_fade_anim_cb(void * var, int32_t v);
 static void music_player_event_cb(audio_player_cb_ctx_t *ctx);
 static void music_player_async_next_cb(void * context);
+static void music_player_async_error_cb(void * context);
+static void playback_error_msgbox_event_cb(lv_event_t * e);
 static int32_t get_cos(int32_t deg, int32_t a);
 static int32_t get_sin(int32_t deg, int32_t a);
 
@@ -107,6 +109,9 @@ static const uint16_t rnd_array[30] = {994, 285, 553, 11, 792, 707, 966, 641, 85
 static bool pause = false;
 static bool pause_exit = false;
 static bool closing = false;
+static bool suppress_idle_advance = false;
+static audio_player_callback_event_t last_failure_event = AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN;
+static lv_obj_t * playback_error_msgbox = NULL;
 
 /**********************
  *      MACROS
@@ -148,6 +153,9 @@ lv_obj_t * _lv_demo_music_main_create(lv_obj_t * parent)
     start_anim = false;
     spectrum_len = 0;
     closing = false;
+    suppress_idle_advance = false;
+    last_failure_event = AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN;
+    playback_error_msgbox = NULL;
 
 #if APP_DEMO_MUSIC_LARGE
     font_small = &lv_font_montserrat_22;
@@ -342,6 +350,7 @@ void _lv_demo_music_main_close(void)
     album_img_obj = NULL;
     slider_obj = NULL;
     play_obj = NULL;
+    playback_error_msgbox = NULL;
 }
 
 void _lv_demo_music_album_next(bool next)
@@ -620,12 +629,16 @@ static lv_obj_t * create_title_box(lv_obj_t * parent)
     lv_obj_set_style_text_font(title_label, font_large, 0);
     lv_obj_set_style_text_color(title_label, lv_color_hex(0x504d6d), 0);
     lv_label_set_text(title_label, _lv_demo_music_get_title(track_id));
+    lv_obj_set_width(title_label, lv_pct(100));
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_height(title_label, lv_font_get_line_height(font_large) * 3 / 2);
 
     artist_label = lv_label_create(cont);
     lv_obj_set_style_text_font(artist_label, font_small, 0);
     lv_obj_set_style_text_color(artist_label, lv_color_hex(0x504d6d), 0);
     lv_label_set_text(artist_label, _lv_demo_music_get_artist(track_id));
+    lv_obj_set_width(artist_label, lv_pct(100));
+    lv_label_set_long_mode(artist_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
 
     genre_label = lv_label_create(cont);
     lv_obj_set_style_text_font(genre_label, font_small, 0);
@@ -1176,7 +1189,20 @@ static void music_player_event_cb(audio_player_cb_ctx_t *ctx)
         return;
     }
 
+    if ((ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_ERROR) ||
+        (ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE)) {
+        last_failure_event = ctx->audio_event;
+        suppress_idle_advance = true;
+        lv_async_call(music_player_async_error_cb, NULL);
+        return;
+    }
+
     if ((ctx->audio_event != AUDIO_PLAYER_CALLBACK_EVENT_IDLE) || closing || pause || !playing) {
+        return;
+    }
+
+    if (suppress_idle_advance) {
+        suppress_idle_advance = false;
         return;
     }
 
@@ -1192,5 +1218,72 @@ static void music_player_async_next_cb(void * context)
     }
 
     _lv_demo_music_album_next(true);
+}
+
+static void music_player_async_error_cb(void * context)
+{
+    LV_UNUSED(context);
+
+    if (closing) {
+        return;
+    }
+
+    playing = false;
+    pause = true;
+    spectrum_i_pause = 0;
+    spectrum_i = 0;
+    if (spectrum_obj != NULL) {
+        lv_anim_del(spectrum_obj, spectrum_anim_cb);
+        lv_obj_invalidate(spectrum_obj);
+    }
+    if (album_img_obj != NULL) {
+        lv_img_set_zoom(album_img_obj, LV_IMG_ZOOM_NONE);
+    }
+    if (sec_counter_timer != NULL) {
+        lv_timer_pause(sec_counter_timer);
+    }
+    if (play_obj != NULL) {
+        lv_obj_clear_state(play_obj, LV_STATE_CHECKED);
+    }
+
+    if (playback_error_msgbox != NULL) {
+        lv_msgbox_close_async(playback_error_msgbox);
+        playback_error_msgbox = NULL;
+    }
+
+    const char *title = _lv_demo_music_get_title(track_id);
+    const char *path = music_library_get_path(track_id);
+    const char *reason = (last_failure_event == AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE)
+                             ? "Unsupported or unrecognized audio format/container."
+                             : "Decoder failed while opening or reading this file. The file may be corrupt or use an unsupported codec variant.";
+
+    char message[768];
+    snprintf(message, sizeof(message),
+             "Track: %s\n\nPath: %s\n\nReason: %s",
+             (title != NULL) ? title : "Unknown",
+             (path != NULL) ? path : "Unavailable",
+             reason);
+
+    static const char *buttons[] = {"Close", ""};
+    playback_error_msgbox = lv_msgbox_create(NULL, "Playback Failed", message, buttons, false);
+    lv_obj_set_width(playback_error_msgbox, LV_MIN(LV_HOR_RES - 24, 420));
+    lv_obj_center(playback_error_msgbox);
+    lv_obj_add_event_cb(playback_error_msgbox, playback_error_msgbox_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(playback_error_msgbox, playback_error_msgbox_event_cb, LV_EVENT_DELETE, NULL);
+}
+
+static void playback_error_msgbox_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t * msgbox = lv_event_get_current_target(e);
+
+    if (code == LV_EVENT_VALUE_CHANGED) {
+        lv_msgbox_close_async(msgbox);
+        return;
+    }
+
+    if ((code == LV_EVENT_DELETE) && (playback_error_msgbox == msgbox)) {
+        playback_error_msgbox = NULL;
+    }
 }
 #endif /*APP_DEMO_MUSIC_ENABLE*/

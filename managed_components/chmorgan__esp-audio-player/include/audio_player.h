@@ -79,6 +79,7 @@ typedef enum {
     AUDIO_PLAYER_CALLBACK_EVENT_PLAYING, /**< Player is playing */
     AUDIO_PLAYER_CALLBACK_EVENT_PAUSE, /**< Player is pausing */
     AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN, /**< Player is shutting down */
+    AUDIO_PLAYER_CALLBACK_EVENT_ERROR, /**< Playback failed after a play request */
     AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE, /**< File type is unknown */
     AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN /**< Unknown event */
 } audio_player_callback_event_t;
@@ -114,6 +115,20 @@ typedef struct {
  *    - Others: Fail
  */
 esp_err_t audio_player_play(FILE *fp);
+
+/**
+ * @brief Play an audio file with path-aware format selection.
+ *
+ * Uses the file path extension to select decoders beyond the legacy
+ * MP3/WAV probing path.
+ *
+ * @param fp If ESP_OK is returned, will be fclose()ed by the audio system.
+ * @param path Original file path used for format selection.
+ * @return
+ *    - ESP_OK: Success in queuing play request
+ *    - Others: Fail
+ */
+esp_err_t audio_player_play_file(FILE *fp, const char *path);
 
 /**
  * @brief Play a continuous MP3 stream.

@@ -1611,6 +1611,9 @@ void InternetRadio::radioAudioCallback(audio_player_cb_ctx_t *ctx)
             self->setStatusFromTask("Playback stopped");
         }
         break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_ERROR:
+        self->setStatusFromTask("Playback failed");
+        break;
     case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE:
         self->setStatusFromTask("Stream codec is unsupported");
         break;

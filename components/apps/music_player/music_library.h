@@ -38,6 +38,13 @@ typedef enum {
 	MUSIC_LIBRARY_BROWSER_ADD_STATE_FAILED,
 } music_library_browser_add_state_t;
 
+typedef enum {
+	MUSIC_LIBRARY_BROWSER_REFRESH_STATE_IDLE = 0,
+	MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING,
+	MUSIC_LIBRARY_BROWSER_REFRESH_STATE_COMPLETED,
+	MUSIC_LIBRARY_BROWSER_REFRESH_STATE_FAILED,
+} music_library_browser_refresh_state_t;
+
 bool music_library_init(void);
 void music_library_deinit(void);
 bool music_library_refresh(void);
@@ -74,11 +81,16 @@ bool music_library_browser_entry_is_available(music_library_storage_root_t root,
 bool music_library_browser_root_available(music_library_storage_root_t root);
 bool music_library_browser_navigate_up(music_library_storage_root_t root);
 bool music_library_browser_enter_directory(music_library_storage_root_t root, uint32_t entry_id);
+bool music_library_browser_refresh_async(music_library_storage_root_t root);
+bool music_library_browser_reindex_current_async(music_library_storage_root_t root);
 bool music_library_browser_add_entry(music_library_storage_root_t root, uint32_t entry_id);
 bool music_library_browser_add_entry_async(music_library_storage_root_t root, uint32_t entry_id);
 music_library_browser_add_state_t music_library_browser_add_get_state(void);
 const char *music_library_browser_add_get_status(void);
 void music_library_browser_add_reset(void);
+music_library_browser_refresh_state_t music_library_browser_refresh_get_state(void);
+const char *music_library_browser_refresh_get_status(void);
+void music_library_browser_refresh_reset(void);
 
 bool music_library_download_start(const char *url);
 music_library_download_state_t music_library_download_get_state(void);

@@ -86,12 +86,21 @@ using PsramVector = std::vector<T, PsramAllocator<T>>;
 
 constexpr const char *kSdRoot = "/sdcard";
 constexpr const char *kSpiffsRoot = BSP_SPIFFS_MOUNT_POINT;
-constexpr const char *kPlaylistFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_playlist_v2.txt";
-constexpr const char *kPlaylistTempFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_playlist_v2.tmp";
-constexpr const char *kSdIndexFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_sd_index_v2.txt";
-constexpr const char *kSdIndexTempFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_sd_index_v2.tmp";
+constexpr const char *kMusicStateDir = "/sdcard/.jc4880_music";
+constexpr const char *kPlaylistFilePath = "/sdcard/.jc4880_music/playlist_v2.txt";
+constexpr const char *kPlaylistTempFilePath = "/sdcard/.jc4880_music/playlist_v2.tmp";
+constexpr const char *kLegacyPlaylistFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_playlist_v2.txt";
+constexpr const char *kLegacyPlaylistTempFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_playlist_v2.tmp";
+constexpr const char *kSdIndexFilePath = "/sdcard/.jc4880_music/sd_index_v2.txt";
+constexpr const char *kSdIndexTempFilePath = "/sdcard/.jc4880_music/sd_index_v2.tmp";
+constexpr const char *kLegacySdIndexFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_sd_index_v2.txt";
+constexpr const char *kLegacySdIndexTempFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_music_sd_index_v2.tmp";
+constexpr const char *kFolderPlaylistFileName = ".jc4880_music_folder_playlist_v2.txt";
+constexpr const char *kFolderPlaylistTempFileName = ".jc4880_music_folder_playlist_v2.tmp";
 constexpr const char *kPlaylistMagic = "JC4880_PLAYLIST_V2";
 constexpr const char *kIndexMagic = "JC4880_SD_INDEX_V2";
+constexpr const char *kFolderPlaylistMagic = "JC4880_FOLDER_PLAYLIST_V2";
+constexpr const char *kExternalIndexFileName = ".index";
 constexpr const char *kDownloadDir = "/sdcard/Downloads/Music";
 
 struct LibrarySignature {
@@ -130,12 +139,27 @@ struct BrowserAddRequest {
     MusicString path;
     MusicString name;
     bool isDirectory;
+    bool forceRebuild;
 };
+
+struct BrowserRefreshRequest {
+    music_library_storage_root_t root;
+    MusicString path;
+    bool reindexFolder;
+};
+
+struct StatusProgressContext {
+    const char *prefix;
+    bool useBrowserAddStatus;
+    uint32_t lastReported;
+};
+
+using ScanProgressCallback = void (*)(uint32_t scannedFiles, uint32_t trackCount, void *context);
 
 static const char *TAG = "music_library";
 static const char *kEmptyTitle = "Playlist is empty";
 static const char *kEmptyArtist = "Use Playlist to add files, folders, or a download URL";
-static const char *kEmptyGenre = "MP3, MPGA, WAV";
+static const char *kEmptyGenre = "MP3, AAC, M4A, FLAC, WAV";
 
 static PsramVector<TrackInfo> s_tracks;
 static PsramVector<TrackInfo> s_sdIndexTracks;
@@ -149,9 +173,11 @@ static std::atomic<uint32_t> s_indexScannedFiles{0};
 static std::atomic<uint32_t> s_indexedTrackCount{0};
 static std::atomic<bool> s_hasCachedIndex{false};
 static std::atomic<music_library_browser_add_state_t> s_browserAddState{MUSIC_LIBRARY_BROWSER_ADD_STATE_IDLE};
+static std::atomic<music_library_browser_refresh_state_t> s_browserRefreshState{MUSIC_LIBRARY_BROWSER_REFRESH_STATE_IDLE};
 static std::atomic<music_library_download_state_t> s_downloadState{MUSIC_LIBRARY_DOWNLOAD_STATE_IDLE};
 static std::atomic<int32_t> s_downloadProgress{-1};
 static char s_browserAddStatus[192] = "Idle";
+static char s_browserRefreshStatus[192] = "Idle";
 static char s_downloadStatus[192] = "Idle";
 
 bool ensure_music_audio_ready();
@@ -167,17 +193,32 @@ MusicString make_genre_label(const MusicString &path, music_library_storage_root
 MusicString trim_ascii_whitespace(const MusicString &value);
 MusicString escape_index_field(const MusicString &value);
 PsramVector<MusicString> split_index_line(const MusicString &line);
+PsramVector<MusicString> split_external_index_csv_line(const MusicString &line);
+MusicString folder_playlist_cache_path(const MusicString &directoryPath, bool tempFile);
 bool parse_track_line(const MusicString &line, TrackInfo &track);
 bool save_track_file(const char *filePath, const char *tempPath, const char *magic, const PsramVector<TrackInfo> &tracks,
                      const LibrarySignature *signature);
 bool load_track_file(const char *filePath, const char *magic, PsramVector<TrackInfo> &tracks, LibrarySignature *signature);
+bool prefer_sd_metadata_storage(bool allowMount);
+bool load_track_file_prefer_sd(const char *sdFilePath, const char *sdTempPath, const char *legacyFilePath,
+                               const char *legacyTempPath, const char *magic, PsramVector<TrackInfo> &tracks,
+                               LibrarySignature *signature);
+bool save_track_file_prefer_sd(const char *sdFilePath, const char *sdTempPath, const char *legacyFilePath,
+                               const char *legacyTempPath, const char *magic, const PsramVector<TrackInfo> &tracks,
+                               const LibrarySignature *signature);
+bool load_external_index_tracks_for_directory(const MusicString &directoryPath, music_library_storage_root_t root,
+                                              PsramVector<TrackInfo> &tracks);
+bool folder_playlist_cache_exists(const MusicString &directoryPath);
+bool load_folder_playlist_cache(const MusicString &directoryPath, PsramVector<TrackInfo> &tracks);
+bool save_folder_playlist_cache(const MusicString &directoryPath, const PsramVector<TrackInfo> &tracks);
 void init_signature(LibrarySignature &signature);
 void mix_signature_u64(LibrarySignature &signature, uint64_t value);
 void update_signature_for_track(LibrarySignature &signature, const MusicString &path, const struct stat &st);
 bool parse_signature_line(const MusicString &line, LibrarySignature &signature);
 bool signatures_match(const LibrarySignature &left, const LibrarySignature &right);
 void scan_directory_recursive(const MusicString &path, music_library_storage_root_t root, PsramVector<TrackInfo> &tracks,
-                              LibrarySignature *signature, bool reportProgress);
+                              LibrarySignature *signature, bool reportProgress, ScanProgressCallback progressCallback,
+                              void *progressContext);
 bool refresh_sd_index_cache(bool forceRebuild);
 bool load_playlist();
 bool save_playlist();
@@ -185,17 +226,26 @@ bool playlist_contains_path(const MusicString &path);
 bool build_track_from_path(const MusicString &path, music_library_storage_root_t root, TrackInfo &track);
 bool add_track_to_playlist(const TrackInfo &track, bool persist);
 bool add_path_to_playlist(const MusicString &path, music_library_storage_root_t root, bool persist);
-bool add_folder_to_playlist(const MusicString &path, music_library_storage_root_t root);
+bool append_tracks_to_playlist(const PsramVector<TrackInfo> &candidates, uint32_t *processedCount, uint32_t *addedCount,
+                               uint32_t *duplicateCount, uint32_t *missingCount);
+bool collect_folder_tracks(const MusicString &path, music_library_storage_root_t root, bool forceRebuild,
+                           PsramVector<TrackInfo> &candidates, bool *usedCache, ScanProgressCallback progressCallback,
+                           void *progressContext);
+bool add_folder_to_playlist(const MusicString &path, music_library_storage_root_t root, bool forceRebuild);
+bool rebuild_folder_playlist_cache(const MusicString &path, music_library_storage_root_t root);
 bool refresh_browser(BrowserState &state);
 bool is_path_directory(const MusicString &path);
 MusicString format_size(uint64_t size);
 bool ensure_directory_exists(const MusicString &path);
 void set_last_message(const MusicString &message);
 void set_browser_add_status(const MusicString &message);
+void set_browser_refresh_status(const MusicString &message);
 void set_download_status(const MusicString &message);
+void folder_scan_progress_cb(uint32_t scannedFiles, uint32_t trackCount, void *context);
 void fill_track_metadata(TrackInfo &track);
 void music_library_index_task(void *context);
 void music_library_browser_add_task(void *context);
+void music_library_browser_refresh_task(void *context);
 void music_library_download_task(void *context);
 
 bool ensure_music_audio_ready()
@@ -271,7 +321,7 @@ bool ensure_root_available(music_library_storage_root_t root, bool allowMount)
 
 bool is_supported_extension(const MusicString &path)
 {
-    static const char *extensions[] = {".mp3", ".mpga", ".wav", ".wave"};
+    static const char *extensions[] = {".mp3", ".mpga", ".aac", ".flac", ".m4a", ".mp4", ".wav", ".wave"};
     const size_t dot = path.find_last_of('.');
     if (dot == MusicString::npos) {
         return false;
@@ -415,6 +465,33 @@ PsramVector<MusicString> split_index_line(const MusicString &line)
     }
     fields.push_back(current);
     return fields;
+}
+
+PsramVector<MusicString> split_external_index_csv_line(const MusicString &line)
+{
+    PsramVector<MusicString> fields;
+    MusicString current;
+    current.reserve(line.size());
+
+    for (char ch : line) {
+        if (ch == ',') {
+            fields.push_back(trim_ascii_whitespace(current));
+            current.clear();
+            continue;
+        }
+
+        if (ch != '\r' && ch != '\n') {
+            current.push_back(ch);
+        }
+    }
+
+    fields.push_back(trim_ascii_whitespace(current));
+    return fields;
+}
+
+MusicString folder_playlist_cache_path(const MusicString &directoryPath, bool tempFile)
+{
+    return directoryPath + "/" + (tempFile ? kFolderPlaylistTempFileName : kFolderPlaylistFileName);
 }
 
 bool parse_track_line(const MusicString &line, TrackInfo &track)
@@ -595,6 +672,119 @@ bool load_track_file(const char *filePath, const char *magic, PsramVector<TrackI
     return true;
 }
 
+bool prefer_sd_metadata_storage(bool allowMount)
+{
+    const bool sdAvailable = allowMount ? app_storage_ensure_sdcard_available() : app_storage_is_sdcard_mounted();
+    return sdAvailable && ensure_directory_exists(kMusicStateDir);
+}
+
+bool load_track_file_prefer_sd(const char *sdFilePath, const char *sdTempPath, const char *legacyFilePath,
+                               const char *legacyTempPath, const char *magic, PsramVector<TrackInfo> &tracks,
+                               LibrarySignature *signature)
+{
+    if (prefer_sd_metadata_storage(true)) {
+        if (load_track_file(sdFilePath, magic, tracks, signature)) {
+            return true;
+        }
+
+        if (load_track_file(legacyFilePath, magic, tracks, signature)) {
+            if (save_track_file(sdFilePath, sdTempPath, magic, tracks, signature)) {
+                std::remove(legacyFilePath);
+                std::remove(legacyTempPath);
+                ESP_LOGI(TAG, "Migrated %s from SPIFFS to SD card", magic);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    return load_track_file(legacyFilePath, magic, tracks, signature);
+}
+
+bool save_track_file_prefer_sd(const char *sdFilePath, const char *sdTempPath, const char *legacyFilePath,
+                               const char *legacyTempPath, const char *magic, const PsramVector<TrackInfo> &tracks,
+                               const LibrarySignature *signature)
+{
+    if (prefer_sd_metadata_storage(true)) {
+        if (save_track_file(sdFilePath, sdTempPath, magic, tracks, signature)) {
+            std::remove(legacyFilePath);
+            std::remove(legacyTempPath);
+            return true;
+        }
+
+        ESP_LOGW(TAG, "Failed to save %s on SD card, falling back to SPIFFS", magic);
+    }
+
+    return save_track_file(legacyFilePath, legacyTempPath, magic, tracks, signature);
+}
+
+bool load_external_index_tracks_for_directory(const MusicString &directoryPath, music_library_storage_root_t root,
+                                              PsramVector<TrackInfo> &tracks)
+{
+    tracks.clear();
+
+    const MusicString indexPath = directoryPath + "/" + kExternalIndexFileName;
+    FILE *file = std::fopen(indexPath.c_str(), "rb");
+    if (file == nullptr) {
+        return false;
+    }
+
+    char line[2048] = {};
+    while (std::fgets(line, sizeof(line), file) != nullptr) {
+        const MusicString entryLine = trim_ascii_whitespace(line);
+        if (entryLine.empty()) {
+            continue;
+        }
+
+        const PsramVector<MusicString> fields = split_external_index_csv_line(entryLine);
+        if (fields.empty()) {
+            continue;
+        }
+
+        const MusicString fileName = trim_ascii_whitespace(fields[0]);
+        if (fileName.empty() || (fileName == kExternalIndexFileName)) {
+            continue;
+        }
+
+        const MusicString fullPath = directoryPath + "/" + fileName;
+        struct stat st = {};
+        if ((stat(fullPath.c_str(), &st) != 0) || S_ISDIR(st.st_mode) || !is_supported_extension(fullPath)) {
+            continue;
+        }
+
+        TrackInfo track = {};
+        track.path = fullPath;
+        track.title = trim_extension(fileName);
+        track.artist = make_parent_label(fullPath);
+        track.genre = make_genre_label(fullPath, root);
+        track.durationSeconds = 180;
+        tracks.push_back(std::move(track));
+    }
+
+    std::fclose(file);
+    return !tracks.empty();
+}
+
+bool folder_playlist_cache_exists(const MusicString &directoryPath)
+{
+    const MusicString cachePath = folder_playlist_cache_path(directoryPath, false);
+    return access(cachePath.c_str(), F_OK) == 0;
+}
+
+bool load_folder_playlist_cache(const MusicString &directoryPath, PsramVector<TrackInfo> &tracks)
+{
+    const MusicString cachePath = folder_playlist_cache_path(directoryPath, false);
+    return load_track_file(cachePath.c_str(), kFolderPlaylistMagic, tracks, nullptr);
+}
+
+bool save_folder_playlist_cache(const MusicString &directoryPath, const PsramVector<TrackInfo> &tracks)
+{
+    const MusicString cachePath = folder_playlist_cache_path(directoryPath, false);
+    const MusicString tempPath = folder_playlist_cache_path(directoryPath, true);
+    return save_track_file(cachePath.c_str(), tempPath.c_str(), kFolderPlaylistMagic, tracks, nullptr);
+}
+
 bool is_path_directory(const MusicString &path)
 {
     struct stat st = {};
@@ -625,18 +815,80 @@ void set_browser_add_status(const MusicString &message)
     std::snprintf(s_browserAddStatus, sizeof(s_browserAddStatus), "%s", message.c_str());
 }
 
+void set_browser_refresh_status(const MusicString &message)
+{
+    std::snprintf(s_browserRefreshStatus, sizeof(s_browserRefreshStatus), "%s", message.c_str());
+}
+
 void set_download_status(const MusicString &message)
 {
     std::snprintf(s_downloadStatus, sizeof(s_downloadStatus), "%s", message.c_str());
 }
 
+void folder_scan_progress_cb(uint32_t scannedFiles, uint32_t trackCount, void *context)
+{
+    StatusProgressContext *statusContext = static_cast<StatusProgressContext *>(context);
+    if (statusContext == nullptr) {
+        return;
+    }
+    if ((scannedFiles != 0) && (scannedFiles == statusContext->lastReported)) {
+        return;
+    }
+    if ((scannedFiles != 0) && (statusContext->lastReported != 0) && ((scannedFiles - statusContext->lastReported) < 8)) {
+        return;
+    }
+
+    statusContext->lastReported = scannedFiles;
+    char message[160] = {};
+    std::snprintf(message,
+                  sizeof(message),
+                  "%s %lu files, %lu tracks",
+                  statusContext->prefix,
+                  static_cast<unsigned long>(scannedFiles),
+                  static_cast<unsigned long>(trackCount));
+    if (statusContext->useBrowserAddStatus) {
+        set_browser_add_status(message);
+    } else {
+        set_browser_refresh_status(message);
+    }
+}
+
 void scan_directory_recursive(const MusicString &path, music_library_storage_root_t root, PsramVector<TrackInfo> &tracks,
-                              LibrarySignature *signature, bool reportProgress)
+                              LibrarySignature *signature, bool reportProgress, ScanProgressCallback progressCallback,
+                              void *progressContext)
 {
     PsramVector<MusicString> pendingDirs = {path};
     while (!pendingDirs.empty()) {
         const MusicString current = pendingDirs.back();
         pendingDirs.pop_back();
+
+        PsramVector<TrackInfo> indexedTracks;
+        const bool hasExternalIndex = load_external_index_tracks_for_directory(current, root, indexedTracks);
+        if (hasExternalIndex) {
+            for (const TrackInfo &indexedTrack : indexedTracks) {
+                struct stat st = {};
+                if (stat(indexedTrack.path.c_str(), &st) != 0) {
+                    continue;
+                }
+
+                if (reportProgress) {
+                    s_indexScannedFiles.fetch_add(1);
+                }
+                if (signature != nullptr) {
+                    update_signature_for_track(*signature, indexedTrack.path, st);
+                }
+
+                tracks.push_back(indexedTrack);
+                if (reportProgress) {
+                    s_indexedTrackCount.store(static_cast<uint32_t>(tracks.size()));
+                }
+                if (progressCallback != nullptr) {
+                    progressCallback(reportProgress ? s_indexScannedFiles.load() : static_cast<uint32_t>(tracks.size()),
+                                     static_cast<uint32_t>(tracks.size()),
+                                     progressContext);
+                }
+            }
+        }
 
         DIR *dir = opendir(current.c_str());
         if (dir == nullptr) {
@@ -648,6 +900,9 @@ void scan_directory_recursive(const MusicString &path, music_library_storage_roo
             if ((std::strcmp(entry->d_name, ".") == 0) || (std::strcmp(entry->d_name, "..") == 0)) {
                 continue;
             }
+            if (std::strcmp(entry->d_name, kExternalIndexFileName) == 0) {
+                continue;
+            }
 
             const MusicString childPath = current + "/" + entry->d_name;
             struct stat st = {};
@@ -657,6 +912,10 @@ void scan_directory_recursive(const MusicString &path, music_library_storage_roo
 
             if (S_ISDIR(st.st_mode)) {
                 pendingDirs.push_back(childPath);
+                continue;
+            }
+
+            if (hasExternalIndex && is_supported_extension(childPath)) {
                 continue;
             }
 
@@ -682,6 +941,11 @@ void scan_directory_recursive(const MusicString &path, music_library_storage_roo
             if (reportProgress) {
                 s_indexedTrackCount.store(static_cast<uint32_t>(tracks.size()));
             }
+            if (progressCallback != nullptr) {
+                progressCallback(reportProgress ? s_indexScannedFiles.load() : static_cast<uint32_t>(tracks.size()),
+                                 static_cast<uint32_t>(tracks.size()),
+                                 progressContext);
+            }
         }
         closedir(dir);
     }
@@ -703,13 +967,19 @@ bool refresh_sd_index_cache(bool forceRebuild)
     LibrarySignature cachedSignature = {};
     bool loaded = false;
     if (!forceRebuild) {
-        loaded = load_track_file(kSdIndexFilePath, kIndexMagic, cachedTracks, &cachedSignature);
+        loaded = load_track_file_prefer_sd(kSdIndexFilePath,
+                                           kSdIndexTempFilePath,
+                                           kLegacySdIndexFilePath,
+                                           kLegacySdIndexTempFilePath,
+                                           kIndexMagic,
+                                           cachedTracks,
+                                           &cachedSignature);
     }
 
     LibrarySignature currentSignature = {};
     init_signature(currentSignature);
     PsramVector<TrackInfo> signatureTracks;
-    scan_directory_recursive(kSdRoot, MUSIC_LIBRARY_STORAGE_SD, signatureTracks, &currentSignature, false);
+    scan_directory_recursive(kSdRoot, MUSIC_LIBRARY_STORAGE_SD, signatureTracks, &currentSignature, false, nullptr, nullptr);
 
     if (loaded && signatures_match(cachedSignature, currentSignature)) {
         s_sdIndexTracks = std::move(cachedTracks);
@@ -717,7 +987,13 @@ bool refresh_sd_index_cache(bool forceRebuild)
         return true;
     }
 
-    if (!save_track_file(kSdIndexFilePath, kSdIndexTempFilePath, kIndexMagic, signatureTracks, &currentSignature)) {
+    if (!save_track_file_prefer_sd(kSdIndexFilePath,
+                                   kSdIndexTempFilePath,
+                                   kLegacySdIndexFilePath,
+                                   kLegacySdIndexTempFilePath,
+                                   kIndexMagic,
+                                   signatureTracks,
+                                   &currentSignature)) {
         s_hasCachedIndex.store(false);
         return false;
     }
@@ -730,7 +1006,13 @@ bool refresh_sd_index_cache(bool forceRebuild)
 bool load_playlist()
 {
     PsramVector<TrackInfo> tracks;
-    if (!load_track_file(kPlaylistFilePath, kPlaylistMagic, tracks, nullptr)) {
+    if (!load_track_file_prefer_sd(kPlaylistFilePath,
+                                   kPlaylistTempFilePath,
+                                   kLegacyPlaylistFilePath,
+                                   kLegacyPlaylistTempFilePath,
+                                   kPlaylistMagic,
+                                   tracks,
+                                   nullptr)) {
         s_tracks.clear();
         s_currentIndex = 0;
         return false;
@@ -745,7 +1027,13 @@ bool load_playlist()
 
 bool save_playlist()
 {
-    return save_track_file(kPlaylistFilePath, kPlaylistTempFilePath, kPlaylistMagic, s_tracks, nullptr);
+    return save_track_file_prefer_sd(kPlaylistFilePath,
+                                     kPlaylistTempFilePath,
+                                     kLegacyPlaylistFilePath,
+                                     kLegacyPlaylistTempFilePath,
+                                     kPlaylistMagic,
+                                     s_tracks,
+                                     nullptr);
 }
 
 bool playlist_contains_path(const MusicString &path)
@@ -826,51 +1114,150 @@ bool add_path_to_playlist(const MusicString &path, music_library_storage_root_t 
     return add_track_to_playlist(track, persist);
 }
 
-bool add_folder_to_playlist(const MusicString &path, music_library_storage_root_t root)
+bool append_tracks_to_playlist(const PsramVector<TrackInfo> &candidates, uint32_t *processedCount, uint32_t *addedCount,
+                               uint32_t *duplicateCount, uint32_t *missingCount)
 {
-    PsramVector<TrackInfo> candidates;
-    if (root == MUSIC_LIBRARY_STORAGE_SD) {
-        if (!refresh_sd_index_cache(false)) {
-            return false;
+    const size_t originalSize = s_tracks.size();
+    uint32_t localProcessed = 0;
+    uint32_t localAdded = 0;
+    uint32_t localDuplicates = 0;
+    uint32_t localMissing = 0;
+
+    for (const TrackInfo &track : candidates) {
+        localProcessed++;
+        if (access(track.path.c_str(), F_OK) != 0) {
+            localMissing++;
+            continue;
+        }
+        if (playlist_contains_path(track.path)) {
+            localDuplicates++;
+            continue;
         }
 
-        const MusicString prefix = path.back() == '/' ? path : (path + "/");
-        for (const TrackInfo &track : s_sdIndexTracks) {
-            if ((track.path == path) || (track.path.rfind(prefix, 0) == 0)) {
-                candidates.push_back(track);
-            }
+        s_tracks.push_back(track);
+        localAdded++;
+
+        if ((localProcessed == 1) || ((localProcessed % 8) == 0) || (localProcessed == candidates.size())) {
+            char status[160] = {};
+            std::snprintf(status,
+                          sizeof(status),
+                          "Adding folder to playlist... %lu/%lu processed",
+                          static_cast<unsigned long>(localProcessed),
+                          static_cast<unsigned long>(candidates.size()));
+            set_browser_add_status(status);
         }
-    } else {
-        scan_directory_recursive(path, root, candidates, nullptr, false);
     }
 
+    if ((localAdded == 0) || !save_playlist()) {
+        s_tracks.resize(originalSize);
+        return false;
+    }
+
+    if ((originalSize == 0) && !s_tracks.empty()) {
+        s_currentIndex = 0;
+    }
+
+    if (processedCount != nullptr) {
+        *processedCount = localProcessed;
+    }
+    if (addedCount != nullptr) {
+        *addedCount = localAdded;
+    }
+    if (duplicateCount != nullptr) {
+        *duplicateCount = localDuplicates;
+    }
+    if (missingCount != nullptr) {
+        *missingCount = localMissing;
+    }
+    return true;
+}
+
+bool collect_folder_tracks(const MusicString &path, music_library_storage_root_t root, bool forceRebuild,
+                           PsramVector<TrackInfo> &candidates, bool *usedCache, ScanProgressCallback progressCallback,
+                           void *progressContext)
+{
+    candidates.clear();
+    if (usedCache != nullptr) {
+        *usedCache = false;
+    }
+
+    if (!forceRebuild && load_folder_playlist_cache(path, candidates)) {
+        if (usedCache != nullptr) {
+            *usedCache = true;
+        }
+        return !candidates.empty();
+    }
+
+    scan_directory_recursive(path, root, candidates, nullptr, false, progressCallback, progressContext);
     if (candidates.empty()) {
         return false;
     }
 
-    uint32_t addedCount = 0;
-    uint32_t duplicateCount = 0;
-    for (const TrackInfo &track : candidates) {
-        if (playlist_contains_path(track.path)) {
-            duplicateCount++;
-            continue;
-        }
-        s_tracks.push_back(track);
-        addedCount++;
+    (void)save_folder_playlist_cache(path, candidates);
+    return true;
+}
+
+bool add_folder_to_playlist(const MusicString &path, music_library_storage_root_t root, bool forceRebuild)
+{
+    PsramVector<TrackInfo> candidates;
+    bool usedCache = false;
+    StatusProgressContext progressContext = {"Indexing folder...", true, 0};
+
+    if (!collect_folder_tracks(path, root, forceRebuild, candidates, &usedCache, folder_scan_progress_cb, &progressContext)) {
+        return false;
     }
 
-    if ((addedCount == 0) || !save_playlist()) {
-        if (addedCount > 0) {
-            s_tracks.resize(s_tracks.size() - addedCount);
-        }
+    if (usedCache) {
+        char cachedStatus[160] = {};
+        std::snprintf(cachedStatus,
+                      sizeof(cachedStatus),
+                      "Loaded cached folder playlist with %lu files",
+                      static_cast<unsigned long>(candidates.size()));
+        set_browser_add_status(cachedStatus);
+    }
+
+    uint32_t processedCount = 0;
+    uint32_t addedCount = 0;
+    uint32_t duplicateCount = 0;
+    uint32_t missingCount = 0;
+    if (!append_tracks_to_playlist(candidates, &processedCount, &addedCount, &duplicateCount, &missingCount)) {
         return false;
     }
 
     char message[160] = {};
-    std::snprintf(message, sizeof(message), "Added %lu tracks from folder%s",
+    std::snprintf(message,
+                  sizeof(message),
+                  "%s %lu tracks from folder (%lu processed%s%s)",
+                  usedCache ? "Loaded" : "Added",
                   static_cast<unsigned long>(addedCount),
-                  (duplicateCount > 0) ? " (duplicates skipped)" : "");
+                  static_cast<unsigned long>(processedCount),
+                  (duplicateCount > 0) ? ", duplicates skipped" : "",
+                  (missingCount > 0) ? ", missing files skipped" : "");
     set_last_message(message);
+    return true;
+}
+
+bool rebuild_folder_playlist_cache(const MusicString &path, music_library_storage_root_t root)
+{
+    PsramVector<TrackInfo> candidates;
+    StatusProgressContext progressContext = {"Reindexing folder...", false, 0};
+    scan_directory_recursive(path, root, candidates, nullptr, false, folder_scan_progress_cb, &progressContext);
+    if (candidates.empty()) {
+        set_browser_refresh_status("No supported files found in this folder");
+        return false;
+    }
+    if (!save_folder_playlist_cache(path, candidates)) {
+        set_browser_refresh_status("Folder scan finished but saving the cached playlist failed");
+        return false;
+    }
+
+    char message[160] = {};
+    std::snprintf(message,
+                  sizeof(message),
+                  "Reindexed folder playlist with %lu files",
+                  static_cast<unsigned long>(candidates.size()));
+    set_last_message(message);
+    set_browser_refresh_status(message);
     return true;
 }
 
@@ -892,9 +1279,17 @@ bool refresh_browser(BrowserState &state)
         return false;
     }
 
+    PsramVector<TrackInfo> indexedTracks;
+    const bool hasExternalIndex = load_external_index_tracks_for_directory(state.currentPath, state.root, indexedTracks);
+
     struct dirent *entry = nullptr;
     while ((entry = readdir(dir)) != nullptr) {
         if ((std::strcmp(entry->d_name, ".") == 0) || (std::strcmp(entry->d_name, "..") == 0)) {
+            continue;
+        }
+        if ((std::strcmp(entry->d_name, kExternalIndexFileName) == 0) ||
+            (std::strcmp(entry->d_name, kFolderPlaylistFileName) == 0) ||
+            (std::strcmp(entry->d_name, kFolderPlaylistTempFileName) == 0)) {
             continue;
         }
 
@@ -909,8 +1304,13 @@ bool refresh_browser(BrowserState &state)
 
         browserEntry.isDirectory = S_ISDIR(st.st_mode);
         browserEntry.supported = !browserEntry.isDirectory && is_supported_extension(browserEntry.path);
+        if (hasExternalIndex && browserEntry.supported) {
+            continue;
+        }
         browserEntry.canAdd = (s_browserMode == MUSIC_LIBRARY_BROWSER_MODE_FILE) ? browserEntry.supported : browserEntry.isDirectory;
-        browserEntry.meta = browserEntry.isDirectory ? "Folder" : format_size(static_cast<uint64_t>(st.st_size));
+        browserEntry.meta = browserEntry.isDirectory
+                                ? (folder_playlist_cache_exists(browserEntry.path) ? "Folder playlist cached" : "Folder")
+                                : format_size(static_cast<uint64_t>(st.st_size));
 
         if ((s_browserMode == MUSIC_LIBRARY_BROWSER_MODE_FILE) && !browserEntry.isDirectory && !browserEntry.supported) {
             continue;
@@ -922,6 +1322,24 @@ bool refresh_browser(BrowserState &state)
         state.entries.push_back(std::move(browserEntry));
     }
     closedir(dir);
+
+    if (hasExternalIndex) {
+        for (const TrackInfo &track : indexedTracks) {
+            struct stat st = {};
+            if (stat(track.path.c_str(), &st) != 0) {
+                continue;
+            }
+
+            BrowserEntry browserEntry = {};
+            browserEntry.name = filename_from_path(track.path);
+            browserEntry.path = track.path;
+            browserEntry.meta = format_size(static_cast<uint64_t>(st.st_size));
+            browserEntry.isDirectory = false;
+            browserEntry.supported = true;
+            browserEntry.canAdd = (s_browserMode == MUSIC_LIBRARY_BROWSER_MODE_FILE);
+            state.entries.push_back(std::move(browserEntry));
+        }
+    }
 
     std::sort(state.entries.begin(), state.entries.end(), [](const BrowserEntry &left, const BrowserEntry &right) {
         if (left.isDirectory != right.isDirectory) {
@@ -993,8 +1411,14 @@ void music_library_index_task(void *context)
     if (ensure_root_available(MUSIC_LIBRARY_STORAGE_SD, true)) {
         s_indexScannedFiles.store(0);
         s_indexedTrackCount.store(0);
-        scan_directory_recursive(kSdRoot, MUSIC_LIBRARY_STORAGE_SD, tracks, &signature, true);
-        success = save_track_file(kSdIndexFilePath, kSdIndexTempFilePath, kIndexMagic, tracks, &signature);
+        scan_directory_recursive(kSdRoot, MUSIC_LIBRARY_STORAGE_SD, tracks, &signature, true, nullptr, nullptr);
+        success = save_track_file_prefer_sd(kSdIndexFilePath,
+                            kSdIndexTempFilePath,
+                            kLegacySdIndexFilePath,
+                            kLegacySdIndexTempFilePath,
+                            kIndexMagic,
+                            tracks,
+                            &signature);
     }
 
     if (success) {
@@ -1023,13 +1447,14 @@ void music_library_browser_add_task(void *context)
     const MusicString path = request->path;
     const MusicString name = request->name;
     const bool isDirectory = request->isDirectory;
+    const bool forceRebuild = request->forceRebuild;
     delete request;
 
     bool success = false;
     if (isDirectory) {
-        success = add_folder_to_playlist(path, root);
+        success = add_folder_to_playlist(path, root, forceRebuild);
         if (!success) {
-            set_last_message("No supported files found in that folder");
+            set_last_message(forceRebuild ? "Folder reindex failed or no supported files were found" : "No supported files found in that folder");
         }
     } else {
         success = add_path_to_playlist(path, root, true);
@@ -1042,6 +1467,53 @@ void music_library_browser_add_task(void *context)
 
     set_browser_add_status(s_lastMessage);
     s_browserAddState.store(success ? MUSIC_LIBRARY_BROWSER_ADD_STATE_COMPLETED : MUSIC_LIBRARY_BROWSER_ADD_STATE_FAILED);
+    vTaskDeleteWithCaps(nullptr);
+}
+
+void music_library_browser_refresh_task(void *context)
+{
+    BrowserRefreshRequest *request = static_cast<BrowserRefreshRequest *>(context);
+    if (request == nullptr) {
+        set_browser_refresh_status("Failed to start browser refresh");
+        s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_FAILED);
+        vTaskDeleteWithCaps(nullptr);
+        return;
+    }
+
+    const music_library_storage_root_t root = request->root;
+    const MusicString path = request->path;
+    const bool reindexFolder = request->reindexFolder;
+    delete request;
+
+    bool success = false;
+    if (reindexFolder) {
+        success = rebuild_folder_playlist_cache(path, root);
+        if (success) {
+            BrowserState refreshedState = browser_state(root);
+            refreshedState.currentPath = path;
+            success = refresh_browser(refreshedState);
+            browser_state(root) = std::move(refreshedState);
+        }
+    } else {
+        BrowserState refreshedState = browser_state(root);
+        refreshedState.currentPath = path;
+        set_browser_refresh_status(MusicString("Loading ") + root_label(root) + "...");
+        success = refresh_browser(refreshedState);
+        browser_state(root) = std::move(refreshedState);
+        if (success) {
+            char message[160] = {};
+            std::snprintf(message,
+                          sizeof(message),
+                          "Loaded %lu items from %s",
+                          static_cast<unsigned long>(browser_state(root).entries.size()),
+                          root_label(root));
+            set_browser_refresh_status(message);
+        } else {
+            set_browser_refresh_status(MusicString(root_label(root)) + " is unavailable");
+        }
+    }
+
+    s_browserRefreshState.store(success ? MUSIC_LIBRARY_BROWSER_REFRESH_STATE_COMPLETED : MUSIC_LIBRARY_BROWSER_REFRESH_STATE_FAILED);
     vTaskDeleteWithCaps(nullptr);
 }
 
@@ -1060,7 +1532,7 @@ void music_library_download_task(void *context)
 
     const MusicString filename = infer_filename_from_url(url);
     if (filename.empty() || !is_supported_extension(filename)) {
-        set_download_status("URL must end with .mp3, .mpga, .wav, or .wave.");
+        set_download_status("URL must end with .mp3, .mpga, .aac, .flac, .m4a, .mp4, .wav, or .wave.");
         s_downloadState.store(MUSIC_LIBRARY_DOWNLOAD_STATE_FAILED);
         vTaskDeleteWithCaps(nullptr);
         return;
@@ -1226,6 +1698,8 @@ extern "C" bool music_library_init(void)
     s_browserMode = MUSIC_LIBRARY_BROWSER_MODE_FILE;
     s_browserAddState.store(MUSIC_LIBRARY_BROWSER_ADD_STATE_IDLE);
     set_browser_add_status("Idle");
+    s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_IDLE);
+    set_browser_refresh_status("Idle");
     s_downloadState.store(MUSIC_LIBRARY_DOWNLOAD_STATE_IDLE);
     s_downloadProgress.store(-1);
     set_download_status("Idle");
@@ -1261,6 +1735,8 @@ extern "C" void music_library_deinit(void)
     s_indexedTrackCount.store(0);
     s_browserAddState.store(MUSIC_LIBRARY_BROWSER_ADD_STATE_IDLE);
     set_browser_add_status("Idle");
+    s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_IDLE);
+    set_browser_refresh_status("Idle");
     s_downloadState.store(MUSIC_LIBRARY_DOWNLOAD_STATE_IDLE);
     s_downloadProgress.store(-1);
     set_download_status("Idle");
@@ -1315,7 +1791,13 @@ extern "C" bool music_library_finalize_index(void)
 
     PsramVector<TrackInfo> tracks;
     LibrarySignature signature = {};
-    if (!load_track_file(kSdIndexFilePath, kIndexMagic, tracks, &signature)) {
+    if (!load_track_file_prefer_sd(kSdIndexFilePath,
+                                   kSdIndexTempFilePath,
+                                   kLegacySdIndexFilePath,
+                                   kLegacySdIndexTempFilePath,
+                                   kIndexMagic,
+                                   tracks,
+                                   &signature)) {
         s_indexState.store(MUSIC_LIBRARY_INDEX_STATE_FAILED);
         return false;
     }
@@ -1454,12 +1936,13 @@ extern "C" bool music_library_browser_open(music_library_browser_mode_t mode)
 {
     s_browserMode = mode;
     s_sdBrowser.currentPath = kSdRoot;
+    s_sdBrowser.entries.clear();
+    s_sdBrowser.available = false;
     s_spiffsBrowser.currentPath = kSpiffsRoot;
-
-    const bool sdReady = refresh_browser(s_sdBrowser);
-    const bool spiffsReady = refresh_browser(s_spiffsBrowser);
+    s_spiffsBrowser.entries.clear();
+    s_spiffsBrowser.available = false;
     set_last_message((mode == MUSIC_LIBRARY_BROWSER_MODE_FILE) ? "Select a file to add" : "Select a folder to add");
-    return sdReady || spiffsReady;
+    return true;
 }
 
 extern "C" music_library_browser_mode_t music_library_browser_get_mode(void)
@@ -1520,7 +2003,8 @@ extern "C" bool music_library_browser_navigate_up(music_library_storage_root_t r
     BrowserState &state = browser_state(root);
     const MusicString rootPath = root_path(root);
     if (state.currentPath == rootPath) {
-        return refresh_browser(state);
+        state.entries.clear();
+        return true;
     }
 
     const size_t split = state.currentPath.find_last_of('/');
@@ -1529,7 +2013,8 @@ extern "C" bool music_library_browser_navigate_up(music_library_storage_root_t r
     } else {
         state.currentPath = state.currentPath.substr(0, split);
     }
-    return refresh_browser(state);
+    state.entries.clear();
+    return true;
 }
 
 extern "C" bool music_library_browser_enter_directory(music_library_storage_root_t root, uint32_t entryId)
@@ -1539,7 +2024,73 @@ extern "C" bool music_library_browser_enter_directory(music_library_storage_root
         return false;
     }
     state.currentPath = state.entries[entryId].path;
-    return refresh_browser(state);
+    state.entries.clear();
+    return true;
+}
+
+extern "C" bool music_library_browser_refresh_async(music_library_storage_root_t root)
+{
+    if (s_browserRefreshState.load() == MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING) {
+        set_browser_refresh_status("Browser refresh already in progress");
+        return false;
+    }
+
+    BrowserRefreshRequest *request = new BrowserRefreshRequest{root, browser_state(root).currentPath, false};
+    s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING);
+    set_browser_refresh_status(MusicString("Loading ") + root_label(root) + "...");
+
+    TaskHandle_t task = nullptr;
+    if (xTaskCreatePinnedToCoreWithCaps(
+            music_library_browser_refresh_task,
+            "music_browser_refresh",
+            10 * 1024,
+            request,
+            4,
+            &task,
+            tskNO_AFFINITY,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        delete request;
+        s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_FAILED);
+        set_browser_refresh_status("Failed to start browser refresh");
+        return false;
+    }
+
+    return true;
+}
+
+extern "C" bool music_library_browser_reindex_current_async(music_library_storage_root_t root)
+{
+    if (s_browserRefreshState.load() == MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING) {
+        set_browser_refresh_status("A browser task is already running");
+        return false;
+    }
+
+    if (s_browserAddState.load() == MUSIC_LIBRARY_BROWSER_ADD_STATE_RUNNING) {
+        set_browser_refresh_status("Wait for the current playlist add to finish first");
+        return false;
+    }
+
+    BrowserRefreshRequest *request = new BrowserRefreshRequest{root, browser_state(root).currentPath, true};
+    s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING);
+    set_browser_refresh_status("Reindexing folder playlist...");
+
+    TaskHandle_t task = nullptr;
+    if (xTaskCreatePinnedToCoreWithCaps(
+            music_library_browser_refresh_task,
+            "music_browser_reindex",
+            12 * 1024,
+            request,
+            4,
+            &task,
+            tskNO_AFFINITY,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        delete request;
+        s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_FAILED);
+        set_browser_refresh_status("Failed to start folder reindex");
+        return false;
+    }
+
+    return true;
 }
 
 extern "C" bool music_library_browser_add_entry(music_library_storage_root_t root, uint32_t entryId)
@@ -1557,7 +2108,7 @@ extern "C" bool music_library_browser_add_entry(music_library_storage_root_t roo
     }
 
     if (entry.isDirectory) {
-        if (!add_folder_to_playlist(entry.path, root)) {
+        if (!add_folder_to_playlist(entry.path, root, false)) {
             set_last_message("No supported files found in that folder");
             return false;
         }
@@ -1595,7 +2146,7 @@ extern "C" bool music_library_browser_add_entry_async(music_library_storage_root
         return false;
     }
 
-    BrowserAddRequest *request = new BrowserAddRequest{root, entry.path, entry.name, entry.isDirectory};
+    BrowserAddRequest *request = new BrowserAddRequest{root, entry.path, entry.name, entry.isDirectory, false};
     s_browserAddState.store(MUSIC_LIBRARY_BROWSER_ADD_STATE_RUNNING);
     set_browser_add_status(entry.isDirectory ? "Adding folder to playlist..." : "Adding file to playlist...");
 
@@ -1634,6 +2185,24 @@ extern "C" void music_library_browser_add_reset(void)
     if (s_browserAddState.load() != MUSIC_LIBRARY_BROWSER_ADD_STATE_RUNNING) {
         s_browserAddState.store(MUSIC_LIBRARY_BROWSER_ADD_STATE_IDLE);
         set_browser_add_status("Idle");
+    }
+}
+
+extern "C" music_library_browser_refresh_state_t music_library_browser_refresh_get_state(void)
+{
+    return s_browserRefreshState.load();
+}
+
+extern "C" const char *music_library_browser_refresh_get_status(void)
+{
+    return s_browserRefreshStatus;
+}
+
+extern "C" void music_library_browser_refresh_reset(void)
+{
+    if (s_browserRefreshState.load() != MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING) {
+        s_browserRefreshState.store(MUSIC_LIBRARY_BROWSER_REFRESH_STATE_IDLE);
+        set_browser_refresh_status("Idle");
     }
 }
 

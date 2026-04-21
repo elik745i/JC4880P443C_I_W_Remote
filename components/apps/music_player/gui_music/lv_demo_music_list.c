@@ -21,8 +21,8 @@
  *********************/
 #define PLAYLIST_ACTION_BUTTON_SIZE    42
 #define PLAYLIST_MODAL_HEIGHT          280
-#define PLAYLIST_COLUMN_WIDTH          220
 #define PLAYLIST_ROW_HEIGHT            64
+#define PLAYLIST_BROWSER_ROW_HEIGHT    58
 
 #define ENCODE_BROWSER_ID(root, index) ((void *)(uintptr_t)((((uintptr_t)(root)) << 16) | ((uintptr_t)(index) & 0xFFFFU)))
 #define DECODE_BROWSER_ROOT(value)     ((music_library_storage_root_t)(((uintptr_t)(value) >> 16) & 0xFFFFU))
@@ -46,6 +46,8 @@ static void delete_action_event_cb(lv_event_t *e);
 static void browser_row_event_cb(lv_event_t *e);
 static void browser_add_event_cb(lv_event_t *e);
 static void browser_up_event_cb(lv_event_t *e);
+static void browser_root_tab_event_cb(lv_event_t *e);
+static void browser_refresh_event_cb(lv_event_t *e);
 static void browser_close_event_cb(lv_event_t *e);
 static void url_close_event_cb(lv_event_t *e);
 static void url_download_event_cb(lv_event_t *e);
@@ -57,7 +59,8 @@ static void populate_list_contents(void);
 static void open_browser_modal(music_library_browser_mode_t mode);
 static void close_browser_modal(void);
 static void refresh_browser_modal(void);
-static void populate_browser_column(music_library_storage_root_t root, lv_obj_t *path_label, lv_obj_t *list_obj, lv_obj_t *up_button);
+static void start_browser_refresh(bool force_reindex);
+static void ensure_browser_busy_timer(void);
 static void open_url_modal(void);
 static void close_url_modal(void);
 static void refresh_status_label(void);
@@ -71,12 +74,12 @@ static lv_obj_t * list;
 static lv_obj_t * playlist_list;
 static lv_obj_t * status_label;
 static lv_obj_t * browser_overlay;
-static lv_obj_t * browser_sd_path_label;
-static lv_obj_t * browser_spiffs_path_label;
-static lv_obj_t * browser_sd_list;
-static lv_obj_t * browser_spiffs_list;
-static lv_obj_t * browser_sd_up_button;
-static lv_obj_t * browser_spiffs_up_button;
+static lv_obj_t * browser_title_label;
+static lv_obj_t * browser_sd_root_button;
+static lv_obj_t * browser_spiffs_root_button;
+static lv_obj_t * browser_path_label;
+static lv_obj_t * browser_list;
+static lv_obj_t * browser_up_button;
 static lv_obj_t * browser_status_label;
 static lv_obj_t * browser_add_overlay;
 static lv_obj_t * browser_add_status_label;
@@ -88,6 +91,7 @@ static lv_timer_t * download_timer;
 static lv_timer_t * browser_add_timer;
 static bool playlist_content_populated;
 static bool playlist_content_dirty;
+static music_library_storage_root_t browser_active_root = MUSIC_LIBRARY_STORAGE_SD;
 static const lv_font_t * font_small;
 static const lv_font_t * font_medium;
 static lv_style_t style_scrollbar;
@@ -224,27 +228,28 @@ lv_obj_t * _lv_demo_music_list_create(lv_obj_t * parent)
 
     browser_overlay = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(browser_overlay);
-    lv_obj_set_size(browser_overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_pos(browser_overlay, 0, APP_DEMO_MUSIC_HANDLE_SIZE);
+    lv_obj_set_size(browser_overlay, LV_HOR_RES, LV_VER_RES - APP_DEMO_MUSIC_HANDLE_SIZE);
     lv_obj_set_style_bg_opa(browser_overlay, LV_OPA_70, 0);
     lv_obj_set_style_bg_color(browser_overlay, lv_color_hex(0x0C0B16), 0);
     lv_obj_add_flag(browser_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(browser_overlay, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t * browser_panel = lv_obj_create(browser_overlay);
-    lv_obj_set_size(browser_panel, LV_PCT(100), PLAYLIST_MODAL_HEIGHT);
-    lv_obj_align(browser_panel, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_size(browser_panel, LV_PCT(100), LV_PCT(100));
+    lv_obj_align(browser_panel, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_set_style_bg_color(browser_panel, lv_color_hex(0x232038), 0);
     lv_obj_set_style_bg_opa(browser_panel, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(browser_panel, 0, 0);
-    lv_obj_set_style_radius(browser_panel, 22, 0);
+    lv_obj_set_style_radius(browser_panel, 0, 0);
     lv_obj_set_style_pad_all(browser_panel, 12, 0);
-    lv_obj_set_style_pad_row(browser_panel, 8, 0);
+    lv_obj_set_style_pad_row(browser_panel, 10, 0);
     lv_obj_set_flex_flow(browser_panel, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(browser_panel, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t * browser_header = lv_obj_create(browser_panel);
     lv_obj_set_width(browser_header, lv_pct(100));
-    lv_obj_set_height(browser_header, 36);
+    lv_obj_set_height(browser_header, 40);
     lv_obj_set_style_bg_opa(browser_header, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(browser_header, 0, 0);
     lv_obj_set_style_pad_all(browser_header, 0, 0);
@@ -252,14 +257,14 @@ lv_obj_t * _lv_demo_music_list_create(lv_obj_t * parent)
     lv_obj_set_style_pad_column(browser_header, 8, 0);
     lv_obj_clear_flag(browser_header, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t * browser_title = lv_label_create(browser_header);
-    lv_label_set_text(browser_title, "Add To Playlist");
-    lv_obj_set_style_text_font(browser_title, font_medium, 0);
-    lv_obj_set_style_text_color(browser_title, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_width(browser_title, 170);
+    browser_title_label = lv_label_create(browser_header);
+    lv_label_set_text(browser_title_label, "Add To Playlist");
+    lv_obj_set_style_text_font(browser_title_label, font_medium, 0);
+    lv_obj_set_style_text_color(browser_title_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_width(browser_title_label, 260);
 
     lv_obj_t * browser_close = lv_btn_create(browser_header);
-    lv_obj_set_size(browser_close, 42, 32);
+    lv_obj_set_size(browser_close, 42, 34);
     lv_obj_set_style_radius(browser_close, 16, 0);
     lv_obj_set_style_bg_color(browser_close, lv_color_hex(0x49456A), 0);
     lv_obj_set_style_border_width(browser_close, 0, 0);
@@ -271,119 +276,85 @@ lv_obj_t * _lv_demo_music_list_create(lv_obj_t * parent)
     lv_obj_set_style_text_color(browser_close_label, lv_color_hex(0xFFFFFF), 0);
     lv_obj_center(browser_close_label);
 
-    lv_obj_t * browser_columns = lv_obj_create(browser_panel);
-    lv_obj_set_width(browser_columns, lv_pct(100));
-    lv_obj_set_height(browser_columns, 196);
-    lv_obj_set_style_bg_opa(browser_columns, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(browser_columns, 0, 0);
-    lv_obj_set_style_pad_all(browser_columns, 0, 0);
-    lv_obj_set_style_pad_column(browser_columns, 8, 0);
-    lv_obj_set_flex_flow(browser_columns, LV_FLEX_FLOW_ROW);
-    lv_obj_clear_flag(browser_columns, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t * browser_tabs = lv_obj_create(browser_panel);
+    lv_obj_set_width(browser_tabs, lv_pct(100));
+    lv_obj_set_height(browser_tabs, 44);
+    lv_obj_set_style_bg_opa(browser_tabs, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(browser_tabs, 0, 0);
+    lv_obj_set_style_pad_all(browser_tabs, 0, 0);
+    lv_obj_set_style_pad_column(browser_tabs, 10, 0);
+    lv_obj_set_flex_flow(browser_tabs, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(browser_tabs, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t * sd_column = lv_obj_create(browser_columns);
-    lv_obj_set_size(sd_column, PLAYLIST_COLUMN_WIDTH, 196);
-    lv_obj_set_style_bg_color(sd_column, lv_color_hex(0x18152A), 0);
-    lv_obj_set_style_bg_opa(sd_column, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(sd_column, 0, 0);
-    lv_obj_set_style_radius(sd_column, 18, 0);
-    lv_obj_set_style_pad_all(sd_column, 8, 0);
-    lv_obj_set_style_pad_row(sd_column, 6, 0);
-    lv_obj_set_flex_flow(sd_column, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(sd_column, LV_OBJ_FLAG_SCROLLABLE);
+    browser_sd_root_button = lv_btn_create(browser_tabs);
+    lv_obj_set_size(browser_sd_root_button, 126, 40);
+    lv_obj_set_style_radius(browser_sd_root_button, 18, 0);
+    lv_obj_set_style_border_width(browser_sd_root_button, 0, 0);
+    lv_obj_add_event_cb(browser_sd_root_button, browser_root_tab_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)MUSIC_LIBRARY_STORAGE_SD);
+    lv_obj_t * browser_sd_root_label = lv_label_create(browser_sd_root_button);
+    lv_label_set_text(browser_sd_root_label, LV_SYMBOL_DRIVE " SD Card");
+    lv_obj_set_style_text_color(browser_sd_root_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(browser_sd_root_label);
 
-    lv_obj_t * sd_top = lv_obj_create(sd_column);
-    lv_obj_set_width(sd_top, lv_pct(100));
-    lv_obj_set_height(sd_top, 28);
-    lv_obj_set_style_bg_opa(sd_top, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(sd_top, 0, 0);
-    lv_obj_set_style_pad_all(sd_top, 0, 0);
-    lv_obj_set_flex_flow(sd_top, LV_FLEX_FLOW_ROW);
-    lv_obj_clear_flag(sd_top, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t * sd_label = lv_label_create(sd_top);
-    lv_label_set_text(sd_label, LV_SYMBOL_DRIVE " SD Card");
-    lv_obj_set_style_text_color(sd_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(sd_label, font_small, 0);
-    browser_sd_up_button = lv_btn_create(sd_top);
-    lv_obj_set_size(browser_sd_up_button, 34, 24);
-    lv_obj_set_style_radius(browser_sd_up_button, 12, 0);
-    lv_obj_set_style_bg_color(browser_sd_up_button, lv_color_hex(0x49456A), 0);
-    lv_obj_set_style_border_width(browser_sd_up_button, 0, 0);
-    lv_obj_add_event_cb(browser_sd_up_button, browser_up_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)MUSIC_LIBRARY_STORAGE_SD);
-    lv_obj_align(browser_sd_up_button, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_flag(browser_sd_up_button, LV_OBJ_FLAG_FLOATING);
-    lv_obj_t * sd_up_label = lv_label_create(browser_sd_up_button);
-    lv_label_set_text(sd_up_label, LV_SYMBOL_UP);
-    lv_obj_set_style_text_color(sd_up_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(sd_up_label);
-    browser_sd_path_label = lv_label_create(sd_column);
-    lv_obj_set_width(browser_sd_path_label, lv_pct(100));
-    lv_obj_set_style_text_color(browser_sd_path_label, lv_color_hex(0xA7A2CF), 0);
-    lv_obj_set_style_text_font(browser_sd_path_label, &lv_font_montserrat_10, 0);
-    lv_label_set_long_mode(browser_sd_path_label, LV_LABEL_LONG_DOT);
-    browser_sd_list = lv_obj_create(sd_column);
-    lv_obj_set_width(browser_sd_list, lv_pct(100));
-    lv_obj_set_height(browser_sd_list, 142);
-    lv_obj_set_style_bg_color(browser_sd_list, lv_color_hex(0x211D37), 0);
-    lv_obj_set_style_bg_opa(browser_sd_list, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(browser_sd_list, 0, 0);
-    lv_obj_set_style_radius(browser_sd_list, 14, 0);
-    lv_obj_set_style_pad_all(browser_sd_list, 6, 0);
-    lv_obj_set_style_pad_row(browser_sd_list, 6, 0);
-    lv_obj_set_flex_flow(browser_sd_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(browser_sd_list, LV_SCROLLBAR_MODE_OFF);
+    browser_spiffs_root_button = lv_btn_create(browser_tabs);
+    lv_obj_set_size(browser_spiffs_root_button, 126, 40);
+    lv_obj_set_style_radius(browser_spiffs_root_button, 18, 0);
+    lv_obj_set_style_border_width(browser_spiffs_root_button, 0, 0);
+    lv_obj_add_event_cb(browser_spiffs_root_button, browser_root_tab_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)MUSIC_LIBRARY_STORAGE_SPIFFS);
+    lv_obj_t * browser_spiffs_root_label = lv_label_create(browser_spiffs_root_button);
+    lv_label_set_text(browser_spiffs_root_label, LV_SYMBOL_HOME " SPIFFS");
+    lv_obj_set_style_text_color(browser_spiffs_root_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(browser_spiffs_root_label);
 
-    lv_obj_t * spiffs_column = lv_obj_create(browser_columns);
-    lv_obj_set_size(spiffs_column, PLAYLIST_COLUMN_WIDTH, 196);
-    lv_obj_set_style_bg_color(spiffs_column, lv_color_hex(0x18152A), 0);
-    lv_obj_set_style_bg_opa(spiffs_column, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(spiffs_column, 0, 0);
-    lv_obj_set_style_radius(spiffs_column, 18, 0);
-    lv_obj_set_style_pad_all(spiffs_column, 8, 0);
-    lv_obj_set_style_pad_row(spiffs_column, 6, 0);
-    lv_obj_set_flex_flow(spiffs_column, LV_FLEX_FLOW_COLUMN);
-    lv_obj_clear_flag(spiffs_column, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t * browser_path_row = lv_obj_create(browser_panel);
+    lv_obj_set_width(browser_path_row, lv_pct(100));
+    lv_obj_set_height(browser_path_row, 42);
+    lv_obj_set_style_bg_opa(browser_path_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(browser_path_row, 0, 0);
+    lv_obj_set_style_pad_all(browser_path_row, 0, 0);
+    lv_obj_set_style_pad_column(browser_path_row, 8, 0);
+    lv_obj_set_flex_flow(browser_path_row, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(browser_path_row, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t * spiffs_top = lv_obj_create(spiffs_column);
-    lv_obj_set_width(spiffs_top, lv_pct(100));
-    lv_obj_set_height(spiffs_top, 28);
-    lv_obj_set_style_bg_opa(spiffs_top, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(spiffs_top, 0, 0);
-    lv_obj_set_style_pad_all(spiffs_top, 0, 0);
-    lv_obj_set_flex_flow(spiffs_top, LV_FLEX_FLOW_ROW);
-    lv_obj_clear_flag(spiffs_top, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t * spiffs_label = lv_label_create(spiffs_top);
-    lv_label_set_text(spiffs_label, LV_SYMBOL_HOME " SPIFFS");
-    lv_obj_set_style_text_color(spiffs_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(spiffs_label, font_small, 0);
-    browser_spiffs_up_button = lv_btn_create(spiffs_top);
-    lv_obj_set_size(browser_spiffs_up_button, 34, 24);
-    lv_obj_set_style_radius(browser_spiffs_up_button, 12, 0);
-    lv_obj_set_style_bg_color(browser_spiffs_up_button, lv_color_hex(0x49456A), 0);
-    lv_obj_set_style_border_width(browser_spiffs_up_button, 0, 0);
-    lv_obj_add_event_cb(browser_spiffs_up_button, browser_up_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)MUSIC_LIBRARY_STORAGE_SPIFFS);
-    lv_obj_align(browser_spiffs_up_button, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_flag(browser_spiffs_up_button, LV_OBJ_FLAG_FLOATING);
-    lv_obj_t * spiffs_up_label = lv_label_create(browser_spiffs_up_button);
-    lv_label_set_text(spiffs_up_label, LV_SYMBOL_UP);
-    lv_obj_set_style_text_color(spiffs_up_label, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(spiffs_up_label);
-    browser_spiffs_path_label = lv_label_create(spiffs_column);
-    lv_obj_set_width(browser_spiffs_path_label, lv_pct(100));
-    lv_obj_set_style_text_color(browser_spiffs_path_label, lv_color_hex(0xA7A2CF), 0);
-    lv_obj_set_style_text_font(browser_spiffs_path_label, &lv_font_montserrat_10, 0);
-    lv_label_set_long_mode(browser_spiffs_path_label, LV_LABEL_LONG_DOT);
-    browser_spiffs_list = lv_obj_create(spiffs_column);
-    lv_obj_set_width(browser_spiffs_list, lv_pct(100));
-    lv_obj_set_height(browser_spiffs_list, 142);
-    lv_obj_set_style_bg_color(browser_spiffs_list, lv_color_hex(0x211D37), 0);
-    lv_obj_set_style_bg_opa(browser_spiffs_list, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(browser_spiffs_list, 0, 0);
-    lv_obj_set_style_radius(browser_spiffs_list, 14, 0);
-    lv_obj_set_style_pad_all(browser_spiffs_list, 6, 0);
-    lv_obj_set_style_pad_row(browser_spiffs_list, 6, 0);
-    lv_obj_set_flex_flow(browser_spiffs_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(browser_spiffs_list, LV_SCROLLBAR_MODE_OFF);
+    browser_up_button = lv_btn_create(browser_path_row);
+    lv_obj_set_size(browser_up_button, 40, 34);
+    lv_obj_set_style_radius(browser_up_button, 16, 0);
+    lv_obj_set_style_bg_color(browser_up_button, lv_color_hex(0x49456A), 0);
+    lv_obj_set_style_border_width(browser_up_button, 0, 0);
+    lv_obj_add_event_cb(browser_up_button, browser_up_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * browser_up_label = lv_label_create(browser_up_button);
+    lv_label_set_text(browser_up_label, LV_SYMBOL_UP);
+    lv_obj_set_style_text_color(browser_up_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(browser_up_label);
+
+    lv_obj_t * browser_refresh_button = lv_btn_create(browser_path_row);
+    lv_obj_set_size(browser_refresh_button, 40, 34);
+    lv_obj_set_style_radius(browser_refresh_button, 16, 0);
+    lv_obj_set_style_bg_color(browser_refresh_button, lv_color_hex(0x49456A), 0);
+    lv_obj_set_style_border_width(browser_refresh_button, 0, 0);
+    lv_obj_add_event_cb(browser_refresh_button, browser_refresh_event_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * browser_refresh_label = lv_label_create(browser_refresh_button);
+    lv_label_set_text(browser_refresh_label, LV_SYMBOL_REFRESH);
+    lv_obj_set_style_text_color(browser_refresh_label, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(browser_refresh_label);
+
+    browser_path_label = lv_label_create(browser_path_row);
+    lv_obj_set_width(browser_path_label, LV_HOR_RES - 140);
+    lv_obj_set_style_text_color(browser_path_label, lv_color_hex(0xCEC9E8), 0);
+    lv_obj_set_style_text_font(browser_path_label, font_small, 0);
+    lv_label_set_long_mode(browser_path_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+
+    browser_list = lv_obj_create(browser_panel);
+    lv_obj_set_width(browser_list, lv_pct(100));
+    lv_obj_set_style_bg_color(browser_list, lv_color_hex(0x18152A), 0);
+    lv_obj_set_style_bg_opa(browser_list, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(browser_list, 0, 0);
+    lv_obj_set_style_radius(browser_list, 18, 0);
+    lv_obj_set_style_pad_all(browser_list, 8, 0);
+    lv_obj_set_style_pad_row(browser_list, 8, 0);
+    lv_obj_set_flex_flow(browser_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(browser_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_grow(browser_list, 1);
 
     browser_status_label = lv_label_create(browser_panel);
     lv_obj_set_width(browser_status_label, lv_pct(100));
@@ -548,12 +519,12 @@ void _lv_demo_music_list_close(void)
     playlist_list = NULL;
     status_label = NULL;
     browser_overlay = NULL;
-    browser_sd_path_label = NULL;
-    browser_spiffs_path_label = NULL;
-    browser_sd_list = NULL;
-    browser_spiffs_list = NULL;
-    browser_sd_up_button = NULL;
-    browser_spiffs_up_button = NULL;
+    browser_title_label = NULL;
+    browser_sd_root_button = NULL;
+    browser_spiffs_root_button = NULL;
+    browser_path_label = NULL;
+    browser_list = NULL;
+    browser_up_button = NULL;
     browser_status_label = NULL;
     browser_add_overlay = NULL;
     browser_add_status_label = NULL;
@@ -655,14 +626,14 @@ static lv_obj_t * add_list_btn(lv_obj_t * parent, uint32_t track_id)
     lv_obj_set_grid_cell(title_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 0, 1);
     lv_obj_add_style(title_label, &style_title, 0);
     lv_obj_set_width(title_label, lv_pct(100));
-    lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(title_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
 
     lv_obj_t * artist_label = lv_label_create(btn);
     lv_label_set_text(artist_label, artist);
     lv_obj_add_style(artist_label, &style_artist, 0);
     lv_obj_set_grid_cell(artist_label, LV_GRID_ALIGN_START, 1, 1, LV_GRID_ALIGN_CENTER, 1, 1);
     lv_obj_set_width(artist_label, lv_pct(100));
-    lv_label_set_long_mode(artist_label, LV_LABEL_LONG_DOT);
+    lv_label_set_long_mode(artist_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
 
     lv_obj_t * time_label = lv_label_create(btn);
     lv_label_set_text(time_label, time);
@@ -757,8 +728,14 @@ static void delete_confirm_event_cb(lv_event_t *e)
 static void open_browser_modal(music_library_browser_mode_t mode)
 {
     music_library_browser_open(mode);
+    browser_active_root = MUSIC_LIBRARY_STORAGE_SD;
+    if (browser_title_label != NULL) {
+        lv_label_set_text(browser_title_label,
+                          (mode == MUSIC_LIBRARY_BROWSER_MODE_FILE) ? "Add File To Playlist" : "Add Folder To Playlist");
+    }
     refresh_browser_modal();
     lv_obj_clear_flag(browser_overlay, LV_OBJ_FLAG_HIDDEN);
+    start_browser_refresh(false);
 }
 
 static void close_browser_modal(void)
@@ -772,76 +749,121 @@ static void browser_close_event_cb(lv_event_t *e)
     close_browser_modal();
 }
 
-static void populate_browser_column(music_library_storage_root_t root, lv_obj_t *path_label, lv_obj_t *list_obj, lv_obj_t *up_button)
+static void ensure_browser_busy_timer(void)
 {
-    lv_obj_clean(list_obj);
-    lv_label_set_text(path_label, music_library_browser_get_path(root));
-
-    const bool at_root = strcmp(music_library_browser_get_path(root),
-                                (root == MUSIC_LIBRARY_STORAGE_SD) ? "/sdcard" : CONFIG_BSP_SPIFFS_MOUNT_POINT) == 0;
-    if (at_root) {
-        lv_obj_add_state(up_button, LV_STATE_DISABLED);
-    } else {
-        lv_obj_clear_state(up_button, LV_STATE_DISABLED);
+    if (browser_add_timer == NULL) {
+        browser_add_timer = lv_timer_create(browser_add_timer_cb, 120, NULL);
     }
+}
 
-    const uint32_t count = music_library_browser_get_count(root);
-    if (count == 0) {
-        lv_obj_t * label = lv_label_create(list_obj);
-        lv_label_set_text(label, music_library_browser_root_available(root) ? "No supported items here" : "Storage unavailable");
-        lv_obj_set_style_text_color(label, lv_color_hex(0xC7C2E8), 0);
-        lv_obj_set_width(label, lv_pct(100));
-        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
-        return;
-    }
-
-    for (uint32_t index = 0; index < count; ++index) {
-        lv_obj_t * row = lv_btn_create(list_obj);
-        lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, 42);
-        lv_obj_set_style_radius(row, 14, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(0x2C2844), 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_left(row, 10, 0);
-        lv_obj_set_style_pad_right(row, 8, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(row, browser_row_event_cb, LV_EVENT_CLICKED, ENCODE_BROWSER_ID(root, index));
-
-        lv_obj_t * name = lv_label_create(row);
-        lv_label_set_text(name, music_library_browser_get_name(root, index));
-        lv_obj_set_width(name, 122);
-        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_color(name, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, -8);
-
-        lv_obj_t * meta = lv_label_create(row);
-        lv_label_set_text(meta, music_library_browser_get_meta(root, index));
-        lv_obj_set_width(meta, 122);
-        lv_label_set_long_mode(meta, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_font(meta, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(meta, lv_color_hex(0xB8B3D8), 0);
-        lv_obj_align(meta, LV_ALIGN_LEFT_MID, 0, 10);
-
-        if (music_library_browser_entry_can_add(root, index)) {
-            lv_obj_t * add_button = lv_btn_create(row);
-            lv_obj_set_size(add_button, 32, 28);
-            lv_obj_set_style_radius(add_button, 12, 0);
-            lv_obj_set_style_bg_color(add_button, lv_color_hex(0x5E72EB), 0);
-            lv_obj_set_style_border_width(add_button, 0, 0);
-            lv_obj_add_event_cb(add_button, browser_add_event_cb, LV_EVENT_CLICKED, ENCODE_BROWSER_ID(root, index));
-            lv_obj_align(add_button, LV_ALIGN_RIGHT_MID, 0, 0);
-            lv_obj_t * add_label = lv_label_create(add_button);
-            lv_label_set_text(add_label, LV_SYMBOL_PLUS);
-            lv_obj_set_style_text_color(add_label, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_center(add_label);
-        }
+static void start_browser_refresh(bool force_reindex)
+{
+    const bool started = force_reindex
+                             ? music_library_browser_reindex_current_async(browser_active_root)
+                             : music_library_browser_refresh_async(browser_active_root);
+    if (started) {
+        show_browser_add_busy(music_library_browser_refresh_get_status());
+        ensure_browser_busy_timer();
+    } else if (browser_status_label != NULL) {
+        lv_label_set_text(browser_status_label, music_library_browser_refresh_get_status());
     }
 }
 
 static void refresh_browser_modal(void)
 {
-    populate_browser_column(MUSIC_LIBRARY_STORAGE_SD, browser_sd_path_label, browser_sd_list, browser_sd_up_button);
-    populate_browser_column(MUSIC_LIBRARY_STORAGE_SPIFFS, browser_spiffs_path_label, browser_spiffs_list, browser_spiffs_up_button);
+    if ((browser_list == NULL) || (browser_path_label == NULL) || (browser_status_label == NULL)) {
+        return;
+    }
+
+    lv_obj_set_style_bg_color(browser_sd_root_button,
+                              (browser_active_root == MUSIC_LIBRARY_STORAGE_SD) ? lv_color_hex(0x5E72EB) : lv_color_hex(0x49456A),
+                              0);
+    lv_obj_set_style_bg_color(browser_spiffs_root_button,
+                              (browser_active_root == MUSIC_LIBRARY_STORAGE_SPIFFS) ? lv_color_hex(0x5E72EB) : lv_color_hex(0x49456A),
+                              0);
+
+    lv_obj_clean(browser_list);
+    lv_label_set_text(browser_path_label, music_library_browser_get_path(browser_active_root));
+
+    const bool at_root = strcmp(music_library_browser_get_path(browser_active_root),
+                                (browser_active_root == MUSIC_LIBRARY_STORAGE_SD) ? "/sdcard" : CONFIG_BSP_SPIFFS_MOUNT_POINT) == 0;
+    if (at_root) {
+        lv_obj_add_state(browser_up_button, LV_STATE_DISABLED);
+    } else {
+        lv_obj_clear_state(browser_up_button, LV_STATE_DISABLED);
+    }
+
+    const uint32_t count = music_library_browser_get_count(browser_active_root);
+    if (count == 0) {
+        lv_obj_t * label = lv_label_create(browser_list);
+        if (music_library_browser_refresh_get_state() == MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING) {
+            lv_label_set_text(label, "Loading items...");
+        } else {
+            lv_label_set_text(label,
+                              music_library_browser_root_available(browser_active_root) ? "No supported items here"
+                                                                                    : "Storage unavailable");
+        }
+        lv_obj_set_style_text_color(label, lv_color_hex(0xC7C2E8), 0);
+        lv_obj_set_width(label, lv_pct(100));
+        lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+    } else {
+        for (uint32_t index = 0; index < count; ++index) {
+            lv_obj_t * row = lv_btn_create(browser_list);
+            lv_obj_set_width(row, lv_pct(100));
+            lv_obj_set_height(row, PLAYLIST_BROWSER_ROW_HEIGHT);
+            lv_obj_set_style_radius(row, 16, 0);
+            lv_obj_set_style_bg_color(row, lv_color_hex(0x2C2844), 0);
+            lv_obj_set_style_border_width(row, 0, 0);
+            lv_obj_set_style_pad_left(row, 10, 0);
+            lv_obj_set_style_pad_right(row, 8, 0);
+            lv_obj_set_style_pad_top(row, 8, 0);
+            lv_obj_set_style_pad_bottom(row, 8, 0);
+            lv_obj_set_style_pad_column(row, 8, 0);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_event_cb(row, browser_row_event_cb, LV_EVENT_CLICKED, ENCODE_BROWSER_ID(browser_active_root, index));
+
+            lv_obj_t * icon = lv_label_create(row);
+            lv_label_set_text(icon,
+                              music_library_browser_entry_is_directory(browser_active_root, index) ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE);
+            lv_obj_set_style_text_color(icon, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_width(icon, 20);
+
+            lv_obj_t * text_col = lv_obj_create(row);
+            lv_obj_remove_style_all(text_col);
+            lv_obj_set_width(text_col, LV_PCT(100));
+            lv_obj_set_flex_grow(text_col, 1);
+            lv_obj_set_flex_flow(text_col, LV_FLEX_FLOW_COLUMN);
+            lv_obj_clear_flag(text_col, LV_OBJ_FLAG_SCROLLABLE);
+
+            lv_obj_t * name = lv_label_create(text_col);
+            lv_label_set_text(name, music_library_browser_get_name(browser_active_root, index));
+            lv_obj_set_width(name, lv_pct(100));
+            lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_color(name, lv_color_hex(0xFFFFFF), 0);
+
+            lv_obj_t * meta = lv_label_create(text_col);
+            lv_label_set_text(meta, music_library_browser_get_meta(browser_active_root, index));
+            lv_obj_set_width(meta, lv_pct(100));
+            lv_label_set_long_mode(meta, LV_LABEL_LONG_DOT);
+            lv_obj_set_style_text_font(meta, &lv_font_montserrat_10, 0);
+            lv_obj_set_style_text_color(meta, lv_color_hex(0xB8B3D8), 0);
+
+            if (music_library_browser_entry_can_add(browser_active_root, index)) {
+                lv_obj_t * add_button = lv_btn_create(row);
+                lv_obj_set_size(add_button, 34, 30);
+                lv_obj_set_style_radius(add_button, 12, 0);
+                lv_obj_set_style_bg_color(add_button, lv_color_hex(0x5E72EB), 0);
+                lv_obj_set_style_border_width(add_button, 0, 0);
+                lv_obj_add_event_cb(add_button, browser_add_event_cb, LV_EVENT_CLICKED, ENCODE_BROWSER_ID(browser_active_root, index));
+                lv_obj_t * add_label = lv_label_create(add_button);
+                lv_label_set_text(add_label, LV_SYMBOL_PLUS);
+                lv_obj_set_style_text_color(add_label, lv_color_hex(0xFFFFFF), 0);
+                lv_obj_center(add_label);
+            }
+        }
+    }
+
     lv_label_set_text(browser_status_label, music_library_get_last_message());
 }
 
@@ -852,8 +874,10 @@ static void browser_row_event_cb(lv_event_t *e)
     const uint32_t index = DECODE_BROWSER_INDEX(encoded);
 
     if (music_library_browser_entry_is_directory(root, index)) {
+        browser_active_root = root;
         music_library_browser_enter_directory(root, index);
         refresh_browser_modal();
+        start_browser_refresh(false);
     }
 }
 
@@ -865,9 +889,7 @@ static void browser_add_event_cb(lv_event_t *e)
 
     if (music_library_browser_add_entry_async(root, index)) {
         show_browser_add_busy(music_library_browser_add_get_status());
-        if (browser_add_timer == NULL) {
-            browser_add_timer = lv_timer_create(browser_add_timer_cb, 120, NULL);
-        }
+        ensure_browser_busy_timer();
     } else {
         lv_label_set_text(browser_status_label, music_library_get_last_message());
     }
@@ -875,9 +897,23 @@ static void browser_add_event_cb(lv_event_t *e)
 
 static void browser_up_event_cb(lv_event_t *e)
 {
-    const music_library_storage_root_t root = (music_library_storage_root_t)(uintptr_t)lv_event_get_user_data(e);
-    music_library_browser_navigate_up(root);
+    LV_UNUSED(e);
+    music_library_browser_navigate_up(browser_active_root);
     refresh_browser_modal();
+    start_browser_refresh(false);
+}
+
+static void browser_root_tab_event_cb(lv_event_t *e)
+{
+    browser_active_root = (music_library_storage_root_t)(uintptr_t)lv_event_get_user_data(e);
+    refresh_browser_modal();
+    start_browser_refresh(false);
+}
+
+static void browser_refresh_event_cb(lv_event_t *e)
+{
+    LV_UNUSED(e);
+    start_browser_refresh(music_library_browser_get_mode() == MUSIC_LIBRARY_BROWSER_MODE_FOLDER);
 }
 
 static void open_url_modal(void)
@@ -978,7 +1014,16 @@ static void browser_add_timer_cb(lv_timer_t *t)
     LV_UNUSED(t);
 
     const music_library_browser_add_state_t state = music_library_browser_add_get_state();
+    const music_library_browser_refresh_state_t refresh_state = music_library_browser_refresh_get_state();
     const char *status = music_library_browser_add_get_status();
+
+    if (refresh_state == MUSIC_LIBRARY_BROWSER_REFRESH_STATE_RUNNING) {
+        if (browser_add_status_label != NULL) {
+            lv_label_set_text(browser_add_status_label, music_library_browser_refresh_get_status());
+        }
+        return;
+    }
+
     if (state == MUSIC_LIBRARY_BROWSER_ADD_STATE_RUNNING) {
         if (browser_add_status_label != NULL) {
             lv_label_set_text(browser_add_status_label, status);
@@ -987,9 +1032,14 @@ static void browser_add_timer_cb(lv_timer_t *t)
     }
 
     hide_browser_add_busy();
-    if (browser_add_timer != NULL) {
-        lv_timer_del(browser_add_timer);
-        browser_add_timer = NULL;
+
+    if (refresh_state == MUSIC_LIBRARY_BROWSER_REFRESH_STATE_COMPLETED) {
+        refresh_browser_modal();
+        lv_label_set_text(browser_status_label, music_library_browser_refresh_get_status());
+        music_library_browser_refresh_reset();
+    } else if (refresh_state == MUSIC_LIBRARY_BROWSER_REFRESH_STATE_FAILED) {
+        lv_label_set_text(browser_status_label, music_library_browser_refresh_get_status());
+        music_library_browser_refresh_reset();
     }
 
     if (state == MUSIC_LIBRARY_BROWSER_ADD_STATE_COMPLETED) {
@@ -1002,6 +1052,13 @@ static void browser_add_timer_cb(lv_timer_t *t)
     }
 
     music_library_browser_add_reset();
+
+    if ((browser_add_timer != NULL) &&
+        (music_library_browser_refresh_get_state() == MUSIC_LIBRARY_BROWSER_REFRESH_STATE_IDLE) &&
+        (music_library_browser_add_get_state() == MUSIC_LIBRARY_BROWSER_ADD_STATE_IDLE)) {
+        lv_timer_del(browser_add_timer);
+        browser_add_timer = NULL;
+    }
 }
 
 bool _lv_demo_music_list_needs_reload(void)

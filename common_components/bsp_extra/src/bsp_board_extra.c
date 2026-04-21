@@ -168,7 +168,10 @@ static uint8_t *audio_ensure_mix_buffer(size_t len)
         return s_audio_mix_state.mix_buffer;
     }
 
-    uint8_t *buffer = (uint8_t *)heap_caps_realloc(s_audio_mix_state.mix_buffer, len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    uint8_t *buffer = (uint8_t *)heap_caps_realloc(s_audio_mix_state.mix_buffer, len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buffer == NULL) {
+        buffer = (uint8_t *)heap_caps_realloc(s_audio_mix_state.mix_buffer, len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
     if (buffer == NULL) {
         return NULL;
     }
@@ -746,11 +749,12 @@ esp_err_t bsp_extra_player_init(void)
         return ESP_OK;
     }
 
-        audio_player_config_t config = { .mute_fn = audio_mute_function,
-                                                                         .write_fn = audio_player_write_with_mix,
-                                                                         .clk_set_fn = audio_player_clock_set,
-                                     .priority = 5
-                                   };
+                audio_player_config_t config = { .mute_fn = audio_mute_function,
+                                                                                                                                                 .write_fn = audio_player_write_with_mix,
+                                                                                                                                                 .clk_set_fn = audio_player_clock_set,
+                                                                                                                                                 .priority = 5,
+                                                                                                                                                 .coreID = 1
+                                                                     };
     ESP_RETURN_ON_ERROR(audio_player_new(config), TAG, "audio_player_init failed");
     audio_player_callback_register(audio_callback, NULL);
 
@@ -795,7 +799,7 @@ esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int in
     ESP_RETURN_ON_FALSE(fp, ESP_FAIL, TAG, "unable to open file");
 
     ESP_LOGI(TAG, "Playing '%s'", filename);
-    ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
+    ESP_RETURN_ON_ERROR(audio_player_play_file(fp, filename), TAG, "audio_player_play_file failed");
 
     audio_file_path_set(filename);
 
@@ -809,7 +813,7 @@ esp_err_t bsp_extra_player_play_file(const char *file_path)
     ESP_RETURN_ON_FALSE(fp, ESP_FAIL, TAG, "unable to open file");
 
     ESP_LOGI(TAG, "Playing '%s'", file_path);
-    ESP_RETURN_ON_ERROR(audio_player_play(fp), TAG, "audio_player_play failed");
+    ESP_RETURN_ON_ERROR(audio_player_play_file(fp, file_path), TAG, "audio_player_play_file failed");
 
     audio_file_path_set(file_path);
 

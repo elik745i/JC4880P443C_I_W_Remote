@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.8 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.9 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -52,6 +52,9 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
 - Music Player runtime metadata, library indexes, and long-lived worker stacks now prefer PSRAM, which reduces launch-time and background SRAM pressure.
 - Music Player playlist confirmation dialogs now use safe LVGL async-close handling to avoid the panic that could occur when deleting or cancelling from the modal.
+- Quick-access controls now stay available while apps are open, with smaller launcher row icons and richer live Music Player detail in the strip.
+- Internet Radio now exposes a live buffered-stream meter, larger playback modal layout, deeper PSRAM-first buffering, and delayed startup until the stream cache reaches a safer prefill level.
+- Internet Radio steady-state downloading now refills in the background instead of blocking the audio playback path, which reduces refill-time audio dropouts on slow stations.
 - Panic behavior now reboots automatically, and the next boot shows a short recovery popup that distinguishes crash, watchdog, brownout, and CPU lockup resets.
 - Flash-backed core dump capture is now enabled, and the next boot persists a readable crash report under SPIFFS for later developer analysis.
 - The reboot recovery popup can now show a manual `Report` action that tries to submit the saved crash report when Wi-Fi is connected, otherwise it reports that the device is offline or the private relay is not configured.
@@ -112,7 +115,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.1.8 validates at `0x59DC00`, leaving `0x1F2400` bytes free in the smaller OTA app slot.
+- Version 1.1.9 validates at `0x645240`, leaving `0x14ADC0` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

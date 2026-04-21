@@ -29,6 +29,10 @@ public:
     bool debugPlayStation(const std::string &country, const std::string &station_name);
     bool debugStopPlayback(void);
     std::string debugDescribeState(void) const;
+    void resetStreamBufferMetrics(void);
+    void updateStreamBufferMetrics(uint32_t capacity, uint32_t buffered, uint32_t read_offset,
+                                   uint32_t total_http, uint32_t total_audio, bool eof_reached);
+    void refreshPlayerDialogBufferInfo(void);
 
 private:
     enum class ViewMode {
@@ -59,6 +63,7 @@ private:
 
     static void onListButtonClicked(lv_event_t *event);
     static void onPlayerDialogButtonClicked(lv_event_t *event);
+    static void onPlayerDialogBufferTimer(lv_timer_t *timer);
     static esp_err_t httpEventHandler(esp_http_client_event_t *event);
     static void applyAsyncStatus(void *context);
     static void previewPlaybackTask(void *context);
@@ -114,8 +119,17 @@ private:
     lv_obj_t *_playerDialogTitleLabel;
     lv_obj_t *_playerDialogDetailLabel;
     lv_obj_t *_playerDialogStatusLabel;
+    lv_obj_t *_playerDialogBufferLabel;
+    lv_obj_t *_playerDialogBufferBar;
     lv_obj_t *_playerDialogPlayButton;
     lv_obj_t *_playerDialogStopButton;
+    lv_timer_t *_playerDialogBufferTimer;
     size_t _selectedStationIndex;
     std::string _activeStationTitle;
+    std::atomic<uint32_t> _streamBufferCapacity;
+    std::atomic<uint32_t> _streamBytesBuffered;
+    std::atomic<uint32_t> _streamReadOffset;
+    std::atomic<uint32_t> _streamTotalHttpBytes;
+    std::atomic<uint32_t> _streamTotalAudioBytes;
+    std::atomic<bool> _streamEofReached;
 };

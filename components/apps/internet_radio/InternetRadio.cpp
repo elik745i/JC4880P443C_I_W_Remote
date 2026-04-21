@@ -19,6 +19,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 LV_IMG_DECLARE(img_app_radio_browser);
@@ -36,16 +37,23 @@ static constexpr TickType_t kCodecResetDelay = pdMS_TO_TICKS(50);
 static constexpr TickType_t kCodecResumeDelay = pdMS_TO_TICKS(100);
 static constexpr int kStreamTimeoutMs = 3000;
 static constexpr int kMaxHttpRedirects = 5;
-static constexpr size_t kStreamBufferPreferredSize = 96 * 1024;
+static constexpr int kHttpClientBufferSize = 16 * 1024;
+static constexpr size_t kStreamBufferPreferredSize = 192 * 1024;
 static constexpr size_t kStreamBufferMinimumSize = 32 * 1024;
 static constexpr size_t kStreamBufferStepSize = 16 * 1024;
-static constexpr size_t kStreamScratchSize = 4096;
-static constexpr size_t kStreamNetworkReadChunk = 8 * 1024;
-static constexpr size_t kStreamInitialPrefillBytes = 24 * 1024;
+static constexpr size_t kStreamNetworkReadChunk = 16 * 1024;
+static constexpr size_t kStreamScratchSize = kStreamNetworkReadChunk;
+static constexpr uint32_t kStreamStartPlaybackPercent = 80;
+static constexpr size_t kStreamSteadyStateRefillBytes = 64 * 1024;
+static constexpr size_t kStreamLowWaterBytes = 64 * 1024;
+static constexpr uint32_t kStreamRefillTaskStackSize = 6 * 1024;
+static constexpr UBaseType_t kStreamRefillTaskPriority = 2;
+static constexpr TickType_t kStreamRefillTaskStopWait = pdMS_TO_TICKS(500);
 static constexpr int kStreamReadRetryCount = 6;
 static constexpr TickType_t kStreamReadRetryDelay = pdMS_TO_TICKS(25);
 static constexpr size_t kAsyncStatusTextCapacity = 192;
 static constexpr const char *kRadioHttpUserAgent = "JC4880P443C-IW-Remote";
+static constexpr uint32_t kRadioPlaybackHeartbeatMs = 2000;
 
 struct PreviewTaskContext {
     InternetRadio *app = nullptr;
@@ -60,6 +68,7 @@ struct AsyncStatusContext {
 };
 
 struct HttpMp3StreamContext {
+    InternetRadio *app = nullptr;
     esp_http_client_handle_t client = nullptr;
     uint8_t *buffer = nullptr;
     uint8_t *scratch = nullptr;
@@ -71,19 +80,96 @@ struct HttpMp3StreamContext {
     size_t metadata_bytes_remaining = 0;
     bool eof_reached = false;
     bool using_psram = false;
+    uint32_t open_timestamp_ms = 0;
+    uint32_t last_progress_timestamp_ms = 0;
+    uint32_t total_http_bytes = 0;
+    uint32_t total_audio_bytes = 0;
+    uint32_t refill_count = 0;
+    uint32_t short_read_count = 0;
+    uint32_t empty_read_count = 0;
+    uint32_t retry_wait_count = 0;
+    uint32_t empty_refill_count = 0;
+    uint32_t last_heartbeat_timestamp_ms = 0;
+    SemaphoreHandle_t mutex = nullptr;
+    TaskHandle_t refill_task_handle = nullptr;
+    bool refill_task_stop_requested = false;
 };
 
-uint8_t *allocate_stream_buffer(size_t size, bool &using_psram)
+const char *audio_player_event_name(audio_player_callback_event_t event)
 {
-    uint8_t *buffer = static_cast<uint8_t *>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (buffer != nullptr) {
-        using_psram = true;
-        return buffer;
+    switch (event) {
+    case AUDIO_PLAYER_CALLBACK_EVENT_IDLE:
+        return "IDLE";
+    case AUDIO_PLAYER_CALLBACK_EVENT_COMPLETED_PLAYING_NEXT:
+        return "COMPLETED_PLAYING_NEXT";
+    case AUDIO_PLAYER_CALLBACK_EVENT_PLAYING:
+        return "PLAYING";
+    case AUDIO_PLAYER_CALLBACK_EVENT_PAUSE:
+        return "PAUSE";
+    case AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN:
+        return "SHUTDOWN";
+    case AUDIO_PLAYER_CALLBACK_EVENT_ERROR:
+        return "ERROR";
+    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE:
+        return "UNKNOWN_FILE_TYPE";
+    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN:
+    default:
+        return "UNKNOWN";
+    }
+}
+
+void log_radio_stream_summary(const HttpMp3StreamContext *context, const char *reason)
+{
+    if (context == nullptr) {
+        return;
     }
 
-    buffer = static_cast<uint8_t *>(heap_caps_malloc(size, MALLOC_CAP_8BIT));
-    using_psram = false;
-    return buffer;
+    const uint32_t now_ms = esp_log_timestamp();
+    ESP_LOGI(TAG,
+             "Radio stream summary (%s): lifetime=%u ms idle=%u ms http=%u audio=%u refills=%u short_reads=%u empty_reads=%u retry_waits=%u empty_refills=%u eof=%d buffered=%u offset=%u",
+             (reason != nullptr) ? reason : "close",
+             now_ms - context->open_timestamp_ms,
+             now_ms - context->last_progress_timestamp_ms,
+             context->total_http_bytes,
+             context->total_audio_bytes,
+             context->refill_count,
+             context->short_read_count,
+             context->empty_read_count,
+             context->retry_wait_count,
+             context->empty_refill_count,
+             context->eof_reached ? 1 : 0,
+             static_cast<unsigned>(context->bytes_buffered),
+             static_cast<unsigned>(context->read_offset));
+}
+
+template <typename T, typename... Args>
+T *new_psram_preferred(Args &&...args)
+{
+    void *storage = heap_caps_malloc(sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (storage == nullptr) {
+        storage = heap_caps_malloc(sizeof(T), MALLOC_CAP_8BIT);
+    }
+    if (storage == nullptr) {
+        return nullptr;
+    }
+
+    return new(storage) T(std::forward<Args>(args)...);
+}
+
+template <typename T>
+void delete_psram_preferred(T *ptr)
+{
+    if (ptr == nullptr) {
+        return;
+    }
+
+    ptr->~T();
+    heap_caps_free(ptr);
+}
+
+uint8_t *allocate_stream_buffer_in_caps(size_t size, uint32_t caps)
+{
+    return static_cast<uint8_t *>(heap_caps_malloc(size, caps | MALLOC_CAP_8BIT));
 }
 
 uint8_t *allocate_scratch_buffer(size_t size)
@@ -110,9 +196,23 @@ void log_radio_memory_snapshot(const char *stage)
 uint8_t *allocate_stream_buffer_adaptive(size_t &size, bool &using_psram)
 {
     for (size_t attempt_size = kStreamBufferPreferredSize; attempt_size >= kStreamBufferMinimumSize; attempt_size -= kStreamBufferStepSize) {
-        uint8_t *buffer = allocate_stream_buffer(attempt_size, using_psram);
+        uint8_t *buffer = allocate_stream_buffer_in_caps(attempt_size, MALLOC_CAP_SPIRAM);
         if (buffer != nullptr) {
             size = attempt_size;
+            using_psram = true;
+            return buffer;
+        }
+
+        if (attempt_size == kStreamBufferMinimumSize) {
+            break;
+        }
+    }
+
+    for (size_t attempt_size = kStreamBufferPreferredSize; attempt_size >= kStreamBufferMinimumSize; attempt_size -= kStreamBufferStepSize) {
+        uint8_t *buffer = allocate_stream_buffer_in_caps(attempt_size, 0);
+        if (buffer != nullptr) {
+            size = attempt_size;
+            using_psram = false;
             return buffer;
         }
 
@@ -146,11 +246,22 @@ int resilient_http_read(HttpMp3StreamContext *context, uint8_t *dest, size_t len
             ESP_LOGW(TAG, "Radio stream read stalled while waiting for %u bytes", static_cast<unsigned>(len));
         }
 
+        context->retry_wait_count++;
+
         vTaskDelay(kStreamReadRetryDelay);
     }
 
     if (last_result < 0) {
         ESP_LOGW(TAG, "Radio stream read failed after retries: %d", last_result);
+    }
+
+    context->empty_read_count++;
+    if ((context->empty_read_count == 1) || ((context->empty_read_count % 20) == 0)) {
+        ESP_LOGW(TAG,
+                 "Radio stream produced no bytes after retries (count=%u len=%u eof=%d)",
+                 context->empty_read_count,
+                 static_cast<unsigned>(len),
+                 context->eof_reached ? 1 : 0);
     }
 
     return 0;
@@ -237,10 +348,23 @@ int append_http_mp3_stream_buffer(HttpMp3StreamContext *context, size_t target_b
             break;
         }
 
+        context->total_http_bytes += static_cast<uint32_t>(bytes_read);
+        context->last_progress_timestamp_ms = esp_log_timestamp();
+
         context->bytes_buffered += static_cast<size_t>(bytes_read);
         total_appended += bytes_read;
 
+        if (context->app != nullptr) {
+            context->app->updateStreamBufferMetrics(static_cast<uint32_t>(context->capacity),
+                                                    static_cast<uint32_t>(context->bytes_buffered),
+                                                    static_cast<uint32_t>(context->read_offset),
+                                                    context->total_http_bytes,
+                                                    context->total_audio_bytes,
+                                                    context->eof_reached);
+        }
+
         if (static_cast<size_t>(bytes_read) < read_size) {
+            context->short_read_count++;
             break;
         }
     }
@@ -248,28 +372,135 @@ int append_http_mp3_stream_buffer(HttpMp3StreamContext *context, size_t target_b
     return total_appended;
 }
 
-int refill_http_mp3_stream_buffer(HttpMp3StreamContext *context)
+void compact_http_mp3_stream_buffer(HttpMp3StreamContext *context)
 {
-    if ((context == nullptr) || (context->client == nullptr) || (context->buffer == nullptr) || (context->capacity == 0) || context->eof_reached) {
+    if ((context == nullptr) || (context->buffer == nullptr) || (context->bytes_buffered == 0)) {
+        return;
+    }
+
+    if (context->read_offset == 0) {
+        return;
+    }
+
+    if (context->read_offset >= context->bytes_buffered) {
+        context->read_offset = 0;
+        context->bytes_buffered = 0;
+        return;
+    }
+
+    const size_t unread_bytes = context->bytes_buffered - context->read_offset;
+    memmove(context->buffer, context->buffer + context->read_offset, unread_bytes);
+    context->read_offset = 0;
+    context->bytes_buffered = unread_bytes;
+}
+
+size_t get_http_mp3_stream_unread_bytes(const HttpMp3StreamContext *context)
+{
+    if ((context == nullptr) || (context->bytes_buffered <= context->read_offset)) {
         return 0;
     }
 
-    context->read_offset = 0;
-    context->bytes_buffered = 0;
-    const int bytes_read = append_http_mp3_stream_buffer(context, kStreamNetworkReadChunk);
-    if (bytes_read > 0) {
-        ESP_LOGD(TAG, "HTTP stream refill produced %d bytes", bytes_read);
-        return bytes_read;
+    return context->bytes_buffered - context->read_offset;
+}
+
+void push_http_mp3_stream_metrics(HttpMp3StreamContext *context)
+{
+    if ((context == nullptr) || (context->app == nullptr)) {
+        return;
     }
 
-    context->read_offset = 0;
-    context->bytes_buffered = 0;
-    context->eof_reached = esp_http_client_is_complete_data_received(context->client);
-    if ((bytes_read < 0) && !context->eof_reached) {
-        ESP_LOGW(TAG, "HTTP stream read yielded %d while refilling radio buffer", bytes_read);
+    context->app->updateStreamBufferMetrics(static_cast<uint32_t>(context->capacity),
+                                            static_cast<uint32_t>(context->bytes_buffered),
+                                            static_cast<uint32_t>(context->read_offset),
+                                            context->total_http_bytes,
+                                            context->total_audio_bytes,
+                                            context->eof_reached);
+}
+
+void request_http_mp3_stream_refill(HttpMp3StreamContext *context)
+{
+    if ((context == nullptr) || (context->refill_task_handle == nullptr) || context->refill_task_stop_requested) {
+        return;
     }
 
-    return 0;
+    xTaskNotifyGive(context->refill_task_handle);
+}
+
+void http_mp3_stream_refill_task(void *user_ctx)
+{
+    auto *context = static_cast<HttpMp3StreamContext *>(user_ctx);
+    if (context == nullptr) {
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50));
+        if (context->refill_task_stop_requested) {
+            break;
+        }
+
+        for (;;) {
+            size_t read_size = 0;
+            if (xSemaphoreTake(context->mutex, portMAX_DELAY) != pdTRUE) {
+                break;
+            }
+
+            compact_http_mp3_stream_buffer(context);
+            const size_t unread_bytes = get_http_mp3_stream_unread_bytes(context);
+            const size_t free_space = context->capacity - context->bytes_buffered;
+            const bool should_fill = !context->refill_task_stop_requested && !context->eof_reached && (free_space > 0) &&
+                                     ((unread_bytes <= kStreamLowWaterBytes) || (context->bytes_buffered < context->capacity));
+            if (should_fill) {
+                read_size = std::min(free_space, kStreamNetworkReadChunk);
+            }
+            xSemaphoreGive(context->mutex);
+
+            if (context->refill_task_stop_requested || (read_size == 0)) {
+                break;
+            }
+
+            const int bytes_read = read_http_audio_bytes(context, context->scratch, read_size);
+            if (xSemaphoreTake(context->mutex, portMAX_DELAY) != pdTRUE) {
+                break;
+            }
+
+            if (bytes_read > 0) {
+                compact_http_mp3_stream_buffer(context);
+                const size_t writable_bytes = context->capacity - context->bytes_buffered;
+                const size_t appended_bytes = std::min(writable_bytes, static_cast<size_t>(bytes_read));
+                if (appended_bytes > 0) {
+                    memcpy(context->buffer + context->bytes_buffered, context->scratch, appended_bytes);
+                    context->bytes_buffered += appended_bytes;
+                    context->total_http_bytes += static_cast<uint32_t>(appended_bytes);
+                    context->last_progress_timestamp_ms = esp_log_timestamp();
+                    context->refill_count++;
+                    context->empty_refill_count = 0;
+                }
+            } else {
+                context->empty_refill_count++;
+                context->eof_reached = esp_http_client_is_complete_data_received(context->client);
+                if (!context->eof_reached && ((context->empty_refill_count == 1) || ((context->empty_refill_count % 20) == 0))) {
+                    ESP_LOGW(TAG,
+                             "HTTP stream refill returned %d (count=%u total_http=%u total_audio=%u)",
+                             bytes_read,
+                             context->empty_refill_count,
+                             context->total_http_bytes,
+                             context->total_audio_bytes);
+                }
+            }
+
+            push_http_mp3_stream_metrics(context);
+            xSemaphoreGive(context->mutex);
+
+            if (bytes_read <= 0) {
+                break;
+            }
+        }
+    }
+
+    context->refill_task_handle = nullptr;
+    vTaskDelete(nullptr);
 }
 
 int http_mp3_stream_read(void *user_ctx, uint8_t *buffer, size_t len, bool *is_eof)
@@ -283,22 +514,78 @@ int http_mp3_stream_read(void *user_ctx, uint8_t *buffer, size_t len, bool *is_e
     }
 
     size_t total_copied = 0;
+    uint32_t total_http_bytes = 0;
+    uint32_t total_audio_bytes = 0;
+    size_t bytes_buffered = 0;
+    size_t read_offset = 0;
+    bool eof_reached = false;
+    uint32_t refill_count = 0;
+    uint32_t empty_read_count = 0;
+    uint32_t retry_wait_count = 0;
     while (total_copied < len) {
-        if (context->read_offset >= context->bytes_buffered) {
-            if (refill_http_mp3_stream_buffer(context) <= 0) {
-                break;
-            }
+        if ((context->mutex == nullptr) || (xSemaphoreTake(context->mutex, pdMS_TO_TICKS(1)) != pdTRUE)) {
+            request_http_mp3_stream_refill(context);
+            break;
         }
 
-        const size_t available = context->bytes_buffered - context->read_offset;
+        const size_t available = get_http_mp3_stream_unread_bytes(context);
+        if (available == 0) {
+            total_http_bytes = context->total_http_bytes;
+            total_audio_bytes = context->total_audio_bytes;
+            bytes_buffered = context->bytes_buffered;
+            read_offset = context->read_offset;
+            eof_reached = context->eof_reached;
+            refill_count = context->refill_count;
+            empty_read_count = context->empty_read_count;
+            retry_wait_count = context->retry_wait_count;
+            xSemaphoreGive(context->mutex);
+            if (!eof_reached) {
+                request_http_mp3_stream_refill(context);
+            }
+            break;
+        }
+
         const size_t chunk = std::min(len - total_copied, available);
         memcpy(buffer + total_copied, context->buffer + context->read_offset, chunk);
         context->read_offset += chunk;
         total_copied += chunk;
+        context->total_audio_bytes += static_cast<uint32_t>(chunk);
+
+        total_http_bytes = context->total_http_bytes;
+        total_audio_bytes = context->total_audio_bytes;
+        bytes_buffered = context->bytes_buffered;
+        read_offset = context->read_offset;
+        eof_reached = context->eof_reached;
+        refill_count = context->refill_count;
+        empty_read_count = context->empty_read_count;
+        retry_wait_count = context->retry_wait_count;
+
+        const size_t remaining_after_read = get_http_mp3_stream_unread_bytes(context);
+        xSemaphoreGive(context->mutex);
+
+        if (remaining_after_read <= kStreamLowWaterBytes) {
+            request_http_mp3_stream_refill(context);
+        }
+    }
+
+    const uint32_t now_ms = esp_log_timestamp();
+    if ((context->last_heartbeat_timestamp_ms == 0) ||
+        ((now_ms - context->last_heartbeat_timestamp_ms) >= kRadioPlaybackHeartbeatMs)) {
+        context->last_heartbeat_timestamp_ms = now_ms;
+        ESP_LOGI(TAG,
+                 "Radio playback heartbeat: http=%u audio=%u buffered=%u remaining=%u refills=%u empty_reads=%u retry_waits=%u eof=%d",
+                 total_http_bytes,
+                 total_audio_bytes,
+                 static_cast<unsigned>(bytes_buffered),
+                 static_cast<unsigned>((bytes_buffered > read_offset) ? (bytes_buffered - read_offset) : 0),
+                 refill_count,
+                 empty_read_count,
+                 retry_wait_count,
+                 eof_reached ? 1 : 0);
     }
 
     if (is_eof != nullptr) {
-        *is_eof = context->eof_reached && (context->read_offset >= context->bytes_buffered);
+        *is_eof = eof_reached && (read_offset >= bytes_buffered);
     }
 
     return static_cast<int>(total_copied);
@@ -309,6 +596,19 @@ void http_mp3_stream_close(void *user_ctx)
     auto *context = static_cast<HttpMp3StreamContext *>(user_ctx);
     if (context == nullptr) {
         return;
+    }
+
+    log_radio_stream_summary(context, "close");
+
+    if (context->app != nullptr) {
+        context->app->resetStreamBufferMetrics();
+    }
+
+    context->refill_task_stop_requested = true;
+    request_http_mp3_stream_refill(context);
+    const TickType_t wait_start = xTaskGetTickCount();
+    while ((context->refill_task_handle != nullptr) && ((xTaskGetTickCount() - wait_start) < kStreamRefillTaskStopWait)) {
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
     if (context->client != nullptr) {
@@ -327,7 +627,12 @@ void http_mp3_stream_close(void *user_ctx)
         context->scratch = nullptr;
     }
 
-    delete context;
+    if (context->mutex != nullptr) {
+        vSemaphoreDelete(context->mutex);
+        context->mutex = nullptr;
+    }
+
+    delete_psram_preferred(context);
 }
 
 bool ensure_audio_player_idle(TickType_t timeout)
@@ -336,11 +641,13 @@ bool ensure_audio_player_idle(TickType_t timeout)
     bool stop_requested = false;
 
     while (audio_player_get_state() != AUDIO_PLAYER_STATE_IDLE) {
-        const esp_err_t stop_result = audio_player_stop();
-        if (stop_result == ESP_OK) {
-            stop_requested = true;
-        } else if (stop_result != ESP_ERR_INVALID_STATE) {
-            ESP_LOGW(TAG, "audio_player_stop failed while waiting for idle: %s", esp_err_to_name(stop_result));
+        if (!stop_requested) {
+            const esp_err_t stop_result = audio_player_stop();
+            if (stop_result == ESP_OK) {
+                stop_requested = true;
+            } else if (stop_result != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "audio_player_stop failed while waiting for idle: %s", esp_err_to_name(stop_result));
+            }
         }
 
         if ((xTaskGetTickCount() - start) >= timeout) {
@@ -564,11 +871,91 @@ InternetRadio::InternetRadio()
         _playerDialogTitleLabel(nullptr),
         _playerDialogDetailLabel(nullptr),
         _playerDialogStatusLabel(nullptr),
+        _playerDialogBufferLabel(nullptr),
+        _playerDialogBufferBar(nullptr),
         _playerDialogPlayButton(nullptr),
         _playerDialogStopButton(nullptr),
+        _playerDialogBufferTimer(nullptr),
         _selectedStationIndex(0),
-        _activeStationTitle()
+        _activeStationTitle(),
+        _streamBufferCapacity(0),
+        _streamBytesBuffered(0),
+        _streamReadOffset(0),
+        _streamTotalHttpBytes(0),
+        _streamTotalAudioBytes(0),
+        _streamEofReached(false)
 {
+}
+
+void InternetRadio::resetStreamBufferMetrics(void)
+{
+    _streamBufferCapacity.store(0);
+    _streamBytesBuffered.store(0);
+    _streamReadOffset.store(0);
+    _streamTotalHttpBytes.store(0);
+    _streamTotalAudioBytes.store(0);
+    _streamEofReached.store(false);
+}
+
+void InternetRadio::updateStreamBufferMetrics(uint32_t capacity,
+                                              uint32_t buffered,
+                                              uint32_t read_offset,
+                                              uint32_t total_http,
+                                              uint32_t total_audio,
+                                              bool eof_reached)
+{
+    _streamBufferCapacity.store(capacity);
+    _streamBytesBuffered.store(buffered);
+    _streamReadOffset.store(read_offset);
+    _streamTotalHttpBytes.store(total_http);
+    _streamTotalAudioBytes.store(total_audio);
+    _streamEofReached.store(eof_reached);
+}
+
+void InternetRadio::refreshPlayerDialogBufferInfo(void)
+{
+    if ((_playerDialogBufferLabel == nullptr) || (_playerDialogBufferBar == nullptr)) {
+        return;
+    }
+
+    const uint32_t capacity = _streamBufferCapacity.load();
+    const uint32_t buffered = _streamBytesBuffered.load();
+    const uint32_t read_offset = _streamReadOffset.load();
+    const uint32_t total_http = _streamTotalHttpBytes.load();
+    const uint32_t total_audio = _streamTotalAudioBytes.load();
+    const bool eof_reached = _streamEofReached.load();
+    const uint32_t remaining = (buffered > read_offset) ? (buffered - read_offset) : 0;
+
+    lv_bar_set_range(_playerDialogBufferBar, 0, (capacity > 0) ? static_cast<int>(capacity) : 100);
+    lv_bar_set_value(_playerDialogBufferBar,
+                     (capacity > 0) ? static_cast<int>(std::min(remaining, capacity)) : 0,
+                     LV_ANIM_OFF);
+
+    char buffer_text[160] = {};
+    if (capacity == 0) {
+        snprintf(buffer_text, sizeof(buffer_text), "Waiting for stream buffer data...");
+    } else {
+        snprintf(buffer_text,
+                 sizeof(buffer_text),
+                 "Buffered: %u%%  (%u / %u KB ready)\nDownloaded: %u KB   Played: %u KB%s",
+                 static_cast<unsigned>((remaining * 100U) / capacity),
+                 static_cast<unsigned>(remaining / 1024U),
+                 static_cast<unsigned>(capacity / 1024U),
+                 static_cast<unsigned>(total_http / 1024U),
+                 static_cast<unsigned>(total_audio / 1024U),
+                 eof_reached ? "   EOF" : "");
+    }
+    lv_label_set_text(_playerDialogBufferLabel, buffer_text);
+}
+
+void InternetRadio::onPlayerDialogBufferTimer(lv_timer_t *timer)
+{
+    if ((timer == nullptr) || (timer->user_data == nullptr)) {
+        return;
+    }
+
+    auto *self = static_cast<InternetRadio *>(timer->user_data);
+    self->refreshPlayerDialogBufferInfo();
 }
 
 bool InternetRadio::init(void)
@@ -633,8 +1020,8 @@ bool InternetRadio::close(void)
 bool InternetRadio::pause(void)
 {
     closePlayerDialog();
-    stopPreviewPlayback();
-    bsp_extra_codec_dev_stop();
+    ESP_LOGI(TAG, "pause");
+    ESP_LOGI(TAG, "Keeping radio playback active while the app is minimized");
     return true;
 }
 
@@ -712,11 +1099,13 @@ void InternetRadio::applyStatusText(const char *text)
     if (_playerDialogStatusLabel != nullptr) {
         lv_label_set_text(_playerDialogStatusLabel, text);
     }
+
+    refreshPlayerDialogBufferInfo();
 }
 
 void InternetRadio::setStatusFromTask(const char *text)
 {
-    auto *context = new AsyncStatusContext{};
+    auto *context = new_psram_preferred<AsyncStatusContext>();
     if (context == nullptr) {
         ESP_LOGW(TAG, "Failed to allocate async status context");
         return;
@@ -728,7 +1117,7 @@ void InternetRadio::setStatusFromTask(const char *text)
     bsp_display_lock(0);
     if (lv_async_call(applyAsyncStatus, context) != LV_RES_OK) {
         bsp_display_unlock();
-        delete context;
+        delete_psram_preferred(context);
         ESP_LOGW(TAG, "Failed to queue async radio status update");
         return;
     }
@@ -751,7 +1140,7 @@ void InternetRadio::applyAsyncStatus(void *context)
         if (status_context->app != nullptr) {
             status_context->app->applyStatusText(status_context->text);
         }
-        delete status_context;
+        delete_psram_preferred(status_context);
     }
 }
 
@@ -945,6 +1334,8 @@ void InternetRadio::showPlayerDialog(size_t index)
         _playerDialogTitleLabel = nullptr;
         _playerDialogDetailLabel = nullptr;
         _playerDialogStatusLabel = nullptr;
+        _playerDialogBufferLabel = nullptr;
+        _playerDialogBufferBar = nullptr;
         _playerDialogPlayButton = nullptr;
         _playerDialogStopButton = nullptr;
     }
@@ -954,7 +1345,7 @@ void InternetRadio::showPlayerDialog(size_t index)
         return;
     }
 
-    lv_obj_set_size(_playerDialog, 420, 360);
+    lv_obj_set_size(_playerDialog, 448, 468);
     lv_obj_center(_playerDialog);
     lv_obj_set_style_radius(_playerDialog, 24, 0);
     lv_obj_set_style_bg_color(_playerDialog, lv_color_hex(0x101A2D), 0);
@@ -983,7 +1374,7 @@ void InternetRadio::showPlayerDialog(size_t index)
     lv_obj_center(close_label);
 
     lv_obj_t *content = lv_obj_create(_playerDialog);
-    lv_obj_set_size(content, 384, 210);
+    lv_obj_set_size(content, 412, 318);
     lv_obj_align(content, LV_ALIGN_TOP_LEFT, 0, 78);
     lv_obj_set_style_radius(content, 16, 0);
     lv_obj_set_style_bg_color(content, lv_color_hex(0x162338), 0);
@@ -1028,8 +1419,31 @@ void InternetRadio::showPlayerDialog(size_t index)
     lv_obj_set_style_text_font(_playerDialogStatusLabel, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_playerDialogStatusLabel, lv_color_hex(0xF7FAFC), 0);
 
+    lv_obj_t *buffer_header = lv_label_create(content);
+    lv_label_set_text(buffer_header, "Buffered Stream");
+    lv_obj_set_style_text_font(buffer_header, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(buffer_header, lv_color_hex(0x7BDFF2), 0);
+
+    _playerDialogBufferBar = lv_bar_create(content);
+    lv_obj_set_width(_playerDialogBufferBar, lv_pct(100));
+    lv_obj_set_height(_playerDialogBufferBar, 16);
+    lv_bar_set_range(_playerDialogBufferBar, 0, 100);
+    lv_bar_set_value(_playerDialogBufferBar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(_playerDialogBufferBar, 8, 0);
+    lv_obj_set_style_bg_color(_playerDialogBufferBar, lv_color_hex(0x23344F), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(_playerDialogBufferBar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_playerDialogBufferBar, lv_color_hex(0x1FC8A5), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(_playerDialogBufferBar, LV_OPA_COVER, LV_PART_INDICATOR);
+
+    _playerDialogBufferLabel = lv_label_create(content);
+    lv_label_set_text(_playerDialogBufferLabel, "Waiting for stream buffer data...");
+    lv_obj_set_width(_playerDialogBufferLabel, lv_pct(100));
+    lv_label_set_long_mode(_playerDialogBufferLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_playerDialogBufferLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_playerDialogBufferLabel, lv_color_hex(0x9BB0CC), 0);
+
     _playerDialogPlayButton = lv_btn_create(_playerDialog);
-    lv_obj_set_size(_playerDialogPlayButton, 150, 50);
+    lv_obj_set_size(_playerDialogPlayButton, 162, 52);
     lv_obj_align(_playerDialogPlayButton, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_set_style_radius(_playerDialogPlayButton, 20, 0);
     lv_obj_set_style_bg_color(_playerDialogPlayButton, lv_color_hex(0x0E9F6E), 0);
@@ -1039,7 +1453,7 @@ void InternetRadio::showPlayerDialog(size_t index)
     lv_obj_center(play_label);
 
     _playerDialogStopButton = lv_btn_create(_playerDialog);
-    lv_obj_set_size(_playerDialogStopButton, 150, 50);
+    lv_obj_set_size(_playerDialogStopButton, 162, 52);
     lv_obj_align(_playerDialogStopButton, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     lv_obj_set_style_radius(_playerDialogStopButton, 20, 0);
     lv_obj_set_style_bg_color(_playerDialogStopButton, lv_color_hex(0xD64545), 0);
@@ -1055,10 +1469,20 @@ void InternetRadio::showPlayerDialog(size_t index)
     } else {
         setStatus(std::string("Selected station: ") + entry.title);
     }
+
+    if (_playerDialogBufferTimer == nullptr) {
+        _playerDialogBufferTimer = lv_timer_create(onPlayerDialogBufferTimer, 250, this);
+    }
+    refreshPlayerDialogBufferInfo();
 }
 
 void InternetRadio::closePlayerDialog(void)
 {
+    if (_playerDialogBufferTimer != nullptr) {
+        lv_timer_del(_playerDialogBufferTimer);
+        _playerDialogBufferTimer = nullptr;
+    }
+
     if (_playerDialog != nullptr) {
         lv_obj_del(_playerDialog);
         _playerDialog = nullptr;
@@ -1067,6 +1491,8 @@ void InternetRadio::closePlayerDialog(void)
     _playerDialogTitleLabel = nullptr;
     _playerDialogDetailLabel = nullptr;
     _playerDialogStatusLabel = nullptr;
+    _playerDialogBufferLabel = nullptr;
+    _playerDialogBufferBar = nullptr;
     _playerDialogPlayButton = nullptr;
     _playerDialogStopButton = nullptr;
 }
@@ -1149,7 +1575,7 @@ void InternetRadio::destroyPreviewWorker(void)
     if (_previewCommandQueue != nullptr) {
         PreviewTaskContext *stale_context = nullptr;
         while (xQueueReceive(_previewCommandQueue, &stale_context, 0) == pdTRUE) {
-            delete stale_context;
+            delete_psram_preferred(stale_context);
             stale_context = nullptr;
         }
         vQueueDelete(_previewCommandQueue);
@@ -1176,7 +1602,7 @@ bool InternetRadio::queuePreviewPlayback(const ListEntry &entry, bool from_task)
         return false;
     }
 
-    auto *task_context = new PreviewTaskContext{this, entry.title, entry.value, entry.canPreview};
+    auto *task_context = new_psram_preferred<PreviewTaskContext>(PreviewTaskContext{this, entry.title, entry.value, entry.canPreview});
     if (task_context == nullptr) {
         _previewStartInProgress.store(false);
         setStatusForContext("Unable to allocate station preview context.", from_task);
@@ -1189,12 +1615,12 @@ bool InternetRadio::queuePreviewPlayback(const ListEntry &entry, bool from_task)
     if (uxQueueMessagesWaiting(_previewCommandQueue) != 0) {
         PreviewTaskContext *stale_context = nullptr;
         if (xQueueReceive(_previewCommandQueue, &stale_context, 0) == pdTRUE) {
-            delete stale_context;
+            delete_psram_preferred(stale_context);
         }
     }
 
     if (xQueueSend(_previewCommandQueue, &task_context, 0) != pdPASS) {
-        delete task_context;
+        delete_psram_preferred(task_context);
         _previewStartInProgress.store(false);
         ESP_LOGE(TAG,
                  "Failed to queue radio preview task. Internal RAM free=%u largest=%u PSRAM free=%u",
@@ -1223,9 +1649,21 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
         }
     }
 
-    auto *stream_context = new HttpMp3StreamContext();
+    auto *stream_context = new_psram_preferred<HttpMp3StreamContext>();
     if (stream_context == nullptr) {
         setStatusFromTask("Unable to allocate stream context.");
+        return false;
+    }
+    stream_context->app = this;
+    stream_context->open_timestamp_ms = esp_log_timestamp();
+    stream_context->last_progress_timestamp_ms = stream_context->open_timestamp_ms;
+    stream_context->last_heartbeat_timestamp_ms = stream_context->open_timestamp_ms;
+    resetStreamBufferMetrics();
+
+    stream_context->mutex = xSemaphoreCreateMutex();
+    if (stream_context->mutex == nullptr) {
+        delete_psram_preferred(stream_context);
+        setStatusFromTask("Unable to allocate stream lock.");
         return false;
     }
 
@@ -1236,8 +1674,8 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
     config.method = HTTP_METHOD_GET;
     config.timeout_ms = kStreamTimeoutMs;
     config.disable_auto_redirect = false;
-    config.buffer_size = 1024;
-    config.buffer_size_tx = 1024;
+    config.buffer_size = kHttpClientBufferSize;
+    config.buffer_size_tx = kHttpClientBufferSize;
     config.user_data = stream_context;
     config.event_handler = [](esp_http_client_event_t *event) {
         if ((event == nullptr) || (event->user_data == nullptr) || (event->event_id != HTTP_EVENT_ON_HEADER) ||
@@ -1270,7 +1708,7 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
 
     stream_context->client = esp_http_client_init(&config);
     if (stream_context->client == nullptr) {
-        delete stream_context;
+        delete_psram_preferred(stream_context);
         setStatusFromTask("Failed to open station stream.");
         return false;
     }
@@ -1339,8 +1777,15 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
     ESP_LOGI(TAG, "Radio stream buffer allocated in %s (%u bytes)",
              stream_context->using_psram ? "PSRAM" : "internal RAM fallback",
              static_cast<unsigned>(stream_context->capacity));
+    updateStreamBufferMetrics(static_cast<uint32_t>(stream_context->capacity),
+                              static_cast<uint32_t>(stream_context->bytes_buffered),
+                              static_cast<uint32_t>(stream_context->read_offset),
+                              stream_context->total_http_bytes,
+                              stream_context->total_audio_bytes,
+                              stream_context->eof_reached);
 
-    const size_t prefill_target = std::min(kStreamInitialPrefillBytes, stream_context->capacity / 2);
+    const size_t prefill_target = std::min(stream_context->capacity,
+                                           (stream_context->capacity * static_cast<size_t>(kStreamStartPlaybackPercent)) / static_cast<size_t>(100));
     const int prefilled_bytes = append_http_mp3_stream_buffer(stream_context, prefill_target);
     ESP_LOGI(TAG,
              "Radio stream prefilled %d/%u bytes before playback",
@@ -1357,6 +1802,20 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
         setStatusFromTask("Audio output is unavailable.");
         return false;
     }
+
+    if (xTaskCreatePinnedToCore(http_mp3_stream_refill_task,
+                                "radio_refill",
+                                kStreamRefillTaskStackSize,
+                                stream_context,
+                                kStreamRefillTaskPriority,
+                                &stream_context->refill_task_handle,
+                                tskNO_AFFINITY) != pdPASS) {
+        http_mp3_stream_close(stream_context);
+        setStatusFromTask("Unable to start stream refill task.");
+        return false;
+    }
+
+    request_http_mp3_stream_refill(stream_context);
 
     audio_player_stream_t stream = {
         .read_fn = http_mp3_stream_read,
@@ -1395,7 +1854,7 @@ void InternetRadio::previewPlaybackTask(void *context)
         entry.title = std::move(task_context->title);
         entry.value = std::move(task_context->url);
         entry.canPreview = task_context->can_preview;
-        delete task_context;
+        delete_psram_preferred(task_context);
 
         char status_text[kAsyncStatusTextCapacity] = {};
         if (entry.canPreview) {
@@ -1589,6 +2048,11 @@ void InternetRadio::radioAudioCallback(audio_player_cb_ctx_t *ctx)
     }
 
     auto *self = static_cast<InternetRadio *>(ctx->user_ctx);
+    ESP_LOGI(TAG,
+             "Radio audio callback: event=%s state=%d active_station=%s",
+             audio_player_event_name(ctx->audio_event),
+             static_cast<int>(audio_player_get_state()),
+             self->_activeStationTitle.empty() ? "<none>" : self->_activeStationTitle.c_str());
     char status_text[kAsyncStatusTextCapacity] = {};
     switch (ctx->audio_event) {
     case AUDIO_PLAYER_CALLBACK_EVENT_PLAYING:
@@ -1604,6 +2068,7 @@ void InternetRadio::radioAudioCallback(audio_player_cb_ctx_t *ctx)
         break;
     case AUDIO_PLAYER_CALLBACK_EVENT_IDLE:
         if (!self->_activeStationTitle.empty()) {
+            ESP_LOGW(TAG, "Radio playback transitioned to IDLE while station '%s' was active", self->_activeStationTitle.c_str());
             snprintf(status_text, sizeof(status_text), "Stopped: %s", self->_activeStationTitle.c_str());
             self->setStatusFromTask(status_text);
             self->_activeStationTitle.clear();

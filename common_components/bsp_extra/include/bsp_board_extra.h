@@ -23,7 +23,7 @@ extern "C" {
 #define CODEC_DEFAULT_BIT_WIDTH             (16)
 #define CODEC_DEFAULT_ADC_VOLUME            (24.0)
 #define CODEC_DEFAULT_CHANNEL               (I2S_SLOT_MODE_STEREO)
-#define CODEC_DEFAULT_VOLUME                (60)
+#define CODEC_DEFAULT_VOLUME                (50)
 
 #define BSP_LCD_BACKLIGHT_BRIGHTNESS_MAX    (95)
 #define BSP_LCD_BACKLIGHT_BRIGHTNESS_MIN    (0)

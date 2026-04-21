@@ -38,6 +38,7 @@ static bool _is_audio_init = false;
 static bool _is_player_init = false;
 static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
 static int s_system_volume_intensity = CODEC_DEFAULT_VOLUME;
+static bool s_codec_devices_open = false;
 
 typedef struct {
     SemaphoreHandle_t mutex;
@@ -81,6 +82,7 @@ static char audio_file_path[512];
 #define AUDIO_NOTIFICATION_FREQUENCY_HZ         (1046)
 #define AUDIO_NOTIFICATION_DURATION_MS          (180)
 #define AUDIO_NOTIFICATION_AMPLITUDE            (0.35f)
+#define AUDIO_WRITE_STALL_WARN_MS               (100)
 
 #define DISPLAY_IDLE_TASK_STACK_SIZE            (4096)
 #define DISPLAY_IDLE_TASK_PRIORITY              (1)
@@ -505,21 +507,55 @@ esp_err_t bsp_extra_i2s_read(void *audio_buffer, size_t len, size_t *bytes_read,
 
 esp_err_t bsp_extra_i2s_write(void *audio_buffer, size_t len, size_t *bytes_written, uint32_t timeout_ms)
 {
+    const uint32_t start_ms = esp_log_timestamp();
     esp_err_t ret = esp_codec_dev_write(play_dev_handle, audio_buffer, len);
+    const uint32_t elapsed_ms = esp_log_timestamp() - start_ms;
     if (ret == ESP_OK) {
         if (bytes_written) {
             *bytes_written = len;
+        }
+        if (elapsed_ms >= AUDIO_WRITE_STALL_WARN_MS) {
+            ESP_LOGW(TAG,
+                     "Audio output write stalled for %u ms (len=%u timeout=%u notif=%d)",
+                     (unsigned)elapsed_ms,
+                     (unsigned)len,
+                     (unsigned)timeout_ms,
+                     s_audio_mix_state.notification_active ? 1 : 0);
         }
     } else {
         if (bytes_written) {
             *bytes_written = 0;
         }
+        ESP_LOGW(TAG,
+                 "Audio output write failed after %u ms: %s (len=%u timeout=%u notif=%d)",
+                 (unsigned)elapsed_ms,
+                 esp_err_to_name(ret),
+                 (unsigned)len,
+                 (unsigned)timeout_ms,
+                 s_audio_mix_state.notification_active ? 1 : 0);
     }
     return ret;
 }
 
 esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)
 {
+    bool format_unchanged = false;
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        format_unchanged = (s_audio_mix_state.sample_rate == rate) &&
+                           (s_audio_mix_state.bits_per_sample == bits_cfg) &&
+                           (s_audio_mix_state.channel_mode == ch);
+        audio_mix_unlock();
+    }
+
+    if (format_unchanged && s_codec_devices_open) {
+        ESP_LOGI(TAG,
+                 "Skipping codec reconfigure for unchanged format rate=%" PRId32 " bits=%" PRId32 " ch=%d",
+                 rate,
+                 bits_cfg,
+                 (int)ch);
+        return ESP_OK;
+    }
+
     esp_err_t ret = ESP_OK;
     ESP_LOGI(TAG,"rate = %" PRId32 "bits_cfg = %" PRId32, rate,bits_cfg);
 
@@ -543,6 +579,8 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
     if (record_dev_handle) {
         ret |= esp_codec_dev_open(record_dev_handle, &fs);
     }
+
+    s_codec_devices_open = (ret == ESP_OK);
 
     if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
         s_audio_mix_state.sample_rate = rate;
@@ -629,11 +667,14 @@ int bsp_extra_audio_system_volume_get(void)
 
 esp_err_t bsp_extra_audio_play_system_notification(void)
 {
-    ESP_RETURN_ON_ERROR(bsp_extra_codec_init(), TAG, "speaker codec init failed");
-    ESP_RETURN_ON_ERROR(bsp_extra_codec_set_fs_play(CODEC_DEFAULT_SAMPLE_RATE, CODEC_DEFAULT_BIT_WIDTH, CODEC_DEFAULT_CHANNEL),
-                        TAG,
-                        "Failed to prepare codec output path for notification");
-    ESP_RETURN_ON_ERROR(bsp_extra_codec_mute_set(false), TAG, "Failed to unmute codec output");
+    const bool media_playing = (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING);
+    if (!media_playing) {
+        ESP_RETURN_ON_ERROR(bsp_extra_codec_init(), TAG, "speaker codec init failed");
+        ESP_RETURN_ON_ERROR(bsp_extra_codec_set_fs_play(CODEC_DEFAULT_SAMPLE_RATE, CODEC_DEFAULT_BIT_WIDTH, CODEC_DEFAULT_CHANNEL),
+                            TAG,
+                            "Failed to prepare codec output path for notification");
+        ESP_RETURN_ON_ERROR(bsp_extra_codec_mute_set(false), TAG, "Failed to unmute codec output");
+    }
 
     if (!audio_mix_lock(pdMS_TO_TICKS(1000))) {
         return ESP_ERR_TIMEOUT;
@@ -648,7 +689,7 @@ esp_err_t bsp_extra_audio_play_system_notification(void)
     s_audio_mix_state.applied_output_volume = -1;
     audio_apply_output_volume_locked();
 
-    const bool start_direct_task = (audio_player_get_state() != AUDIO_PLAYER_STATE_PLAYING) &&
+    const bool start_direct_task = !media_playing &&
                                    !s_audio_mix_state.notification_direct_task_running;
     if (start_direct_task) {
         s_audio_mix_state.notification_direct_task_running = true;
@@ -700,6 +741,7 @@ esp_err_t bsp_extra_codec_dev_stop(void)
     if (record_dev_handle) {
         ret = esp_codec_dev_close(record_dev_handle);
     }
+    s_codec_devices_open = false;
     return ret;
 }
 

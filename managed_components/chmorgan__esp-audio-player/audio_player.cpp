@@ -49,6 +49,25 @@
 #include "audio_mp3.h"
 
 static const char *TAG = "audio";
+static constexpr size_t kMp3StreamBufferMultiplier = 12;
+static constexpr size_t kMp3StreamRefillThreshold = MAINBUF_SIZE * 3;
+static constexpr uint32_t kMp3PlaybackHeartbeatMs = 2000;
+
+static void *audio_internal_malloc(size_t size, const char *label)
+{
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        ESP_LOGI(TAG, "%s allocated in internal RAM (%u bytes)", label, (unsigned)size);
+        return ptr;
+    }
+
+    ptr = heap_caps_malloc(size, MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        ESP_LOGW(TAG, "%s allocated in generic 8-bit fallback (%u bytes)", label, (unsigned)size);
+    }
+
+    return ptr;
+}
 
 static void *audio_psram_malloc(size_t size, const char *label)
 {
@@ -87,33 +106,25 @@ static void *audio_psram_realloc(void *ptr, size_t size, const char *label)
     return new_ptr;
 }
 
-static BaseType_t create_audio_task_prefer_psram(TaskFunction_t task,
-                                                 const char *name,
-                                                 const uint32_t stack_depth,
-                                                 void *arg,
-                                                 const UBaseType_t priority,
-                                                 const BaseType_t core_id)
+static BaseType_t create_audio_task_internal(TaskFunction_t task,
+                                             const char *name,
+                                             const uint32_t stack_depth,
+                                             void *arg,
+                                             const UBaseType_t priority,
+                                             const BaseType_t core_id)
 {
-    if (xTaskCreatePinnedToCoreWithCaps(task,
-                                        name,
-                                        stack_depth,
-                                        arg,
-                                        priority,
-                                        NULL,
-                                        core_id,
-                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
-        ESP_LOGI(TAG, "Started %s with a PSRAM-backed stack", name);
-        return pdPASS;
+    BaseType_t ret = xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, NULL, core_id);
+    if (ret == pdPASS) {
+        ESP_LOGI(TAG, "Started %s with an internal RAM stack", name);
+        return ret;
     }
 
-    ESP_LOGW(TAG,
-             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+    ESP_LOGE(TAG,
+             "Failed to start %s with an internal RAM stack. Internal free=%u largest=%u",
              name,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-
-    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, NULL, core_id);
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    return ret;
 }
 
 typedef enum {
@@ -777,7 +788,7 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
 
     size_t unread_bytes = pInstance->bytes_in_data_buf - (pInstance->read_ptr - pInstance->data_buf);
 
-    if (unread_bytes < 1.25 * MAINBUF_SIZE && !pInstance->eof_reached) {
+    if (unread_bytes < kMp3StreamRefillThreshold && !pInstance->eof_reached) {
         uint8_t *write_ptr = pInstance->data_buf + unread_bytes;
         size_t free_space = pInstance->data_buf_size - unread_bytes;
 
@@ -796,6 +807,14 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
         if (is_eof) {
             pInstance->eof_reached = true;
         } else if (nRead == 0) {
+            pInstance->stream_read_empty_count++;
+            if ((pInstance->stream_read_empty_count == 1) || ((pInstance->stream_read_empty_count % 20) == 0)) {
+                ESP_LOGW(TAG,
+                         "mp3 stream supplied no data (count=%u unread=%u free=%u)",
+                         pInstance->stream_read_empty_count,
+                         (unsigned)unread_bytes,
+                         (unsigned)free_space);
+            }
             return DECODE_STATUS_NO_DATA_CONTINUE;
         }
 
@@ -804,6 +823,21 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
 
     if (unread_bytes == 0) {
         return DECODE_STATUS_DONE;
+    }
+
+    const uint32_t now_ms = esp_log_timestamp();
+    if ((pInstance->stream_last_heartbeat_ms == 0) ||
+        ((now_ms - pInstance->stream_last_heartbeat_ms) >= kMp3PlaybackHeartbeatMs)) {
+        pInstance->stream_last_heartbeat_ms = now_ms;
+        ESP_LOGI(TAG,
+                 "mp3 playback heartbeat: unread=%u total=%u underflows=%u sync_misses=%u decode_errors=%u empty_reads=%u eof=%d",
+                 (unsigned)unread_bytes,
+                 (unsigned)pInstance->bytes_in_data_buf,
+                 pInstance->stream_underflow_count,
+                 pInstance->stream_sync_miss_count,
+                 pInstance->stream_decode_error_count,
+                 pInstance->stream_read_empty_count,
+                 pInstance->eof_reached ? 1 : 0);
     }
 
     int offset = MP3FindSyncWord(pInstance->read_ptr, unread_bytes);
@@ -828,8 +862,16 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
                 return DECODE_STATUS_DONE;
             }
             if (mp3_dec_err == ERR_MP3_MAINDATA_UNDERFLOW) {
-                return DECODE_STATUS_NO_DATA_CONTINUE;
+                pInstance->stream_underflow_count++;
+                if ((pInstance->stream_underflow_count == 1) || ((pInstance->stream_underflow_count % 20) == 0)) {
+                    ESP_LOGW(TAG,
+                             "mp3 main-data underflow (count=%u unread=%u)",
+                             pInstance->stream_underflow_count,
+                             (unsigned)unread_bytes);
+                }
+                return DECODE_STATUS_RETRY_IMMEDIATE;
             }
+            pInstance->stream_decode_error_count++;
             size_t bytes_consumed = static_cast<size_t>(read_ptr - frame_ptr);
             size_t bytes_to_skip = (bytes_consumed > 0) ? bytes_consumed : 1;
             pInstance->read_ptr = frame_ptr + bytes_to_skip;
@@ -839,6 +881,13 @@ static DECODE_STATUS decode_mp3_stream(HMP3Decoder mp3_decoder, audio_player_str
         }
     } else {
         pData->frame_count = 0;
+        pInstance->stream_sync_miss_count++;
+        if ((pInstance->stream_sync_miss_count == 1) || ((pInstance->stream_sync_miss_count % 20) == 0)) {
+            ESP_LOGW(TAG,
+                     "mp3 sync word not found (count=%u unread=%u)",
+                     pInstance->stream_sync_miss_count,
+                     (unsigned)unread_bytes);
+        }
 
         size_t words_to_drop = unread_bytes / BYTES_IN_WORD;
         size_t bytes_to_drop = words_to_drop * BYTES_IN_WORD;
@@ -862,6 +911,11 @@ static esp_err_t aplay_mp3_stream(audio_instance_t *i, audio_player_stream_t *st
     i->mp3_data.bytes_in_data_buf = 0;
     i->mp3_data.read_ptr = i->mp3_data.data_buf;
     i->mp3_data.eof_reached = false;
+    i->mp3_data.stream_read_empty_count = 0;
+    i->mp3_data.stream_underflow_count = 0;
+    i->mp3_data.stream_sync_miss_count = 0;
+    i->mp3_data.stream_decode_error_count = 0;
+    i->mp3_data.stream_last_heartbeat_ms = 0;
 
     do {
         if (pdPASS == xQueuePeek(i->event_queue, &audio_event, 0)) {
@@ -913,6 +967,11 @@ static esp_err_t aplay_mp3_stream(audio_instance_t *i, audio_player_stream_t *st
                 (i2s_format.bits_per_sample != i->output.fmt.bits_per_sample)) {
                 i2s_format = i->output.fmt;
                 i2s_slot_mode_t channel_setting = (i2s_format.channels == 1) ? I2S_SLOT_MODE_MONO : I2S_SLOT_MODE_STEREO;
+                ESP_LOGI(TAG,
+                         "mp3 stream format change: sr=%u bits=%u ch=%u",
+                         (unsigned)i2s_format.sample_rate,
+                         (unsigned)i2s_format.bits_per_sample,
+                         (unsigned)i2s_format.channels);
                 ret = i->config.clk_set_fn(i2s_format.sample_rate, i2s_format.bits_per_sample, channel_setting);
                 ESP_GOTO_ON_ERROR(ret, clean_up, TAG, "i2s_set_clk");
             }
@@ -923,6 +982,8 @@ static esp_err_t aplay_mp3_stream(audio_instance_t *i, audio_player_stream_t *st
             if (bytes_to_write != i2s_bytes_written) {
                 ESP_LOGE(TAG, "to write %d != written %d", bytes_to_write, i2s_bytes_written);
             }
+        } else if (decode_status == DECODE_STATUS_RETRY_IMMEDIATE) {
+            continue;
         } else if (decode_status == DECODE_STATUS_NO_DATA_CONTINUE) {
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -932,6 +993,14 @@ static esp_err_t aplay_mp3_stream(audio_instance_t *i, audio_player_stream_t *st
     } while (true);
 
 clean_up:
+    ESP_LOGI(TAG,
+             "mp3 stream summary: empty_reads=%u underflows=%u sync_misses=%u decode_errors=%u eof=%d buffered=%u",
+             i->mp3_data.stream_read_empty_count,
+             i->mp3_data.stream_underflow_count,
+             i->mp3_data.stream_sync_miss_count,
+             i->mp3_data.stream_decode_error_count,
+             i->mp3_data.eof_reached ? 1 : 0,
+             (unsigned)i->mp3_data.bytes_in_data_buf);
     return ret;
 }
 
@@ -1113,7 +1182,7 @@ esp_err_t audio_player_new(audio_player_config_t config)
     /** See https://github.com/ultraembedded/libhelix-mp3/blob/0a0e0673f82bc6804e5a3ddb15fb6efdcde747cd/testwrap/main.c#L74 */
     instance.output.samples_capacity = MAX_NCHAN * MAX_NGRAN * MAX_NSAMP;
     instance.output.samples_capacity_max = instance.output.samples_capacity * 2;
-    instance.output.samples = static_cast<uint8_t*>(audio_psram_malloc(instance.output.samples_capacity_max, "audio output buffer"));
+    instance.output.samples = static_cast<uint8_t*>(audio_internal_malloc(instance.output.samples_capacity_max, "audio output buffer"));
     LOGI_1("samples_capacity %d bytes", instance.output.samples_capacity_max);
     int ret = ESP_OK;
     ESP_GOTO_ON_FALSE(NULL != instance.output.samples, ESP_ERR_NO_MEM, cleanup,
@@ -1125,8 +1194,8 @@ esp_err_t audio_player_new(audio_player_config_t config)
         TAG, "Failed to register default simple decoders");
 
 #if defined(CONFIG_AUDIO_PLAYER_ENABLE_MP3)
-    instance.mp3_data.data_buf_size = MAINBUF_SIZE * 3;
-    instance.mp3_data.data_buf = static_cast<uint8_t*>(audio_psram_malloc(instance.mp3_data.data_buf_size, "mp3 data buffer"));
+    instance.mp3_data.data_buf_size = MAINBUF_SIZE * kMp3StreamBufferMultiplier;
+    instance.mp3_data.data_buf = static_cast<uint8_t*>(audio_internal_malloc(instance.mp3_data.data_buf_size, "mp3 data buffer"));
     ESP_GOTO_ON_FALSE(NULL != instance.mp3_data.data_buf, ESP_ERR_NO_MEM, cleanup,
         TAG, "Failed allocate mp3 data buffer");
 
@@ -1136,7 +1205,7 @@ esp_err_t audio_player_new(audio_player_config_t config)
 #endif
 
     instance.running = true;
-    task_val = create_audio_task_prefer_psram(
+    task_val = create_audio_task_internal(
         (TaskFunction_t)        audio_task,
                                 "Audio Task",
                                 10 * 1024,

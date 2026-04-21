@@ -42,6 +42,12 @@ typedef struct {
 
     // set to true if the end of file has been reached
     bool eof_reached;
+
+    uint32_t stream_read_empty_count;
+    uint32_t stream_underflow_count;
+    uint32_t stream_sync_miss_count;
+    uint32_t stream_decode_error_count;
+    uint32_t stream_last_heartbeat_ms;
 } mp3_instance;
 
 bool is_mp3(FILE *fp);

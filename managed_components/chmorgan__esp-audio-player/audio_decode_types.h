@@ -5,6 +5,7 @@
 
 typedef enum {
     DECODE_STATUS_CONTINUE,         /*< data remaining, call decode again */
+    DECODE_STATUS_RETRY_IMMEDIATE,  /*< data remaining, retry decode immediately without sleeping */
     DECODE_STATUS_NO_DATA_CONTINUE, /*< data remaining but none in this call */
     DECODE_STATUS_DONE,             /*< no data remaining to decode */
     DECODE_STATUS_ERROR             /*< unrecoverable error */

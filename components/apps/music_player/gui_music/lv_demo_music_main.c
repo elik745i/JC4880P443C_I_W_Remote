@@ -324,8 +324,24 @@ void _lv_demo_music_main_close(void)
 {
     closing = true;
     bsp_extra_player_register_callback(NULL, NULL);
-    if(stop_start_anim_timer) lv_timer_del(stop_start_anim_timer);
-    lv_timer_del(sec_counter_timer);
+    if (stop_start_anim_timer != NULL) {
+        lv_timer_del(stop_start_anim_timer);
+        stop_start_anim_timer = NULL;
+    }
+    if (sec_counter_timer != NULL) {
+        lv_timer_del(sec_counter_timer);
+        sec_counter_timer = NULL;
+    }
+
+    main_cont = NULL;
+    spectrum_obj = NULL;
+    title_label = NULL;
+    artist_label = NULL;
+    genre_label = NULL;
+    time_obj = NULL;
+    album_img_obj = NULL;
+    slider_obj = NULL;
+    play_obj = NULL;
 }
 
 void _lv_demo_music_album_next(bool next)
@@ -439,6 +455,47 @@ void _lv_demo_music_pause(void)
 void _lv_demo_music_exit_pause(void)
 {
     pause_exit = true;
+}
+
+void _lv_demo_music_main_sync_state(void)
+{
+    if ((title_label == NULL) || (artist_label == NULL) || (genre_label == NULL) || (time_obj == NULL) || (slider_obj == NULL) || (play_obj == NULL)) {
+        return;
+    }
+
+    const uint32_t trackCount = _lv_demo_music_get_track_count();
+    if (trackCount == 0) {
+        track_id = 0;
+        time_act = 0;
+        spectrum_i = 0;
+        spectrum_i_pause = 0;
+        playing = false;
+        pause = false;
+        lv_slider_set_value(slider_obj, 0, LV_ANIM_OFF);
+        lv_label_set_text(time_obj, "0:00");
+        lv_label_set_text(title_label, _lv_demo_music_get_title(0));
+        lv_label_set_text(artist_label, _lv_demo_music_get_artist(0));
+        lv_label_set_text(genre_label, _lv_demo_music_get_genre(0));
+        lv_obj_clear_state(play_obj, LV_STATE_CHECKED);
+        return;
+    }
+
+    uint32_t current = music_library_get_current_index();
+    if (current >= trackCount) {
+        current = 0;
+        music_library_set_current_index(current);
+    }
+
+    if ((current != track_id) && (track_id < trackCount)) {
+        _lv_demo_music_list_btn_check(track_id, false);
+    }
+
+    track_id = current;
+    lv_label_set_text(title_label, _lv_demo_music_get_title(track_id));
+    lv_label_set_text(artist_label, _lv_demo_music_get_artist(track_id));
+    lv_label_set_text(genre_label, _lv_demo_music_get_genre(track_id));
+    lv_slider_set_range(slider_obj, 0, _lv_demo_music_get_track_length(track_id));
+    _lv_demo_music_list_btn_check(track_id, playing);
 }
 
 /**********************
@@ -610,7 +667,7 @@ static lv_obj_t * create_icon_box(lv_obj_t * parent)
     lv_obj_add_event_cb(browseBtn, browse_click_event_cb, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *browseLabel = lv_label_create(browseBtn);
-    lv_label_set_text(browseLabel, LV_SYMBOL_DIRECTORY " Browse SD");
+    lv_label_set_text(browseLabel, LV_SYMBOL_LIST " Playlist");
     lv_obj_set_style_text_color(browseLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(browseLabel, font_small, 0);
     lv_obj_center(browseLabel);
@@ -729,7 +786,7 @@ static lv_obj_t * create_handle(lv_obj_t * parent)
 
     /*A handle to scroll to the track list*/
     lv_obj_t * handle_label = lv_label_create(cont);
-    lv_label_set_text(handle_label, "SD CARD MEDIA");
+    lv_label_set_text(handle_label, "PLAYLIST");
     lv_obj_set_style_text_font(handle_label, font_small, 0);
     lv_obj_set_style_text_color(handle_label, lv_color_hex(0x8a86b8), 0);
 

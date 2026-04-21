@@ -1,8 +1,55 @@
+#include <vector>
 #include <string.h>
 #include "audio_log.h"
 #include "audio_mp3.h"
 
 static const char *TAG = "mp3";
+
+namespace {
+
+constexpr size_t kProbeWindowSize = 16 * 1024;
+constexpr size_t kProbeOverlapSize = 512;
+constexpr long kMaxProbeOffset = 256 * 1024;
+
+bool looks_like_valid_frame(const uint8_t *data)
+{
+    MP3FrameInfo frame_info = {};
+    if (MP3GetNextFrameInfo(nullptr, &frame_info, const_cast<uint8_t *>(data)) != ERR_MP3_NONE) {
+        return false;
+    }
+
+    return (frame_info.samprate > 0) &&
+           (frame_info.bitsPerSample > 0) &&
+           (frame_info.nChans > 0) &&
+           (frame_info.outputSamps > 0);
+}
+
+bool probe_mp3_buffer(const uint8_t *buffer, size_t length)
+{
+    if ((buffer == nullptr) || (length < 4)) {
+        return false;
+    }
+
+    int search_offset = 0;
+    while (search_offset <= static_cast<int>(length - 4)) {
+        const int sync_offset = MP3FindSyncWord(const_cast<uint8_t *>(buffer) + search_offset,
+                                                static_cast<int>(length) - search_offset);
+        if (sync_offset < 0) {
+            return false;
+        }
+
+        const size_t frame_offset = static_cast<size_t>(search_offset + sync_offset);
+        if (looks_like_valid_frame(buffer + frame_offset)) {
+            return true;
+        }
+
+        search_offset = static_cast<int>(frame_offset + 1);
+    }
+
+    return false;
+}
+
+} // namespace
 
 static const char *mp3_error_to_string(int error)
 {
@@ -40,25 +87,40 @@ static const char *mp3_error_to_string(int error)
 
 static bool probe_mp3_frame(FILE *fp, long start_offset)
 {
-    constexpr size_t kProbeBytes = 2048;
-    uint8_t probe[kProbeBytes] = {};
-
-    if (fseek(fp, start_offset, SEEK_SET) != 0) {
+    if (start_offset < 0) {
         return false;
     }
 
-    const size_t bytes_read = fread(probe, 1, sizeof(probe), fp);
-    if (bytes_read < 4) {
+    std::vector<uint8_t> probe(kProbeWindowSize);
+    if (probe.empty()) {
         return false;
     }
 
-    const int sync_offset = MP3FindSyncWord(probe, static_cast<int>(bytes_read));
-    if (sync_offset < 0) {
-        return false;
+    const long max_probe_end = start_offset + kMaxProbeOffset;
+    long cursor = start_offset;
+
+    while (cursor < max_probe_end) {
+        if (fseek(fp, cursor, SEEK_SET) != 0) {
+            return false;
+        }
+
+        const size_t bytes_read = fread(probe.data(), 1, probe.size(), fp);
+        if (bytes_read < 4) {
+            return false;
+        }
+
+        if (probe_mp3_buffer(probe.data(), bytes_read)) {
+            return true;
+        }
+
+        if (bytes_read < probe.size()) {
+            return false;
+        }
+
+        cursor += static_cast<long>(bytes_read - kProbeOverlapSize);
     }
 
-    MP3FrameInfo frame_info = {};
-    return MP3GetNextFrameInfo(nullptr, &frame_info, probe + sync_offset) == ERR_MP3_NONE;
+    return false;
 }
 
 bool is_mp3(FILE *fp) {
@@ -70,17 +132,9 @@ bool is_mp3(FILE *fp) {
     uint8_t magic[3];
     if(sizeof(magic) == fread(magic, 1, sizeof(magic), fp)) {
         if((magic[0] == 0xFF) &&
-            (magic[1] == 0xFB))
+            ((magic[1] == 0xFB) || (magic[1] == 0xF3) || (magic[1] == 0xF2)))
         {
-            is_mp3_file = true;
-        } else if((magic[0] == 0xFF) &&
-                  (magic[1] == 0xF3))
-        {
-            is_mp3_file = true;
-        } else if((magic[0] == 0xFF) &&
-                  (magic[1] == 0xF2))
-        {
-            is_mp3_file = true;
+            is_mp3_file = probe_mp3_frame(fp, 0);
         } else if((magic[0] == 0x49) &&
                   (magic[1] == 0x44) &&
                   (magic[2] == 0x33)) /* 'ID3' */
@@ -96,14 +150,20 @@ bool is_mp3(FILE *fp) {
                         ((tag.size[1] & 0x7F) << 14) |
                         ((tag.size[2] & 0x7F) << 7) |
                         (tag.size[3] & 0x7F);
-                    is_mp3_file = probe_mp3_frame(fp, static_cast<long>(sizeof(mp3_id3_header_v2_t)) + tag_size);
+                    long first_frame_offset = static_cast<long>(sizeof(mp3_id3_header_v2_t)) + tag_size;
+
+                    // ID3v2 footer is optional but common enough to account for during probing.
+                    if ((tag.flag & 0x10) != 0) {
+                        first_frame_offset += 10;
+                    }
+
+                    is_mp3_file = probe_mp3_frame(fp, first_frame_offset);
                 }
             }
         }
     }
 
-    if (!is_mp3_file &&
-        (magic[0] == 0xFF) && ((magic[1] == 0xFB) || (magic[1] == 0xF3) || (magic[1] == 0xF2))) {
+    if (!is_mp3_file) {
         is_mp3_file = probe_mp3_frame(fp, 0);
     }
 

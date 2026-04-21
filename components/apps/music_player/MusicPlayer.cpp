@@ -32,8 +32,7 @@ MusicPlayer::~MusicPlayer()
 
 bool MusicPlayer::run(void)
 {
-    app_storage_ensure_sdcard_available();
-    music_library_refresh();
+    music_library_init();
     lv_demo_music(lv_scr_act());
 
     return true;
@@ -42,37 +41,33 @@ bool MusicPlayer::run(void)
 bool MusicPlayer::pause(void)
 {
     ESP_LOGI(TAG, "pause");
-    const esp_err_t ret = audio_player_pause();
-    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
-        ESP_LOGE(TAG, "audio_player_pause failed: %s", esp_err_to_name(ret));
-        return false;
-    }
-    notifyCoreClosed();
+    _lv_demo_music_pause();
+
     return true;
 }
 
 bool MusicPlayer::back(void)
 {
     ESP_LOGI(TAG, "back");
+    _lv_demo_music_exit_pause();
+
     const esp_err_t ret = audio_player_pause();
     if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
         ESP_LOGE(TAG, "audio_player_pause failed: %s", esp_err_to_name(ret));
         return false;
     }
-    notifyCoreClosed();
 
-    return true;
+    return notifyCoreClosed();
 }
 
 bool MusicPlayer::close(void)
 {
     ESP_LOGI(TAG, "close");
-    const esp_err_t ret = audio_player_pause();
-    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
-        ESP_LOGE(TAG, "audio_player_pause failed: %s", esp_err_to_name(ret));
-        return false;
-    }
-    notifyCoreClosed(); 
+    stop_audio_fully();
+
+    lv_demo_music_close();
+    music_library_deinit();
+
     return true;
 }
 

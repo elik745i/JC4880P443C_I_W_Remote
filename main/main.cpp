@@ -13,9 +13,14 @@
 #include "driver/usb_serial_jtag_vfs.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "esp_app_desc.h"
+#include "esp_core_dump.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
+#include "esp_http_client.h"
+#include "esp_mac.h"
+#include "esp_system.h"
 #include "esp_memory_utils.h"
 #include "esp_heap_caps.h"
 #include "lvgl.h"
@@ -34,20 +39,409 @@
 static const char *TAG = "main";
 static constexpr TickType_t kSdcardMountRetryPeriod = pdMS_TO_TICKS(2000);
 static constexpr uint32_t kSerialCommandTaskStack = 6144;
+static constexpr uint32_t kCrashReportUploadTaskStack = 6144;
 static constexpr const char *kNvsStorageNamespace = "storage";
 static constexpr const char *kNvsKeyOtaPendingVersion = "ota_ver";
 static constexpr const char *kNvsKeyOtaPendingNotes = "ota_notes";
 static constexpr const char *kNvsKeyOtaPendingShow = "ota_show";
+static constexpr const char *kCrashReportLocalPath = BSP_SPIFFS_MOUNT_POINT "/last_crash_report.txt";
+static constexpr const char *kCrashReportPendingPath = BSP_SPIFFS_MOUNT_POINT "/pending_crash_report.txt";
+static constexpr const char *kCrashReportUploadUrl = "";
+static constexpr TickType_t kCrashReportUploadDelay = pdMS_TO_TICKS(15000);
 
 struct PendingReleaseNotesContext {
     std::string version;
     std::string notes;
 };
 
+struct PendingResetNoticeContext {
+    std::string title;
+    std::string details;
+    bool has_report = false;
+};
+
+struct PendingInfoPopupContext {
+    std::string title;
+    std::string details;
+};
+
+struct CrashReportUploadTaskContext {
+    TickType_t delay = 0;
+    bool notify_user = false;
+};
+
 static SemaphoreHandle_t s_sdcardMutex = nullptr;
 static bool s_sdcardMounted = false;
 static TickType_t s_nextSdcardMountAttempt = 0;
 static InternetRadio *s_internetRadioApp = nullptr;
+static bool s_crashReportUploadInFlight = false;
+
+static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
+                                                      const char *name,
+                                                      uint32_t stack_depth,
+                                                      void *arg,
+                                                      UBaseType_t priority,
+                                                      BaseType_t core_id);
+
+static std::string json_escape_copy(const std::string &value)
+{
+    std::string escaped;
+    escaped.reserve(value.size() + 32);
+
+    for (const char ch : value) {
+        switch (ch) {
+        case '\\':
+            escaped += "\\\\";
+            break;
+        case '"':
+            escaped += "\\\"";
+            break;
+        case '\n':
+            escaped += "\\n";
+            break;
+        case '\r':
+            escaped += "\\r";
+            break;
+        case '\t':
+            escaped += "\\t";
+            break;
+        default:
+            escaped.push_back(ch);
+            break;
+        }
+    }
+
+    return escaped;
+}
+
+static bool read_text_file(const char *path, std::string &contents)
+{
+    FILE *file = std::fopen(path, "rb");
+    if (file == nullptr) {
+        return false;
+    }
+
+    std::string buffer;
+    char chunk[256] = {};
+    while (true) {
+        const size_t read = std::fread(chunk, 1, sizeof(chunk), file);
+        if (read > 0) {
+            buffer.append(chunk, read);
+        }
+        if (read < sizeof(chunk)) {
+            break;
+        }
+    }
+
+    std::fclose(file);
+    contents = std::move(buffer);
+    return true;
+}
+
+static bool write_text_file(const char *path, const std::string &contents)
+{
+    FILE *file = std::fopen(path, "wb");
+    if (file == nullptr) {
+        return false;
+    }
+
+    const bool ok = std::fwrite(contents.data(), 1, contents.size(), file) == contents.size();
+    std::fclose(file);
+    return ok;
+}
+
+static bool load_crash_report_for_upload(std::string &report)
+{
+    if (read_text_file(kCrashReportPendingPath, report) && !report.empty()) {
+        return true;
+    }
+
+    return read_text_file(kCrashReportLocalPath, report) && !report.empty();
+}
+
+static bool has_saved_crash_report(void)
+{
+    std::string report;
+    return load_crash_report_for_upload(report);
+}
+
+static bool is_crash_report_upload_configured(void)
+{
+    return (kCrashReportUploadUrl != nullptr) && (kCrashReportUploadUrl[0] != '\0');
+}
+
+static bool is_wifi_connected(void)
+{
+    wifi_ap_record_t ap_info = {};
+    return esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK;
+}
+
+static std::string format_device_id(void)
+{
+    uint8_t mac[6] = {};
+    if (esp_efuse_mac_get_default(mac) != ESP_OK) {
+        return "unknown";
+    }
+
+    char buffer[24] = {};
+    std::snprintf(buffer,
+                  sizeof(buffer),
+                  "%02X:%02X:%02X:%02X:%02X:%02X",
+                  mac[0],
+                  mac[1],
+                  mac[2],
+                  mac[3],
+                  mac[4],
+                  mac[5]);
+    return buffer;
+}
+
+static std::string format_wifi_context(void)
+{
+    wifi_ap_record_t ap_info = {};
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+        return "not-connected";
+    }
+
+    char ssid_buffer[sizeof(ap_info.ssid) + 1] = {};
+    std::memcpy(ssid_buffer, ap_info.ssid, sizeof(ap_info.ssid));
+
+    char buffer[96] = {};
+    std::snprintf(buffer, sizeof(buffer), "%s (RSSI %d)", ssid_buffer, ap_info.rssi);
+    return buffer;
+}
+
+static std::string build_crash_report_text(esp_reset_reason_t reset_reason)
+{
+    std::ostringstream report;
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+
+    report << "Crash report\n";
+    report << "Device: " << format_device_id() << "\n";
+    report << "Project: " << ((app_desc != nullptr) ? app_desc->project_name : "unknown") << "\n";
+    report << "Version: " << ((app_desc != nullptr) ? app_desc->version : "unknown") << "\n";
+    report << "ELF SHA256: " << esp_app_get_elf_sha256_str() << "\n";
+    report << "Reset reason: " << static_cast<int>(reset_reason) << "\n";
+    report << "Wi-Fi: " << format_wifi_context() << "\n";
+
+    char panic_reason[200] = {};
+    if (esp_core_dump_get_panic_reason(panic_reason, sizeof(panic_reason)) == ESP_OK) {
+        report << "Panic reason: " << panic_reason << "\n";
+    }
+
+    esp_core_dump_summary_t summary = {};
+    if (esp_core_dump_get_summary(&summary) == ESP_OK) {
+        report << "Exception task: " << summary.exc_task << "\n";
+        report << "Exception PC: 0x" << std::hex << summary.exc_pc << std::dec << "\n";
+        report << "Dump size: " << summary.exc_bt_info.dump_size << "\n";
+        report << "MCAUSE: 0x" << std::hex << summary.ex_info.mcause << std::dec << "\n";
+        report << "MTVAL: 0x" << std::hex << summary.ex_info.mtval << std::dec << "\n";
+        report << "RA: 0x" << std::hex << summary.ex_info.ra << std::dec << "\n";
+        report << "SP: 0x" << std::hex << summary.ex_info.sp << std::dec << "\n";
+    }
+
+    size_t image_addr = 0;
+    size_t image_size = 0;
+    if (esp_core_dump_image_get(&image_addr, &image_size) == ESP_OK) {
+        report << "Core dump flash addr: 0x" << std::hex << image_addr << std::dec << "\n";
+        report << "Core dump size: " << image_size << "\n";
+    }
+
+    return report.str();
+}
+
+static void capture_panic_report_if_present(void)
+{
+    size_t image_addr = 0;
+    size_t image_size = 0;
+    if (esp_core_dump_image_get(&image_addr, &image_size) != ESP_OK) {
+        return;
+    }
+
+    const esp_reset_reason_t reset_reason = esp_reset_reason();
+    const std::string report = build_crash_report_text(reset_reason);
+    if (!report.empty()) {
+        (void)write_text_file(kCrashReportLocalPath, report);
+        (void)write_text_file(kCrashReportPendingPath, report);
+    }
+
+    if (esp_core_dump_image_erase() != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to erase coredump partition after persisting report");
+    }
+}
+
+static bool upload_crash_report(const std::string &report)
+{
+    if (!is_crash_report_upload_configured()) {
+        return false;
+    }
+
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    std::ostringstream body;
+    body << "{";
+    body << "\"device\":\"" << json_escape_copy(format_device_id()) << "\",";
+    body << "\"project\":\"" << json_escape_copy((app_desc != nullptr) ? app_desc->project_name : "unknown") << "\",";
+    body << "\"version\":\"" << json_escape_copy((app_desc != nullptr) ? app_desc->version : "unknown") << "\",";
+    body << "\"report\":\"" << json_escape_copy(report) << "\"";
+    body << "}";
+
+    const std::string payload = body.str();
+    esp_http_client_config_t config = {};
+    config.url = kCrashReportUploadUrl;
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = 15000;
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return false;
+    }
+
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_post_field(client, payload.c_str(), payload.size());
+    const esp_err_t err = esp_http_client_perform(client);
+    const int status = esp_http_client_get_status_code(client);
+    esp_http_client_cleanup(client);
+
+    return (err == ESP_OK) && (status >= 200) && (status < 300);
+}
+
+static void close_info_popup(lv_event_t *event)
+{
+    lv_obj_t *target = lv_event_get_current_target(event);
+    if (target != nullptr) {
+        lv_msgbox_close_async(target);
+    }
+}
+
+static void show_info_popup(void *context)
+{
+    std::unique_ptr<PendingInfoPopupContext> info(static_cast<PendingInfoPopupContext *>(context));
+    if ((info == nullptr) || info->details.empty()) {
+        return;
+    }
+
+    static const char *buttons[] = {"OK", ""};
+    lv_obj_t *msgbox = lv_msgbox_create(nullptr, info->title.c_str(), info->details.c_str(), buttons, false);
+    if (msgbox == nullptr) {
+        return;
+    }
+
+    lv_obj_set_width(msgbox, 420);
+    lv_obj_center(msgbox);
+    lv_obj_add_event_cb(msgbox, close_info_popup, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+static void schedule_info_popup(const char *title, const char *details)
+{
+    auto *context = new PendingInfoPopupContext{title != nullptr ? title : "Notice", details != nullptr ? details : ""};
+    if ((context == nullptr) || context->details.empty()) {
+        delete context;
+        return;
+    }
+
+    bsp_display_lock(0);
+    if (lv_async_call(show_info_popup, context) != LV_RES_OK) {
+        bsp_display_unlock();
+        delete context;
+        return;
+    }
+    bsp_display_unlock();
+}
+
+static void crash_report_upload_task(void *parameter)
+{
+    std::unique_ptr<CrashReportUploadTaskContext> context(static_cast<CrashReportUploadTaskContext *>(parameter));
+    const TickType_t delay = (context != nullptr) ? context->delay : 0;
+    const bool notify_user = (context != nullptr) ? context->notify_user : false;
+    if (delay > 0) {
+        vTaskDelay(delay);
+    }
+
+    std::string report;
+    if (!load_crash_report_for_upload(report)) {
+        if (notify_user) {
+            schedule_info_popup("Report Unavailable", "No saved crash report was found on this device.");
+        }
+        s_crashReportUploadInFlight = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    if (!is_wifi_connected()) {
+        if (notify_user) {
+            schedule_info_popup("Not Connected", "Connect the device to Wi-Fi before sending a crash report.");
+        }
+        s_crashReportUploadInFlight = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    if (!is_crash_report_upload_configured()) {
+        if (notify_user) {
+            schedule_info_popup("Reporting Not Configured", "This firmware does not have a private developer report relay configured yet.");
+        }
+        s_crashReportUploadInFlight = false;
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    if (upload_crash_report(report)) {
+        std::remove(kCrashReportPendingPath);
+        ESP_LOGI(TAG, "Crash report uploaded successfully");
+        if (notify_user) {
+            schedule_info_popup("Report Sent", "The crash report was sent to the developer relay.");
+        }
+    } else {
+        ESP_LOGW(TAG, "Crash report upload failed; pending report kept at %s", kCrashReportPendingPath);
+        if (notify_user) {
+            schedule_info_popup("Send Failed", "The crash report could not be delivered. It is still saved locally on the device.");
+        }
+    }
+
+    s_crashReportUploadInFlight = false;
+    vTaskDelete(nullptr);
+}
+
+static void start_crash_report_upload(TickType_t delay, bool notify_user)
+{
+    if (s_crashReportUploadInFlight) {
+        if (notify_user) {
+            schedule_info_popup("Report In Progress", "A crash report is already being sent.");
+        }
+        return;
+    }
+
+    std::string report;
+    if (!load_crash_report_for_upload(report)) {
+        if (notify_user) {
+            schedule_info_popup("Report Unavailable", "No saved crash report was found on this device.");
+        }
+        return;
+    }
+
+    auto *context = new CrashReportUploadTaskContext{delay, notify_user};
+    if (context == nullptr) {
+        if (notify_user) {
+            schedule_info_popup("Report Failed", "The device could not start the crash report task.");
+        }
+        return;
+    }
+
+    s_crashReportUploadInFlight = true;
+    if (create_background_task_prefer_psram(crash_report_upload_task,
+                                            "crash_report_up",
+                                            kCrashReportUploadTaskStack,
+                                            context,
+                                            1,
+                                            0) != pdPASS) {
+        s_crashReportUploadInFlight = false;
+        delete context;
+        ESP_LOGW(TAG, "Failed to start crash report upload task");
+        if (notify_user) {
+            schedule_info_popup("Report Failed", "The device could not start the crash report task.");
+        }
+    }
+}
 
 static void set_sdcard_probe_log_levels(esp_log_level_t sdmmc_periph_level,
                                         esp_log_level_t sdmmc_common_level,
@@ -387,9 +781,27 @@ static void clear_pending_release_notes(void)
 
 static void close_release_notes_popup(lv_event_t *event)
 {
-    lv_obj_t *target = lv_event_get_target(event);
+    lv_obj_t *target = lv_event_get_current_target(event);
     if (target != nullptr) {
-        lv_msgbox_close(target);
+        lv_msgbox_close_async(target);
+    }
+}
+
+static void close_reset_notice_popup(lv_event_t *event)
+{
+    lv_obj_t *target = lv_event_get_current_target(event);
+    if (target == nullptr) {
+        return;
+    }
+
+    const char *button_text = lv_msgbox_get_active_btn_text(target);
+    if ((button_text != nullptr) && (std::strcmp(button_text, "Report") == 0)) {
+        start_crash_report_upload(0, true);
+        return;
+    }
+
+    if ((button_text != nullptr) && (std::strcmp(button_text, "OK") == 0)) {
+        lv_msgbox_close_async(target);
     }
 }
 
@@ -449,6 +861,80 @@ static void schedule_pending_release_notes_popup(void)
     bsp_display_unlock();
 }
 
+static bool describe_reset_reason(esp_reset_reason_t reason, std::string &title, std::string &details)
+{
+    switch (reason) {
+    case ESP_RST_PANIC:
+        title = "Recovered After Crash";
+        details = "The device restarted after a fatal software exception. This is usually caused by invalid memory access or an LVGL/UI misuse.";
+        return true;
+    case ESP_RST_TASK_WDT:
+        title = "Recovered After Watchdog";
+        details = "The device restarted because a task stopped responding for too long.";
+        return true;
+    case ESP_RST_INT_WDT:
+        title = "Recovered After Watchdog";
+        details = "The device restarted because an interrupt or critical section blocked the system for too long.";
+        return true;
+    case ESP_RST_WDT:
+        title = "Recovered After Watchdog";
+        details = "The device restarted because a watchdog timer expired.";
+        return true;
+    case ESP_RST_BROWNOUT:
+        title = "Recovered After Power Drop";
+        details = "The device restarted because input power dropped below a safe level.";
+        return true;
+    case ESP_RST_CPU_LOCKUP:
+        title = "Recovered After CPU Lockup";
+        details = "The device restarted because the CPU stopped making forward progress.";
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void show_reset_notice_popup(void *context)
+{
+    std::unique_ptr<PendingResetNoticeContext> notice(static_cast<PendingResetNoticeContext *>(context));
+    if ((notice == nullptr) || notice->details.empty()) {
+        return;
+    }
+
+    static const char *buttons_with_report[] = {"OK", "Report", ""};
+    static const char *buttons_ok_only[] = {"OK", ""};
+    const char **buttons = notice->has_report ? buttons_with_report : buttons_ok_only;
+    lv_obj_t *msgbox = lv_msgbox_create(nullptr, notice->title.c_str(), notice->details.c_str(), buttons, false);
+    if (msgbox == nullptr) {
+        return;
+    }
+
+    lv_obj_set_width(msgbox, 420);
+    lv_obj_center(msgbox);
+    lv_obj_add_event_cb(msgbox, close_reset_notice_popup, LV_EVENT_VALUE_CHANGED, nullptr);
+}
+
+static void schedule_previous_reset_notice_popup(void)
+{
+    std::string title;
+    std::string details;
+    if (!describe_reset_reason(esp_reset_reason(), title, details)) {
+        return;
+    }
+
+    auto *context = new PendingResetNoticeContext{title, details, has_saved_crash_report()};
+    if (context == nullptr) {
+        return;
+    }
+
+    bsp_display_lock(0);
+    if (lv_async_call(show_reset_notice_popup, context) != LV_RES_OK) {
+        bsp_display_unlock();
+        delete context;
+        return;
+    }
+    bsp_display_unlock();
+}
+
 extern "C" void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -463,6 +949,7 @@ extern "C" void app_main(void)
 
     ESP_ERROR_CHECK(bsp_spiffs_mount());
     ESP_LOGI(TAG, "SPIFFS mount successfully");
+    capture_panic_report_if_present();
 
  //    ESP_ERROR_CHECK(bsp_extra_codec_init());
 
@@ -532,5 +1019,6 @@ extern "C" void app_main(void)
     bsp_display_unlock();
     init_serial_command_console();
     device_security::promptBootUnlockIfNeeded();
+    schedule_previous_reset_notice_popup();
     schedule_pending_release_notes_popup();
 }

@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.7 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.1.8 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -50,6 +50,11 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Additional boot-time SRAM pressure was removed by deferring heavy Internet Radio, Image Display, and SEGA UI/runtime setup until first launch.
 - The unused camera and deep-learning component stack was removed from the resolved build graph to reduce flash footprint and memory pressure.
 - Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
+- Music Player runtime metadata, library indexes, and long-lived worker stacks now prefer PSRAM, which reduces launch-time and background SRAM pressure.
+- Music Player playlist confirmation dialogs now use safe LVGL async-close handling to avoid the panic that could occur when deleting or cancelling from the modal.
+- Panic behavior now reboots automatically, and the next boot shows a short recovery popup that distinguishes crash, watchdog, brownout, and CPU lockup resets.
+- Flash-backed core dump capture is now enabled, and the next boot persists a readable crash report under SPIFFS for later developer analysis.
+- The reboot recovery popup can now show a manual `Report` action that tries to submit the saved crash report when Wi-Fi is connected, otherwise it reports that the device is offline or the private relay is not configured.
 - Additional enclosure revisions and raw CAD exports are included under `3D/` for the updated hardware fit iterations.
 
 ## Feature Summary
@@ -75,6 +80,13 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Auto timezone mode can update the offset from online geolocation when internet access is available.
 - Factory Reset in Settings > Firmware clears the app preferences namespace and reapplies defaults immediately.
 
+### Stability And Crash Recovery
+
+- Panic and watchdog resets now reboot back into the launcher instead of halting on a dead screen.
+- The next boot shows a short recovery popup with the general reset cause so failures are visible without opening a serial monitor.
+- Core dumps are stored in a dedicated flash partition and summarized into a text crash report on boot.
+- Crash reports are saved locally in SPIFFS and can be manually submitted from the recovery popup when Wi-Fi is available.
+
 ### Wireless Coprocessor
 
 - BLE and ZigBee runtime support depends on the external ESP32-C6 coprocessor firmware published in the matching GitHub release.
@@ -97,9 +109,10 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ## Storage And OTA Layout
 
 - Flash size is configured for 16 MB.
-- Partition table provides two enlarged OTA app slots of `0x7B0000` each.
-- SPIFFS storage partition is reduced to `0x080000` to reclaim flash for OTA headroom while preserving the remaining onboard filesystem features.
-- Version 1.1.7 validates at `0x590400`, leaving `0x21FC00` bytes free in the smallest OTA app slot.
+- Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
+- A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
+- SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
+- Version 1.1.8 validates at `0x59DC00`, leaving `0x1F2400` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

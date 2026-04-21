@@ -34,6 +34,7 @@ void _lv_demo_music_resume(void);
 void _lv_demo_music_pause(void);
 void _lv_demo_music_exit_pause(void);
 void _lv_demo_music_album_next(bool next);
+void _lv_demo_music_main_sync_state(void);
 
 /**********************
  *      MACROS

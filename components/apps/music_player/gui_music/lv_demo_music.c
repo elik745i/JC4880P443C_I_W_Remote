@@ -64,18 +64,18 @@ void lv_demo_music(lv_obj_t *parent)
 
 void lv_demo_music_close(void)
 {
-    /*Delete all aniamtions*/
-    lv_anim_del(NULL, NULL);
-
 #if APP_DEMO_MUSIC_AUTO_PLAY
-    lv_timer_del(auto_step_timer);
+    if (auto_step_timer != NULL) {
+        lv_timer_del(auto_step_timer);
+        auto_step_timer = NULL;
+    }
 #endif
     _lv_demo_music_list_close();
     _lv_demo_music_main_close();
 
-    lv_obj_clean(lv_scr_act());
-
     lv_obj_set_style_bg_color(lv_scr_act(), original_screen_bg_color, 0);
+    ctrl = NULL;
+    list = NULL;
 }
 
 uint32_t _lv_demo_music_get_track_count(void)
@@ -105,6 +105,10 @@ uint32_t _lv_demo_music_get_track_length(uint32_t track_id)
 
 void _lv_demo_music_open_browser(void)
 {
+    if (_lv_demo_music_list_needs_reload()) {
+        _lv_demo_music_list_reload();
+    }
+
     if (ctrl != NULL) {
         lv_obj_scroll_by(ctrl, 0, -LV_VER_RES, LV_ANIM_ON);
     }
@@ -115,6 +119,11 @@ void _lv_demo_music_close_browser(void)
     if (ctrl != NULL) {
         lv_obj_scroll_by(ctrl, 0, LV_VER_RES, LV_ANIM_ON);
     }
+}
+
+void _lv_demo_music_reload_browser(void)
+{
+    _lv_demo_music_list_reload();
 }
 
 /**********************

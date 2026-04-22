@@ -81,6 +81,15 @@ private:
     };
 
     typedef enum {
+        WIFI_KEYBOARD_PRESSED_NONE = 0,
+        WIFI_KEYBOARD_PRESSED_SHIFT_FROM_LOWER,
+        WIFI_KEYBOARD_PRESSED_SHIFT_FROM_UPPER,
+        WIFI_KEYBOARD_PRESSED_RESET_STATE,
+        WIFI_KEYBOARD_PRESSED_ALPHA,
+        WIFI_KEYBOARD_PRESSED_OTHER,
+    } WifiKeyboardPressedAction_t;
+
+    typedef enum {
         WIFI_SIGNAL_STRENGTH_NONE = 0,
         WIFI_SIGNAL_STRENGTH_WEAK = 1,
         WIFI_SIGNAL_STRENGTH_MODERATE = 2,
@@ -94,6 +103,20 @@ private:
         WIFI_CONNECT_FAIL,
     } WifiConnectState_t;
 
+    struct SavedWifiCredential {
+        std::string ssid;
+        std::string password;
+    };
+
+    struct WifiConnectTaskContext {
+        AppSettings *app;
+        SavedWifiCredential credential;
+        SavedWifiCredential previous_credential;
+        bool has_previous_connection;
+        bool dismiss_keyboard;
+        bool navigate_back_on_success;
+    };
+
     /* Operations */
     // UI
     void extraUiInit(void);
@@ -102,6 +125,7 @@ private:
                               lv_obj_t *lv_wifi_connect, uint8_t* ssid, bool psk, WifiSignalStrengthLevel_t signal_strength);
     void deinitWifiListButton(void);
     void refreshSavedWifiUi(void);
+    void refreshAboutWifiUi(void);
     void refreshDisplayIdleUi(void);
     void refreshTimezoneUi(void);
     void refreshBluetoothUi(void);
@@ -147,7 +171,17 @@ private:
     bool setNvsParam(std::string key, int value);
     bool loadNvsStringParam(const char *key, char *buffer, size_t buffer_size);
     bool setNvsStringParam(const char *key, const char *value);
+    SavedWifiCredential sanitizeWifiCredential(const char *ssid, const char *password) const;
+    void populateWifiStaConfig(wifi_config_t &wifi_config, const SavedWifiCredential &credential) const;
+    std::vector<SavedWifiCredential> loadSavedWifiCredentials(void) const;
+    bool saveSavedWifiCredentials(const std::vector<SavedWifiCredential> &credentials);
+    bool loadLatestSavedWifiCredential(SavedWifiCredential &credential);
+    bool selectAutoConnectWifiCredential(SavedWifiCredential &credential);
+    bool persistLatestSavedWifiCredential(const SavedWifiCredential *credential);
+    bool rememberWifiCredential(const SavedWifiCredential &credential);
     bool clearSavedWifiCredentials(void);
+    bool forgetSavedWifiCredential(const std::string &ssid);
+    bool launchWifiConnection(const SavedWifiCredential &credential, bool dismiss_keyboard, bool navigate_back_on_success);
     void updateUiByNvsParam(void);
     // WiFi
     esp_err_t initWifi(void);
@@ -157,6 +191,9 @@ private:
     void stopWifiScan(void);
     void scanWifiAndUpdateUi(void);
     WifiSignalStrengthLevel_t wifiSignalStrengthFromRssi(int rssi) const;
+    std::map<std::string, int> getScannedWifiRssiBySsid(void) const;
+    void updateSavedWifiPanelLayout(bool list_visible, size_t row_count);
+    size_t getSavedWifiRenderedIndexFromEventTarget(lv_obj_t *target) const;
     // Smart Gadget
     // void updateGadgetTime(struct tm timeinfo);
 
@@ -178,6 +215,9 @@ private:
     static void onKeyboardScreenSettingVerificationClickedEventCallback(lv_event_t *e);
     static void onWifiPasswordFieldEventCallback(lv_event_t *e);
     static void onWifiPasswordToggleClickedEventCallback(lv_event_t *e);
+    static void onWifiScanClickedEventCallback(lv_event_t *e);
+    static void onSavedWifiDropdownClickedEventCallback(lv_event_t *e);
+    static void onConnectSavedWifiClickedEventCallback(lv_event_t *e);
     static void onForgetSavedWifiClickedEventCallback(lv_event_t *e);
     // Bluetooth
     static void onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv_event_t *e);
@@ -224,8 +264,17 @@ private:
     lv_obj_t *_spinner_wifi_connect;
     lv_obj_t *_img_wifi_connect;
     lv_obj_t *_savedWifiPanel;
-    lv_obj_t *_savedWifiValueLabel;
-    lv_obj_t *_savedWifiForgetButton;
+    lv_obj_t *_wifiScanButton;
+    lv_obj_t *_wifiScanButtonLabel;
+    lv_obj_t *_savedWifiTitleLabel;
+    lv_obj_t *_savedWifiExpandButton;
+    lv_obj_t *_savedWifiExpandLabel;
+    lv_obj_t *_savedWifiListContainer;
+    bool _savedWifiListExpanded;
+    bool _suppressDisconnectRecovery;
+    std::string _savedWifiUiStateKey;
+    std::string _wifiScanUiStateKey;
+    lv_obj_t *_aboutWifiValueLabel;
     lv_obj_t *_wifiPasswordToggleButton;
     lv_obj_t *_wifiPasswordToggleLabel;
     lv_obj_t *_displayAdaptiveBrightnessSwitch;
@@ -298,6 +347,9 @@ private:
     lv_obj_t *_firmwareProgressLabel;
     bool _firmwareUpdateInProgress;
     bool _isWifiPasswordVisible;
+    bool _wifiKeyboardCapsLockEnabled;
+    bool _wifiKeyboardSingleShiftPending;
+    WifiKeyboardPressedAction_t _wifiKeyboardPressedAction;
     bool _bluetoothStatusIconInstalled;
     bool _zigbeeStatusIconInstalled;
     struct SecurityToggleContext {
@@ -307,6 +359,7 @@ private:
     SecurityToggleContext _deviceLockToggleContext;
     SecurityToggleContext _settingsLockToggleContext;
     std::array<lv_obj_t *, UI_MAX_INDEX> _screen_list;
+    std::vector<SavedWifiCredential> _savedWifiRenderedCredentials;
     std::vector<FirmwareEntry_t> _sdFirmwareEntries;
     std::vector<FirmwareEntry_t> _otaFirmwareEntries;
     std::map<std::string, int32_t> _nvs_param_map;

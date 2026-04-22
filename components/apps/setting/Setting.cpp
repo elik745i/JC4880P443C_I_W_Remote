@@ -4641,8 +4641,14 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
              entry.version.c_str(),
              entry.path_or_url.c_str());
 
-    if (create_background_task_prefer_psram(firmwareUpdateTask, "firmware_update", FIRMWARE_UPDATE_TASK_STACK_SIZE,
-                                            context, FIRMWARE_UPDATE_TASK_PRIORITY, nullptr, 1) != pdPASS) {
+    // OTA finalization disables flash cache, so this worker must keep its stack in internal RAM.
+    if (xTaskCreatePinnedToCore(firmwareUpdateTask,
+                                "firmware_update",
+                                FIRMWARE_UPDATE_TASK_STACK_SIZE,
+                                context,
+                                FIRMWARE_UPDATE_TASK_PRIORITY,
+                                nullptr,
+                                1) != pdPASS) {
         delete context;
         _firmwareUpdateInProgress = false;
         refreshFirmwareUi();

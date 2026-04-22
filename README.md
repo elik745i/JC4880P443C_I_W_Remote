@@ -44,7 +44,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Auto timezone detection from the internet after Wi-Fi connects.
 - Firmware screen factory reset button with confirmation and settings wipe.
 - Firmware releases now publish OTA-detectable `.bin` assets directly instead of ZIP-only packages.
-- GitHub OTA updates now follow release-asset redirects correctly, keep visible status during checks and flashes, and preserve failure messages instead of silently dropping the update flow.
+- GitHub OTA updates now follow release-asset redirects correctly, keep visible status during checks and flashes, preserve failure messages, and keep the final OTA verification worker on an internal stack so the update no longer panics at the end of flashing.
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
 - Additional low-risk PSRAM placement for radio preview workers, background service stacks, and emulator lookup / ROM buffers to preserve internal SRAM for time-sensitive work.

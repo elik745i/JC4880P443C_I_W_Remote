@@ -43,6 +43,7 @@ extern unsigned char* VRAM;
 #include <stdint.h>
 extern unsigned char *VRAM;
 
+#include "esp_attr.h"
 #endif
 
 extern unsigned short CRAM[];            // CRAM - Palettes
@@ -66,8 +67,8 @@ static uint16_t *screen_buffer=0;
 
 enum { PIX_OVERFLOW = 32 };
 
-static uint8_t render_buffer[SCREEN_WIDTH + PIX_OVERFLOW*2];
-static uint8_t sprite_buffer[SCREEN_WIDTH + PIX_OVERFLOW*2];
+static EXT_RAM_BSS_ATTR uint8_t render_buffer[SCREEN_WIDTH + PIX_OVERFLOW*2];
+static EXT_RAM_BSS_ATTR uint8_t sprite_buffer[SCREEN_WIDTH + PIX_OVERFLOW*2];
 
 // Define VIDEO MODE
 static int mode_h40;

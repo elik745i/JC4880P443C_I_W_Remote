@@ -664,7 +664,7 @@ static INT32  out_fm[8];  /* outputs of working channels */
 static UINT32 bitmask;    /* working channels output bitmasking (DAC quantization) */
 
 /* mirror of all OPN registers */
-static uint8_t OPNREGS[512];
+static EXT_RAM_BSS_ATTR uint8_t OPNREGS[512];
 
 INLINE void FM_KEYON(FM_CH *CH , int s )
 {

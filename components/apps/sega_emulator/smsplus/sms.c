@@ -24,18 +24,19 @@
 
 #include "shared.h"
 #include "../psram_alloc.h"
+#include "esp_attr.h"
 
 /* SMS context */
-sms_t sms;
+EXT_RAM_BSS_ATTR sms_t sms;
 
 /* BIOS/CART ROM */
-bios_t bios;
-slot_t slot;
+EXT_RAM_BSS_ATTR bios_t bios;
+EXT_RAM_BSS_ATTR slot_t slot;
 
 /* Colecovision support */
-coleco_t coleco;
+EXT_RAM_BSS_ATTR coleco_t coleco;
 
-uint8 dummy_memory[0x400];
+EXT_RAM_BSS_ATTR uint8 dummy_memory[0x400];
 
 static uint8 readmem_mapper_none(uint16 addr)
 {

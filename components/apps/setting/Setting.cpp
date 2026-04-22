@@ -134,6 +134,105 @@ static int voltage[2][10];
 using namespace std;
 
 static const char TAG[] = "EUI_Setting";
+static void *allocate_psram_preferred_buffer(size_t size)
+{
+    void *buffer = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buffer != nullptr) {
+        return buffer;
+    }
+
+    return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+static void create_monitor_card(lv_obj_t *parent, const char *title, const char *subtitle, lv_obj_t **value_label,
+                                lv_obj_t **detail_label, lv_obj_t **bar)
+{
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_set_width(card, lv_pct(100));
+    lv_obj_set_height(card, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(card, 18, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(card, 16, 0);
+    lv_obj_set_style_pad_right(card, 16, 0);
+    lv_obj_set_style_pad_top(card, 14, 0);
+    lv_obj_set_style_pad_bottom(card, 14, 0);
+
+    lv_obj_t *titleLabel = lv_label_create(card);
+    lv_label_set_text(titleLabel, title);
+    lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(titleLabel, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *valueLabel = lv_label_create(card);
+    lv_label_set_text(valueLabel, "--");
+    lv_obj_set_style_text_font(valueLabel, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(valueLabel, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(valueLabel, LV_ALIGN_TOP_RIGHT, 0, 0);
+
+    lv_obj_t *subtitleLabel = lv_label_create(card);
+    lv_obj_set_width(subtitleLabel, lv_pct(100));
+    lv_label_set_long_mode(subtitleLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(subtitleLabel, subtitle);
+    lv_obj_set_style_text_font(subtitleLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(subtitleLabel, lv_color_hex(0x64748B), 0);
+    lv_obj_align_to(subtitleLabel, titleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+    lv_obj_t *barObj = lv_bar_create(card);
+    lv_obj_set_size(barObj, lv_pct(100), 16);
+    lv_bar_set_range(barObj, 0, 100);
+    lv_bar_set_value(barObj, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(barObj, 8, 0);
+    lv_obj_set_style_bg_color(barObj, lv_color_hex(0xCBD5E1), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(barObj, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(barObj, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(barObj, LV_OPA_COVER, LV_PART_INDICATOR);
+    lv_obj_align_to(barObj, subtitleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
+
+    lv_obj_t *detailLabel = lv_label_create(card);
+    lv_obj_set_width(detailLabel, lv_pct(100));
+    lv_label_set_long_mode(detailLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(detailLabel, "Waiting for telemetry...");
+    lv_obj_set_style_text_font(detailLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(detailLabel, lv_color_hex(0x475569), 0);
+    lv_obj_align_to(detailLabel, barObj, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+    if (value_label != nullptr) {
+        *value_label = valueLabel;
+    }
+    if (detail_label != nullptr) {
+        *detail_label = detailLabel;
+    }
+    if (bar != nullptr) {
+        *bar = barObj;
+    }
+}
+
+static lv_obj_t *create_settings_toggle_row(lv_obj_t *parent, const char *title)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, lv_pct(100), 72);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(row, 18, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(row, 18, 0);
+    lv_obj_set_style_pad_right(row, 18, 0);
+    lv_obj_set_style_pad_top(row, 10, 0);
+    lv_obj_set_style_pad_bottom(row, 10, 0);
+
+    lv_obj_t *label = lv_label_create(row);
+    lv_label_set_text(label, title);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0x111827), 0);
+    lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+
+    return row;
+}
+
 static constexpr uint32_t kSettingScreenAnimTimeMs = 220;
 static constexpr int kStatusBarBluetoothIconId = 0x424C45;
 static constexpr int kStatusBarZigbeeIconId = 0x5A425A;
@@ -1316,13 +1415,19 @@ AppSettings::AppSettings():
     _hardwareWifiBar(nullptr),
     _firmwareSdDropdown(nullptr),
     _firmwareSdFlashButton(nullptr),
-    _firmwareOtaDropdown(nullptr),
+    _firmwareOtaCheckButton(nullptr),
     _firmwareOtaFlashButton(nullptr),
     _firmwareCurrentVersionLabel(nullptr),
+    _firmwareOtaSummaryLabel(nullptr),
+    _firmwareOtaListContainer(nullptr),
+    _firmwareOtaCheckOverlay(nullptr),
+    _firmwareOtaCheckSpinner(nullptr),
+    _firmwareOtaCheckStatusLabel(nullptr),
     _firmwareStatusLabel(nullptr),
     _firmwareProgressBar(nullptr),
     _firmwareProgressLabel(nullptr),
     _firmwareUpdateInProgress(false),
+    _firmwareOtaCheckInProgress(false),
     _isWifiPasswordVisible(false),
     _wifiKeyboardCapsLockEnabled(false),
     _wifiKeyboardSingleShiftPending(false),
@@ -1332,6 +1437,7 @@ AppSettings::AppSettings():
     _deviceLockToggleContext{this, device_security::LockType::Device},
     _settingsLockToggleContext{this, device_security::LockType::Settings},
     _screen_list({nullptr}),
+    _selectedOtaFirmwareIndex(-1),
     _autoTimezoneRefreshPending(false),
     _hasAutoDetectedTimezone(false),
     _autoDetectedTimezoneOffsetMinutes(480),
@@ -1716,267 +1822,6 @@ void AppSettings::extraUiInit(void)
     _aboutMenuItem = createMainMenuItem("About Device", &ui_img_about_png, nullptr, nullptr);
     #endif
 
-    #if APP_SETTINGS_FEATURE_HARDWARE_MENU
-    _hardwareScreen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(_hardwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(_hardwareScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_clear_flag(_hardwareScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *hardwareBackButton = lv_btn_create(_hardwareScreen);
-    lv_obj_set_size(hardwareBackButton, 60, 60);
-    lv_obj_align(hardwareBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
-    lv_obj_set_style_bg_color(hardwareBackButton, lv_color_hex(0xE5F3FF), 0);
-    lv_obj_set_style_border_width(hardwareBackButton, 0, 0);
-    lv_obj_add_event_cb(hardwareBackButton, [](lv_event_t *e) {
-        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
-        }
-    }, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *hardwareBackImage = lv_img_create(hardwareBackButton);
-    lv_img_set_src(hardwareBackImage, &ui_img_return_png);
-    lv_obj_center(hardwareBackImage);
-    lv_obj_set_style_img_recolor(hardwareBackImage, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_img_recolor_opa(hardwareBackImage, 255, 0);
-
-    lv_obj_t *hardwareTitle = lv_label_create(_hardwareScreen);
-    lv_label_set_text(hardwareTitle, "Hardware Monitor");
-    lv_obj_set_style_text_font(hardwareTitle, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(hardwareTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(hardwareTitle, LV_ALIGN_TOP_MID, 0, 30);
-
-    lv_obj_t *hardwarePanel = lv_obj_create(_hardwareScreen);
-    lv_obj_set_size(hardwarePanel, lv_pct(92), 650);
-    lv_obj_align(hardwarePanel, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_radius(hardwarePanel, 20, 0);
-    lv_obj_set_style_border_width(hardwarePanel, 0, 0);
-    lv_obj_set_style_bg_color(hardwarePanel, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_pad_all(hardwarePanel, 14, 0);
-    lv_obj_set_style_pad_row(hardwarePanel, 12, 0);
-    lv_obj_set_flex_flow(hardwarePanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(hardwarePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_scroll_dir(hardwarePanel, LV_DIR_VER);
-
-    createMonitorCard(hardwarePanel, "CPU Speed", "Configured CPU clock", &_hardwareCpuSpeedValueLabel,
-                      &_hardwareCpuSpeedDetailLabel, &_hardwareCpuSpeedBar);
-    createMonitorCard(hardwarePanel, "CPU Temperature", "On-die sensor reading", &_hardwareCpuTempValueLabel,
-                      &_hardwareCpuTempDetailLabel, &_hardwareCpuTempBar);
-    createMonitorCard(hardwarePanel, "SRAM", "Occupied versus total internal memory", &_hardwareSramValueLabel,
-                      &_hardwareSramDetailLabel, &_hardwareSramBar);
-    createMonitorCard(hardwarePanel, "PSRAM", "Occupied versus total external memory", &_hardwarePsramValueLabel,
-                      &_hardwarePsramDetailLabel, &_hardwarePsramBar);
-    createMonitorCard(hardwarePanel, "SD Card Storage", "Used versus total mounted capacity", &_hardwareSdValueLabel,
-                      &_hardwareSdDetailLabel, &_hardwareSdBar);
-    createMonitorCard(hardwarePanel, "Wi-Fi Signal", "Current station RSSI and quality", &_hardwareWifiValueLabel,
-                      &_hardwareWifiDetailLabel, &_hardwareWifiBar);
-
-    if (_hardwareCpuSpeedDetailLabel != nullptr) {
-        lv_label_set_text(_hardwareCpuSpeedDetailLabel, "Uptime updates live.");
-        lv_obj_set_style_text_font(_hardwareCpuSpeedDetailLabel, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(_hardwareCpuSpeedDetailLabel, lv_color_hex(0x475569), 0);
-    }
-    if (_hardwareCpuSpeedBar != nullptr) {
-        lv_bar_set_value(_hardwareCpuSpeedBar, 100, LV_ANIM_OFF);
-        lv_obj_set_style_bg_color(_hardwareCpuSpeedBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
-    }
-    #endif
-
-    #if CONFIG_JC4880_FEATURE_OTA
-    _firmwareScreen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(_firmwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(_firmwareScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_clear_flag(_firmwareScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *firmwareBackButton = lv_btn_create(_firmwareScreen);
-    lv_obj_set_size(firmwareBackButton, 60, 60);
-    lv_obj_align(firmwareBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
-    lv_obj_set_style_bg_color(firmwareBackButton, lv_color_hex(0xE5F3FF), 0);
-    lv_obj_set_style_border_width(firmwareBackButton, 0, 0);
-    lv_obj_add_event_cb(firmwareBackButton, [](lv_event_t *e) {
-        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
-        }
-    }, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *firmwareBackImage = lv_img_create(firmwareBackButton);
-    lv_img_set_src(firmwareBackImage, &ui_img_return_png);
-    lv_obj_center(firmwareBackImage);
-    lv_obj_set_style_img_recolor(firmwareBackImage, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_img_recolor_opa(firmwareBackImage, 255, 0);
-
-    lv_obj_t *firmwareTitle = lv_label_create(_firmwareScreen);
-    lv_label_set_text(firmwareTitle, "Firmware");
-    lv_obj_set_style_text_font(firmwareTitle, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(firmwareTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(firmwareTitle, LV_ALIGN_TOP_MID, 0, 30);
-
-    lv_obj_t *firmwarePanel = lv_obj_create(_firmwareScreen);
-    lv_obj_set_size(firmwarePanel, lv_pct(92), 650);
-    lv_obj_align(firmwarePanel, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_radius(firmwarePanel, 20, 0);
-    lv_obj_set_style_border_width(firmwarePanel, 0, 0);
-    lv_obj_set_style_bg_color(firmwarePanel, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_pad_all(firmwarePanel, 14, 0);
-    lv_obj_set_style_pad_row(firmwarePanel, 12, 0);
-    lv_obj_set_flex_flow(firmwarePanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(firmwarePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_scroll_dir(firmwarePanel, LV_DIR_VER);
-
-    auto createFirmwareSection = [](lv_obj_t *parent, const char *title) {
-        lv_obj_t *section = lv_obj_create(parent);
-        lv_obj_set_width(section, lv_pct(100));
-        lv_obj_set_height(section, LV_SIZE_CONTENT);
-        lv_obj_set_style_radius(section, 18, 0);
-        lv_obj_set_style_border_width(section, 0, 0);
-        lv_obj_set_style_bg_color(section, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_pad_all(section, 14, 0);
-        lv_obj_set_style_pad_row(section, 10, 0);
-        lv_obj_set_flex_flow(section, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(section, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-        lv_obj_t *sectionTitle = lv_label_create(section);
-        lv_label_set_text(sectionTitle, title);
-        lv_obj_set_style_text_font(sectionTitle, &lv_font_montserrat_20, 0);
-        lv_obj_set_style_text_color(sectionTitle, lv_color_hex(0x0F172A), 0);
-        return section;
-    };
-
-    auto createFirmwareControlsRow = [](lv_obj_t *parent) {
-        lv_obj_t *row = lv_obj_create(parent);
-        lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, LV_SIZE_CONTENT);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 0, 0);
-        lv_obj_set_style_pad_row(row, 8, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        return row;
-    };
-
-    lv_obj_t *currentSection = createFirmwareSection(firmwarePanel, "Installed Firmware");
-    _firmwareCurrentVersionLabel = lv_label_create(currentSection);
-    lv_obj_set_width(_firmwareCurrentVersionLabel, lv_pct(100));
-    lv_label_set_long_mode(_firmwareCurrentVersionLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_firmwareCurrentVersionLabel, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(_firmwareCurrentVersionLabel, lv_color_hex(0x0F172A), 0);
-
-    lv_obj_t *sdSection = createFirmwareSection(firmwarePanel, "Flash from SD Card");
-    lv_obj_t *sdHint = lv_label_create(sdSection);
-    lv_obj_set_width(sdHint, lv_pct(100));
-    lv_label_set_long_mode(sdHint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(sdHint, "Select a validated .bin firmware image from /sdcard or /sdcard/firmware.");
-    lv_obj_set_style_text_font(sdHint, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(sdHint, lv_color_hex(0x475569), 0);
-
-    lv_obj_t *sdControlsRow = createFirmwareControlsRow(sdSection);
-
-    _firmwareSdDropdown = lv_dropdown_create(sdControlsRow);
-    lv_obj_set_size(_firmwareSdDropdown, 220, 48);
-    lv_obj_set_flex_grow(_firmwareSdDropdown, 1);
-    lv_obj_add_event_cb(_firmwareSdDropdown, onFirmwareSelectionChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *sdRefreshButton = lv_btn_create(sdControlsRow);
-    lv_obj_set_size(sdRefreshButton, 92, 48);
-    lv_obj_set_style_radius(sdRefreshButton, 16, 0);
-    lv_obj_set_style_border_width(sdRefreshButton, 0, 0);
-    lv_obj_set_style_bg_color(sdRefreshButton, lv_color_hex(0xCBD5E1), 0);
-    lv_obj_add_event_cb(sdRefreshButton, onFirmwareSdRefreshClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *sdRefreshLabel = lv_label_create(sdRefreshButton);
-    lv_label_set_text(sdRefreshLabel, "Scan");
-    lv_obj_center(sdRefreshLabel);
-
-    _firmwareSdFlashButton = lv_btn_create(sdControlsRow);
-    lv_obj_set_size(_firmwareSdFlashButton, 92, 48);
-    lv_obj_set_style_radius(_firmwareSdFlashButton, 16, 0);
-    lv_obj_set_style_border_width(_firmwareSdFlashButton, 0, 0);
-    lv_obj_add_event_cb(_firmwareSdFlashButton, onFirmwareSdFlashClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *sdFlashLabel = lv_label_create(_firmwareSdFlashButton);
-    lv_label_set_text(sdFlashLabel, "Flash");
-    lv_obj_center(sdFlashLabel);
-
-    lv_obj_t *otaSection = createFirmwareSection(firmwarePanel, "Check GitHub Releases");
-    lv_obj_t *otaHint = lv_label_create(otaSection);
-    lv_obj_set_width(otaHint, lv_pct(100));
-    lv_label_set_long_mode(otaHint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(otaHint, "Query GitHub releases, label current versus newer firmware, then select a release asset.");
-    lv_obj_set_style_text_font(otaHint, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(otaHint, lv_color_hex(0x475569), 0);
-
-    lv_obj_t *otaControlsRow = createFirmwareControlsRow(otaSection);
-
-    lv_obj_t *otaCheckButton = lv_btn_create(otaControlsRow);
-    lv_obj_set_size(otaCheckButton, 96, 48);
-    lv_obj_set_style_radius(otaCheckButton, 16, 0);
-    lv_obj_set_style_border_width(otaCheckButton, 0, 0);
-    lv_obj_add_event_cb(otaCheckButton, onFirmwareOtaCheckClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *otaCheckLabel = lv_label_create(otaCheckButton);
-    lv_label_set_text(otaCheckLabel, "Check");
-    lv_obj_center(otaCheckLabel);
-
-    _firmwareOtaDropdown = lv_dropdown_create(otaControlsRow);
-    lv_obj_set_size(_firmwareOtaDropdown, 190, 48);
-    lv_obj_set_flex_grow(_firmwareOtaDropdown, 1);
-    lv_obj_add_event_cb(_firmwareOtaDropdown, onFirmwareSelectionChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
-
-    _firmwareOtaFlashButton = lv_btn_create(otaControlsRow);
-    lv_obj_set_size(_firmwareOtaFlashButton, 92, 48);
-    lv_obj_set_style_radius(_firmwareOtaFlashButton, 16, 0);
-    lv_obj_set_style_border_width(_firmwareOtaFlashButton, 0, 0);
-    lv_obj_add_event_cb(_firmwareOtaFlashButton, onFirmwareOtaFlashClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *otaFlashLabel = lv_label_create(_firmwareOtaFlashButton);
-    lv_label_set_text(otaFlashLabel, "Flash");
-    lv_obj_center(otaFlashLabel);
-
-    _firmwareStatusLabel = lv_label_create(firmwarePanel);
-    lv_obj_set_width(_firmwareStatusLabel, lv_pct(100));
-    lv_label_set_long_mode(_firmwareStatusLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_firmwareStatusLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_firmwareStatusLabel, lv_color_hex(0x334155), 0);
-
-    _firmwareProgressBar = lv_bar_create(firmwarePanel);
-    lv_obj_set_width(_firmwareProgressBar, lv_pct(100));
-    lv_obj_set_height(_firmwareProgressBar, 18);
-    lv_bar_set_range(_firmwareProgressBar, 0, 100);
-    lv_bar_set_value(_firmwareProgressBar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_radius(_firmwareProgressBar, 9, 0);
-    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0xCBD5E1), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_INDICATOR);
-
-    _firmwareProgressLabel = lv_label_create(firmwarePanel);
-    lv_obj_set_width(_firmwareProgressLabel, lv_pct(100));
-    lv_label_set_long_mode(_firmwareProgressLabel, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(_firmwareProgressLabel, "Idle");
-    lv_obj_set_style_text_font(_firmwareProgressLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(_firmwareProgressLabel, lv_color_hex(0x64748B), 0);
-
-    lv_obj_t *dangerSection = createFirmwareSection(firmwarePanel, "Danger Zone");
-    lv_obj_t *dangerHint = lv_label_create(dangerSection);
-    lv_obj_set_width(dangerHint, lv_pct(100));
-    lv_label_set_long_mode(dangerHint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(dangerHint, "Factory reset clears saved Settings preferences including Wi-Fi credentials, display, audio, and timezone options.");
-    lv_obj_set_style_text_font(dangerHint, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(dangerHint, lv_color_hex(0x7F1D1D), 0);
-
-    lv_obj_t *dangerControlsRow = createFirmwareControlsRow(dangerSection);
-    lv_obj_t *factoryResetButton = lv_btn_create(dangerControlsRow);
-    lv_obj_set_size(factoryResetButton, 170, 50);
-    lv_obj_set_style_radius(factoryResetButton, 16, 0);
-    lv_obj_set_style_border_width(factoryResetButton, 0, 0);
-    lv_obj_set_style_bg_color(factoryResetButton, lv_color_hex(0xDC2626), 0);
-    lv_obj_set_style_bg_opa(factoryResetButton, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(factoryResetButton, lv_color_hex(0xB91C1C), LV_PART_MAIN | LV_STATE_PRESSED);
-    lv_obj_add_event_cb(factoryResetButton, onFirmwareFactoryResetClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *factoryResetLabel = lv_label_create(factoryResetButton);
-    lv_label_set_text(factoryResetLabel, "Factory Reset");
-    lv_obj_set_style_text_color(factoryResetLabel, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(factoryResetLabel);
-    #endif
-
     // Record the screen index and install the screen loaded event callback
     _screen_list[UI_MAIN_SETTING_INDEX] = ui_ScreenSettingMain;
     lv_obj_add_event_cb(ui_ScreenSettingMain, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
@@ -2340,232 +2185,6 @@ void AppSettings::extraUiInit(void)
     _screen_list[UI_BLUETOOTH_SETTING_INDEX] = ui_ScreenSettingBLE;
     lv_obj_add_event_cb(ui_ScreenSettingBLE, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
-    _zigbeeScreen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(_zigbeeScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(_zigbeeScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_clear_flag(_zigbeeScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *zigbeeBackButton = lv_btn_create(_zigbeeScreen);
-    lv_obj_set_size(zigbeeBackButton, 60, 60);
-    lv_obj_align(zigbeeBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
-    lv_obj_set_style_bg_color(zigbeeBackButton, lv_color_hex(0xE5F3FF), 0);
-    lv_obj_set_style_border_width(zigbeeBackButton, 0, 0);
-    lv_obj_add_event_cb(zigbeeBackButton, [](lv_event_t *e) {
-        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
-        }
-    }, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *zigbeeBackImage = lv_img_create(zigbeeBackButton);
-    lv_img_set_src(zigbeeBackImage, &ui_img_return_png);
-    lv_obj_center(zigbeeBackImage);
-    lv_obj_set_style_img_recolor(zigbeeBackImage, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_img_recolor_opa(zigbeeBackImage, 255, 0);
-
-    lv_obj_t *zigbeeTitle = lv_label_create(_zigbeeScreen);
-    lv_label_set_text(zigbeeTitle, "ZigBee");
-    lv_obj_set_style_text_font(zigbeeTitle, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(zigbeeTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(zigbeeTitle, LV_ALIGN_TOP_MID, 0, 30);
-
-    lv_obj_t *zigbeeTitleBadge = lv_obj_create(_zigbeeScreen);
-    lv_obj_set_size(zigbeeTitleBadge, 38, 38);
-    lv_obj_align_to(zigbeeTitleBadge, zigbeeTitle, LV_ALIGN_OUT_LEFT_MID, -16, 0);
-    lv_obj_clear_flag(zigbeeTitleBadge, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(zigbeeTitleBadge, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(zigbeeTitleBadge, 0, 0);
-    lv_obj_set_style_bg_color(zigbeeTitleBadge, lv_color_hex(0xD97706), 0);
-    lv_obj_set_style_bg_opa(zigbeeTitleBadge, LV_OPA_COVER, 0);
-
-    lv_obj_t *zigbeeTitleBadgeLabel = lv_label_create(zigbeeTitleBadge);
-    lv_label_set_text(zigbeeTitleBadgeLabel, "ZB");
-    lv_obj_set_style_text_font(zigbeeTitleBadgeLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(zigbeeTitleBadgeLabel, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(zigbeeTitleBadgeLabel);
-
-    lv_obj_t *zigbeePanel = lv_obj_create(_zigbeeScreen);
-    lv_obj_set_size(zigbeePanel, lv_pct(92), 650);
-    lv_obj_align(zigbeePanel, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_radius(zigbeePanel, 20, 0);
-    lv_obj_set_style_border_width(zigbeePanel, 0, 0);
-    lv_obj_set_style_bg_color(zigbeePanel, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_pad_all(zigbeePanel, 14, 0);
-    lv_obj_set_style_pad_row(zigbeePanel, 12, 0);
-    lv_obj_set_flex_flow(zigbeePanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(zigbeePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_scroll_dir(zigbeePanel, LV_DIR_VER);
-
-    lv_obj_t *zigbeeEnableRow = createSettingsToggleRow(zigbeePanel, "Enable ZigBee");
-    _zigbeeEnableSwitch = lv_switch_create(zigbeeEnableRow);
-    lv_obj_align(_zigbeeEnableSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_zigbeeEnableSwitch, onZigbeeEnableSwitchValueChangeEventCallback, LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *zigbeeRoleCard = lv_obj_create(zigbeePanel);
-    lv_obj_set_width(zigbeeRoleCard, lv_pct(100));
-    lv_obj_set_height(zigbeeRoleCard, LV_SIZE_CONTENT);
-    lv_obj_clear_flag(zigbeeRoleCard, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(zigbeeRoleCard, 18, 0);
-    lv_obj_set_style_border_width(zigbeeRoleCard, 0, 0);
-    lv_obj_set_style_bg_color(zigbeeRoleCard, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(zigbeeRoleCard, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(zigbeeRoleCard, 16, 0);
-
-    lv_obj_t *zigbeeRoleTitle = lv_label_create(zigbeeRoleCard);
-    lv_label_set_text(zigbeeRoleTitle, "Coordinator Role");
-    lv_obj_set_style_text_font(zigbeeRoleTitle, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(zigbeeRoleTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(zigbeeRoleTitle, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    _zigbeeRoleValueLabel = lv_label_create(zigbeeRoleCard);
-    lv_obj_set_width(_zigbeeRoleValueLabel, lv_pct(100));
-    lv_label_set_long_mode(_zigbeeRoleValueLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_zigbeeRoleValueLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_zigbeeRoleValueLabel, lv_color_hex(0x475569), 0);
-    lv_obj_align_to(_zigbeeRoleValueLabel, zigbeeRoleTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
-
-    lv_obj_t *zigbeeNameCard = lv_obj_create(zigbeePanel);
-    lv_obj_set_width(zigbeeNameCard, lv_pct(100));
-    lv_obj_set_height(zigbeeNameCard, LV_SIZE_CONTENT);
-    lv_obj_clear_flag(zigbeeNameCard, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(zigbeeNameCard, 18, 0);
-    lv_obj_set_style_border_width(zigbeeNameCard, 0, 0);
-    lv_obj_set_style_bg_color(zigbeeNameCard, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(zigbeeNameCard, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(zigbeeNameCard, 16, 0);
-
-    lv_obj_t *zigbeeNameTitle = lv_label_create(zigbeeNameCard);
-    lv_label_set_text(zigbeeNameTitle, "Device Name");
-    lv_obj_set_style_text_font(zigbeeNameTitle, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(zigbeeNameTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(zigbeeNameTitle, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    _zigbeeNameTextArea = lv_textarea_create(zigbeeNameCard);
-    lv_obj_set_size(_zigbeeNameTextArea, lv_pct(100), 58);
-    lv_obj_align_to(_zigbeeNameTextArea, zigbeeNameTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
-    lv_textarea_set_one_line(_zigbeeNameTextArea, true);
-    lv_textarea_set_max_length(_zigbeeNameTextArea, 31);
-    lv_textarea_set_placeholder_text(_zigbeeNameTextArea, "Enter ZigBee device name");
-    lv_obj_set_style_radius(_zigbeeNameTextArea, 16, 0);
-    lv_obj_set_style_border_width(_zigbeeNameTextArea, 1, 0);
-    lv_obj_set_style_border_color(_zigbeeNameTextArea, lv_color_hex(0xC6D4E1), 0);
-    lv_obj_set_style_bg_color(_zigbeeNameTextArea, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_bg_opa(_zigbeeNameTextArea, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(_zigbeeNameTextArea, 16, 0);
-    lv_obj_set_style_text_font(_zigbeeNameTextArea, &lv_font_montserrat_20, 0);
-    lv_obj_add_event_cb(_zigbeeNameTextArea, onZigbeeNameTextAreaEventCallback, LV_EVENT_ALL, this);
-
-    _zigbeeNameSaveButton = lv_btn_create(zigbeeNameCard);
-    lv_obj_set_size(_zigbeeNameSaveButton, 120, 44);
-    lv_obj_align(_zigbeeNameSaveButton, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_obj_set_style_radius(_zigbeeNameSaveButton, 14, 0);
-    lv_obj_set_style_border_width(_zigbeeNameSaveButton, 0, 0);
-    lv_obj_set_style_bg_color(_zigbeeNameSaveButton, lv_color_hex(0xD97706), 0);
-    lv_obj_add_event_cb(_zigbeeNameSaveButton, onZigbeeNameSaveClickedEventCallback, LV_EVENT_CLICKED, this);
-
-    lv_obj_t *zigbeeNameSaveLabel = lv_label_create(_zigbeeNameSaveButton);
-    lv_label_set_text(zigbeeNameSaveLabel, "Save Name");
-    lv_obj_set_style_text_font(zigbeeNameSaveLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(zigbeeNameSaveLabel, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(zigbeeNameSaveLabel);
-
-    lv_obj_t *zigbeeChannelRow = createSettingsToggleRow(zigbeePanel, "Preferred Channel");
-    _zigbeeChannelDropdown = lv_dropdown_create(zigbeeChannelRow);
-    lv_dropdown_set_options_static(_zigbeeChannelDropdown, kZigbeeChannelOptionsText);
-    lv_obj_set_width(_zigbeeChannelDropdown, 150);
-    lv_obj_align(_zigbeeChannelDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_zigbeeChannelDropdown, onZigbeeChannelChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *zigbeePermitJoinRow = createSettingsToggleRow(zigbeePanel, "Permit Joining");
-    _zigbeePermitJoinDropdown = lv_dropdown_create(zigbeePermitJoinRow);
-    lv_dropdown_set_options_static(_zigbeePermitJoinDropdown, kZigbeePermitJoinOptionsText);
-    lv_obj_set_width(_zigbeePermitJoinDropdown, 150);
-    lv_obj_align(_zigbeePermitJoinDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_zigbeePermitJoinDropdown, onZigbeePermitJoinChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
-
-    _zigbeeConfigSummaryLabel = lv_label_create(zigbeePanel);
-    lv_obj_set_width(_zigbeeConfigSummaryLabel, lv_pct(100));
-    lv_label_set_long_mode(_zigbeeConfigSummaryLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_zigbeeConfigSummaryLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_zigbeeConfigSummaryLabel, lv_color_hex(0x334155), 0);
-
-    _zigbeeInfoLabel = lv_label_create(zigbeePanel);
-    lv_obj_set_width(_zigbeeInfoLabel, lv_pct(100));
-    lv_label_set_long_mode(_zigbeeInfoLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_zigbeeInfoLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_zigbeeInfoLabel, lv_color_hex(0x475569), 0);
-
-    _zigbeeKeyboard = lv_keyboard_create(_zigbeeScreen);
-    lv_obj_set_size(_zigbeeKeyboard, lv_pct(100), lv_pct(34));
-    lv_obj_align(_zigbeeKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_add_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_event_cb(_zigbeeKeyboard, onZigbeeKeyboardEventCallback, LV_EVENT_ALL, this);
-
-    _screen_list[UI_ZIGBEE_SETTING_INDEX] = _zigbeeScreen;
-    lv_obj_add_event_cb(_zigbeeScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
-
-    _securityScreen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(_securityScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(_securityScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_clear_flag(_securityScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *securityBackButton = lv_btn_create(_securityScreen);
-    lv_obj_set_size(securityBackButton, 60, 60);
-    lv_obj_align(securityBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
-    lv_obj_set_style_bg_color(securityBackButton, lv_color_hex(0xE5F3FF), 0);
-    lv_obj_set_style_border_width(securityBackButton, 0, 0);
-    lv_obj_add_event_cb(securityBackButton, [](lv_event_t *e) {
-        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
-        }
-    }, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *securityBackImage = lv_img_create(securityBackButton);
-    lv_img_set_src(securityBackImage, &ui_img_return_png);
-    lv_obj_center(securityBackImage);
-    lv_obj_set_style_img_recolor(securityBackImage, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_img_recolor_opa(securityBackImage, 255, 0);
-
-    lv_obj_t *securityTitle = lv_label_create(_securityScreen);
-    lv_label_set_text(securityTitle, "Security");
-    lv_obj_set_style_text_font(securityTitle, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(securityTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(securityTitle, LV_ALIGN_TOP_MID, 0, 30);
-
-    lv_obj_t *securityPanel = lv_obj_create(_securityScreen);
-    lv_obj_set_size(securityPanel, lv_pct(92), 650);
-    lv_obj_align(securityPanel, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_radius(securityPanel, 20, 0);
-    lv_obj_set_style_border_width(securityPanel, 0, 0);
-    lv_obj_set_style_bg_color(securityPanel, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_pad_all(securityPanel, 14, 0);
-    lv_obj_set_style_pad_row(securityPanel, 12, 0);
-    lv_obj_set_flex_flow(securityPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(securityPanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_scroll_dir(securityPanel, LV_DIR_VER);
-
-    lv_obj_t *deviceLockRow = createSettingsToggleRow(securityPanel, "Device Lock");
-    _securityDeviceLockSwitch = lv_switch_create(deviceLockRow);
-    lv_obj_align(_securityDeviceLockSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_securityDeviceLockSwitch, onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *settingsLockRow = createSettingsToggleRow(securityPanel, "Settings Lock");
-    _securitySettingsLockSwitch = lv_switch_create(settingsLockRow);
-    lv_obj_align(_securitySettingsLockSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_securitySettingsLockSwitch, onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    _securityInfoLabel = lv_label_create(securityPanel);
-    lv_obj_set_width(_securityInfoLabel, lv_pct(100));
-    lv_label_set_long_mode(_securityInfoLabel, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(_securityInfoLabel,
-                      "Enabling a lock asks for a new 4-digit PIN. Disabling it asks for the existing PIN.");
-    lv_obj_set_style_text_font(_securityInfoLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_securityInfoLabel, lv_color_hex(0x475569), 0);
-
-    _screen_list[UI_SECURITY_SETTING_INDEX] = _securityScreen;
-    lv_obj_add_event_cb(_securityScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
-
     /* Display */
     lv_slider_set_range(ui_SliderPanelScreenSettingLightSwitch1, SCREEN_BRIGHTNESS_MIN, SCREEN_BRIGHTNESS_MAX);
     lv_obj_add_event_cb(ui_SliderPanelScreenSettingLightSwitch1, onSliderPanelLightSwitchValueChangeEventCallback,
@@ -2866,12 +2485,6 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_style_text_color(_aboutWifiValueLabel, lv_color_hex(0x334155), 0);
     lv_obj_align_to(_aboutWifiValueLabel, wifiInfoTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
 
-    _screen_list[UI_HARDWARE_SETTING_INDEX] = _hardwareScreen;
-    lv_obj_add_event_cb(_hardwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
-
-    _screen_list[UI_FIRMWARE_SETTING_INDEX] = _firmwareScreen;
-    lv_obj_add_event_cb(_firmwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
-
     // Record the screen index and install the screen loaded event callback
     _screen_list[UI_ABOUT_SETTING_INDEX] = ui_ScreenSettingAbout;
     lv_obj_add_event_cb(ui_ScreenSettingAbout, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
@@ -2896,10 +2509,6 @@ void AppSettings::extraUiInit(void)
     #endif
     #if CONFIG_JC4880_FEATURE_SECURITY
     refreshSecurityUi();
-    #endif
-    #if CONFIG_JC4880_FEATURE_OTA
-    scanSdFirmwareEntries();
-    refreshFirmwareUi();
     #endif
 }
 
@@ -2934,6 +2543,553 @@ void AppSettings::processWifiConnect(WifiConnectState_t state)
     default:
         break;
     }
+}
+
+void AppSettings::ensureHardwareScreen(void)
+{
+#if !APP_SETTINGS_FEATURE_HARDWARE_MENU
+    return;
+#else
+    if ((_hardwareScreen != nullptr) && lv_obj_ready(_hardwareScreen)) {
+        return;
+    }
+
+    _hardwareScreen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(_hardwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(_hardwareScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(_hardwareScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *hardwareBackButton = lv_btn_create(_hardwareScreen);
+    lv_obj_set_size(hardwareBackButton, 60, 60);
+    lv_obj_align(hardwareBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_set_style_bg_color(hardwareBackButton, lv_color_hex(0xE5F3FF), 0);
+    lv_obj_set_style_border_width(hardwareBackButton, 0, 0);
+    lv_obj_add_event_cb(hardwareBackButton, [](lv_event_t *e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *hardwareBackImage = lv_img_create(hardwareBackButton);
+    lv_img_set_src(hardwareBackImage, &ui_img_return_png);
+    lv_obj_center(hardwareBackImage);
+    lv_obj_set_style_img_recolor(hardwareBackImage, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_img_recolor_opa(hardwareBackImage, 255, 0);
+
+    lv_obj_t *hardwareTitle = lv_label_create(_hardwareScreen);
+    lv_label_set_text(hardwareTitle, "Hardware Monitor");
+    lv_obj_set_style_text_font(hardwareTitle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(hardwareTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(hardwareTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *hardwarePanel = lv_obj_create(_hardwareScreen);
+    lv_obj_set_size(hardwarePanel, lv_pct(92), 650);
+    lv_obj_align(hardwarePanel, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(hardwarePanel, 20, 0);
+    lv_obj_set_style_border_width(hardwarePanel, 0, 0);
+    lv_obj_set_style_bg_color(hardwarePanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(hardwarePanel, 14, 0);
+    lv_obj_set_style_pad_row(hardwarePanel, 12, 0);
+    lv_obj_set_flex_flow(hardwarePanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(hardwarePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(hardwarePanel, LV_DIR_VER);
+
+    create_monitor_card(hardwarePanel, "CPU Speed", "Configured CPU clock", &_hardwareCpuSpeedValueLabel,
+                        &_hardwareCpuSpeedDetailLabel, &_hardwareCpuSpeedBar);
+    create_monitor_card(hardwarePanel, "CPU Temperature", "On-die sensor reading", &_hardwareCpuTempValueLabel,
+                        &_hardwareCpuTempDetailLabel, &_hardwareCpuTempBar);
+    create_monitor_card(hardwarePanel, "SRAM", "Occupied versus total internal memory", &_hardwareSramValueLabel,
+                        &_hardwareSramDetailLabel, &_hardwareSramBar);
+    create_monitor_card(hardwarePanel, "PSRAM", "Occupied versus total external memory", &_hardwarePsramValueLabel,
+                        &_hardwarePsramDetailLabel, &_hardwarePsramBar);
+    create_monitor_card(hardwarePanel, "SD Card Storage", "Used versus total mounted capacity", &_hardwareSdValueLabel,
+                        &_hardwareSdDetailLabel, &_hardwareSdBar);
+    create_monitor_card(hardwarePanel, "Wi-Fi Signal", "Current station RSSI and quality", &_hardwareWifiValueLabel,
+                        &_hardwareWifiDetailLabel, &_hardwareWifiBar);
+
+    if (_hardwareCpuSpeedDetailLabel != nullptr) {
+        lv_label_set_text(_hardwareCpuSpeedDetailLabel, "Uptime updates live.");
+        lv_obj_set_style_text_font(_hardwareCpuSpeedDetailLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(_hardwareCpuSpeedDetailLabel, lv_color_hex(0x475569), 0);
+    }
+    if (_hardwareCpuSpeedBar != nullptr) {
+        lv_bar_set_value(_hardwareCpuSpeedBar, 100, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(_hardwareCpuSpeedBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+    }
+
+    _screen_list[UI_HARDWARE_SETTING_INDEX] = _hardwareScreen;
+    lv_obj_add_event_cb(_hardwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+#endif
+}
+
+void AppSettings::ensureZigbeeScreen(void)
+{
+#if !CONFIG_JC4880_FEATURE_ZIGBEE
+    return;
+#else
+    if ((_zigbeeScreen != nullptr) && lv_obj_ready(_zigbeeScreen)) {
+        return;
+    }
+
+    _zigbeeScreen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(_zigbeeScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(_zigbeeScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(_zigbeeScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *zigbeeBackButton = lv_btn_create(_zigbeeScreen);
+    lv_obj_set_size(zigbeeBackButton, 60, 60);
+    lv_obj_align(zigbeeBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_set_style_bg_color(zigbeeBackButton, lv_color_hex(0xE5F3FF), 0);
+    lv_obj_set_style_border_width(zigbeeBackButton, 0, 0);
+    lv_obj_add_event_cb(zigbeeBackButton, [](lv_event_t *e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *zigbeeBackImage = lv_img_create(zigbeeBackButton);
+    lv_img_set_src(zigbeeBackImage, &ui_img_return_png);
+    lv_obj_center(zigbeeBackImage);
+    lv_obj_set_style_img_recolor(zigbeeBackImage, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_img_recolor_opa(zigbeeBackImage, 255, 0);
+
+    lv_obj_t *zigbeeTitle = lv_label_create(_zigbeeScreen);
+    lv_label_set_text(zigbeeTitle, "ZigBee");
+    lv_obj_set_style_text_font(zigbeeTitle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(zigbeeTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(zigbeeTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *zigbeeTitleBadge = lv_obj_create(_zigbeeScreen);
+    lv_obj_set_size(zigbeeTitleBadge, 38, 38);
+    lv_obj_align_to(zigbeeTitleBadge, zigbeeTitle, LV_ALIGN_OUT_LEFT_MID, -16, 0);
+    lv_obj_clear_flag(zigbeeTitleBadge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(zigbeeTitleBadge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(zigbeeTitleBadge, 0, 0);
+    lv_obj_set_style_bg_color(zigbeeTitleBadge, lv_color_hex(0xD97706), 0);
+    lv_obj_set_style_bg_opa(zigbeeTitleBadge, LV_OPA_COVER, 0);
+
+    lv_obj_t *zigbeeTitleBadgeLabel = lv_label_create(zigbeeTitleBadge);
+    lv_label_set_text(zigbeeTitleBadgeLabel, "ZB");
+    lv_obj_set_style_text_font(zigbeeTitleBadgeLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(zigbeeTitleBadgeLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(zigbeeTitleBadgeLabel);
+
+    lv_obj_t *zigbeePanel = lv_obj_create(_zigbeeScreen);
+    lv_obj_set_size(zigbeePanel, lv_pct(92), 650);
+    lv_obj_align(zigbeePanel, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(zigbeePanel, 20, 0);
+    lv_obj_set_style_border_width(zigbeePanel, 0, 0);
+    lv_obj_set_style_bg_color(zigbeePanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(zigbeePanel, 14, 0);
+    lv_obj_set_style_pad_row(zigbeePanel, 12, 0);
+    lv_obj_set_flex_flow(zigbeePanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(zigbeePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(zigbeePanel, LV_DIR_VER);
+
+    lv_obj_t *zigbeeEnableRow = create_settings_toggle_row(zigbeePanel, "Enable ZigBee");
+    _zigbeeEnableSwitch = lv_switch_create(zigbeeEnableRow);
+    lv_obj_align(_zigbeeEnableSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_zigbeeEnableSwitch, onZigbeeEnableSwitchValueChangeEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *zigbeeRoleCard = lv_obj_create(zigbeePanel);
+    lv_obj_set_width(zigbeeRoleCard, lv_pct(100));
+    lv_obj_set_height(zigbeeRoleCard, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(zigbeeRoleCard, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(zigbeeRoleCard, 18, 0);
+    lv_obj_set_style_border_width(zigbeeRoleCard, 0, 0);
+    lv_obj_set_style_bg_color(zigbeeRoleCard, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(zigbeeRoleCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(zigbeeRoleCard, 16, 0);
+
+    lv_obj_t *zigbeeRoleTitle = lv_label_create(zigbeeRoleCard);
+    lv_label_set_text(zigbeeRoleTitle, "Coordinator Role");
+    lv_obj_set_style_text_font(zigbeeRoleTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(zigbeeRoleTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(zigbeeRoleTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _zigbeeRoleValueLabel = lv_label_create(zigbeeRoleCard);
+    lv_obj_set_width(_zigbeeRoleValueLabel, lv_pct(100));
+    lv_label_set_long_mode(_zigbeeRoleValueLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_zigbeeRoleValueLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_zigbeeRoleValueLabel, lv_color_hex(0x475569), 0);
+    lv_obj_align_to(_zigbeeRoleValueLabel, zigbeeRoleTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
+    lv_obj_t *zigbeeNameCard = lv_obj_create(zigbeePanel);
+    lv_obj_set_width(zigbeeNameCard, lv_pct(100));
+    lv_obj_set_height(zigbeeNameCard, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(zigbeeNameCard, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(zigbeeNameCard, 18, 0);
+    lv_obj_set_style_border_width(zigbeeNameCard, 0, 0);
+    lv_obj_set_style_bg_color(zigbeeNameCard, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(zigbeeNameCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(zigbeeNameCard, 16, 0);
+
+    lv_obj_t *zigbeeNameTitle = lv_label_create(zigbeeNameCard);
+    lv_label_set_text(zigbeeNameTitle, "Device Name");
+    lv_obj_set_style_text_font(zigbeeNameTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(zigbeeNameTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(zigbeeNameTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _zigbeeNameTextArea = lv_textarea_create(zigbeeNameCard);
+    lv_obj_set_size(_zigbeeNameTextArea, lv_pct(100), 58);
+    lv_obj_align_to(_zigbeeNameTextArea, zigbeeNameTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+    lv_textarea_set_one_line(_zigbeeNameTextArea, true);
+    lv_textarea_set_max_length(_zigbeeNameTextArea, 31);
+    lv_textarea_set_placeholder_text(_zigbeeNameTextArea, "Enter ZigBee device name");
+    lv_obj_set_style_radius(_zigbeeNameTextArea, 16, 0);
+    lv_obj_set_style_border_width(_zigbeeNameTextArea, 1, 0);
+    lv_obj_set_style_border_color(_zigbeeNameTextArea, lv_color_hex(0xC6D4E1), 0);
+    lv_obj_set_style_bg_color(_zigbeeNameTextArea, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(_zigbeeNameTextArea, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(_zigbeeNameTextArea, 16, 0);
+    lv_obj_set_style_text_font(_zigbeeNameTextArea, &lv_font_montserrat_20, 0);
+    lv_obj_add_event_cb(_zigbeeNameTextArea, onZigbeeNameTextAreaEventCallback, LV_EVENT_ALL, this);
+
+    _zigbeeNameSaveButton = lv_btn_create(zigbeeNameCard);
+    lv_obj_set_size(_zigbeeNameSaveButton, 120, 44);
+    lv_obj_align(_zigbeeNameSaveButton, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_radius(_zigbeeNameSaveButton, 14, 0);
+    lv_obj_set_style_border_width(_zigbeeNameSaveButton, 0, 0);
+    lv_obj_set_style_bg_color(_zigbeeNameSaveButton, lv_color_hex(0xD97706), 0);
+    lv_obj_add_event_cb(_zigbeeNameSaveButton, onZigbeeNameSaveClickedEventCallback, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *zigbeeNameSaveLabel = lv_label_create(_zigbeeNameSaveButton);
+    lv_label_set_text(zigbeeNameSaveLabel, "Save Name");
+    lv_obj_set_style_text_font(zigbeeNameSaveLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(zigbeeNameSaveLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(zigbeeNameSaveLabel);
+
+    lv_obj_t *zigbeeChannelRow = create_settings_toggle_row(zigbeePanel, "Preferred Channel");
+    _zigbeeChannelDropdown = lv_dropdown_create(zigbeeChannelRow);
+    lv_dropdown_set_options_static(_zigbeeChannelDropdown, kZigbeeChannelOptionsText);
+    lv_obj_set_width(_zigbeeChannelDropdown, 150);
+    lv_obj_align(_zigbeeChannelDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_zigbeeChannelDropdown, onZigbeeChannelChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *zigbeePermitJoinRow = create_settings_toggle_row(zigbeePanel, "Permit Joining");
+    _zigbeePermitJoinDropdown = lv_dropdown_create(zigbeePermitJoinRow);
+    lv_dropdown_set_options_static(_zigbeePermitJoinDropdown, kZigbeePermitJoinOptionsText);
+    lv_obj_set_width(_zigbeePermitJoinDropdown, 150);
+    lv_obj_align(_zigbeePermitJoinDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_zigbeePermitJoinDropdown, onZigbeePermitJoinChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    _zigbeeConfigSummaryLabel = lv_label_create(zigbeePanel);
+    lv_obj_set_width(_zigbeeConfigSummaryLabel, lv_pct(100));
+    lv_label_set_long_mode(_zigbeeConfigSummaryLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_zigbeeConfigSummaryLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_zigbeeConfigSummaryLabel, lv_color_hex(0x334155), 0);
+
+    _zigbeeInfoLabel = lv_label_create(zigbeePanel);
+    lv_obj_set_width(_zigbeeInfoLabel, lv_pct(100));
+    lv_label_set_long_mode(_zigbeeInfoLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_zigbeeInfoLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_zigbeeInfoLabel, lv_color_hex(0x475569), 0);
+
+    _zigbeeKeyboard = lv_keyboard_create(_zigbeeScreen);
+    lv_obj_set_size(_zigbeeKeyboard, lv_pct(100), lv_pct(34));
+    lv_obj_align(_zigbeeKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(_zigbeeKeyboard, onZigbeeKeyboardEventCallback, LV_EVENT_ALL, this);
+
+    _screen_list[UI_ZIGBEE_SETTING_INDEX] = _zigbeeScreen;
+    lv_obj_add_event_cb(_zigbeeScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+#endif
+}
+
+void AppSettings::ensureSecurityScreen(void)
+{
+#if !CONFIG_JC4880_FEATURE_SECURITY
+    return;
+#else
+    if ((_securityScreen != nullptr) && lv_obj_ready(_securityScreen)) {
+        return;
+    }
+
+    _securityScreen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(_securityScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(_securityScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(_securityScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *securityBackButton = lv_btn_create(_securityScreen);
+    lv_obj_set_size(securityBackButton, 60, 60);
+    lv_obj_align(securityBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_set_style_bg_color(securityBackButton, lv_color_hex(0xE5F3FF), 0);
+    lv_obj_set_style_border_width(securityBackButton, 0, 0);
+    lv_obj_add_event_cb(securityBackButton, [](lv_event_t *e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *securityBackImage = lv_img_create(securityBackButton);
+    lv_img_set_src(securityBackImage, &ui_img_return_png);
+    lv_obj_center(securityBackImage);
+    lv_obj_set_style_img_recolor(securityBackImage, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_img_recolor_opa(securityBackImage, 255, 0);
+
+    lv_obj_t *securityTitle = lv_label_create(_securityScreen);
+    lv_label_set_text(securityTitle, "Security");
+    lv_obj_set_style_text_font(securityTitle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(securityTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(securityTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *securityPanel = lv_obj_create(_securityScreen);
+    lv_obj_set_size(securityPanel, lv_pct(92), 650);
+    lv_obj_align(securityPanel, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(securityPanel, 20, 0);
+    lv_obj_set_style_border_width(securityPanel, 0, 0);
+    lv_obj_set_style_bg_color(securityPanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(securityPanel, 14, 0);
+    lv_obj_set_style_pad_row(securityPanel, 12, 0);
+    lv_obj_set_flex_flow(securityPanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(securityPanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(securityPanel, LV_DIR_VER);
+
+    lv_obj_t *deviceLockRow = create_settings_toggle_row(securityPanel, "Device Lock");
+    _securityDeviceLockSwitch = lv_switch_create(deviceLockRow);
+    lv_obj_align(_securityDeviceLockSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_securityDeviceLockSwitch, onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *settingsLockRow = create_settings_toggle_row(securityPanel, "Settings Lock");
+    _securitySettingsLockSwitch = lv_switch_create(settingsLockRow);
+    lv_obj_align(_securitySettingsLockSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_securitySettingsLockSwitch, onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    _securityInfoLabel = lv_label_create(securityPanel);
+    lv_obj_set_width(_securityInfoLabel, lv_pct(100));
+    lv_label_set_long_mode(_securityInfoLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(_securityInfoLabel,
+                      "Enabling a lock asks for a new 4-digit PIN. Disabling it asks for the existing PIN.");
+    lv_obj_set_style_text_font(_securityInfoLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_securityInfoLabel, lv_color_hex(0x475569), 0);
+
+    _screen_list[UI_SECURITY_SETTING_INDEX] = _securityScreen;
+    lv_obj_add_event_cb(_securityScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+#endif
+}
+
+void AppSettings::ensureFirmwareScreen(void)
+{
+#if !CONFIG_JC4880_FEATURE_OTA
+    return;
+#else
+    if ((_firmwareScreen != nullptr) && lv_obj_ready(_firmwareScreen)) {
+        return;
+    }
+
+    _firmwareScreen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(_firmwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_opa(_firmwareScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(_firmwareScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *firmwareBackButton = lv_btn_create(_firmwareScreen);
+    lv_obj_set_size(firmwareBackButton, 60, 60);
+    lv_obj_align(firmwareBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
+    lv_obj_set_style_bg_color(firmwareBackButton, lv_color_hex(0xE5F3FF), 0);
+    lv_obj_set_style_border_width(firmwareBackButton, 0, 0);
+    lv_obj_add_event_cb(firmwareBackButton, [](lv_event_t *e) {
+        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
+        }
+    }, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *firmwareBackImage = lv_img_create(firmwareBackButton);
+    lv_img_set_src(firmwareBackImage, &ui_img_return_png);
+    lv_obj_center(firmwareBackImage);
+    lv_obj_set_style_img_recolor(firmwareBackImage, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_img_recolor_opa(firmwareBackImage, 255, 0);
+
+    lv_obj_t *firmwareTitle = lv_label_create(_firmwareScreen);
+    lv_label_set_text(firmwareTitle, "Firmware");
+    lv_obj_set_style_text_font(firmwareTitle, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(firmwareTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(firmwareTitle, LV_ALIGN_TOP_MID, 0, 30);
+
+    lv_obj_t *firmwarePanel = lv_obj_create(_firmwareScreen);
+    lv_obj_set_size(firmwarePanel, lv_pct(92), 650);
+    lv_obj_align(firmwarePanel, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(firmwarePanel, 20, 0);
+    lv_obj_set_style_border_width(firmwarePanel, 0, 0);
+    lv_obj_set_style_bg_color(firmwarePanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(firmwarePanel, 14, 0);
+    lv_obj_set_style_pad_row(firmwarePanel, 12, 0);
+    lv_obj_set_flex_flow(firmwarePanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(firmwarePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(firmwarePanel, LV_DIR_VER);
+
+    auto createFirmwareSection = [](lv_obj_t *parent, const char *title) {
+        lv_obj_t *section = lv_obj_create(parent);
+        lv_obj_set_width(section, lv_pct(100));
+        lv_obj_set_height(section, LV_SIZE_CONTENT);
+        lv_obj_set_style_radius(section, 18, 0);
+        lv_obj_set_style_border_width(section, 0, 0);
+        lv_obj_set_style_bg_color(section, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_pad_all(section, 14, 0);
+        lv_obj_set_style_pad_row(section, 10, 0);
+        lv_obj_set_flex_flow(section, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(section, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        lv_obj_t *sectionTitle = lv_label_create(section);
+        lv_label_set_text(sectionTitle, title);
+        lv_obj_set_style_text_font(sectionTitle, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(sectionTitle, lv_color_hex(0x0F172A), 0);
+        return section;
+    };
+
+    auto createFirmwareControlsRow = [](lv_obj_t *parent) {
+        lv_obj_t *row = lv_obj_create(parent);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_pad_row(row, 8, 0);
+        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        return row;
+    };
+
+    lv_obj_t *currentSection = createFirmwareSection(firmwarePanel, "Installed Firmware");
+    _firmwareCurrentVersionLabel = lv_label_create(currentSection);
+    lv_obj_set_width(_firmwareCurrentVersionLabel, lv_pct(100));
+    lv_label_set_long_mode(_firmwareCurrentVersionLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_firmwareCurrentVersionLabel, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(_firmwareCurrentVersionLabel, lv_color_hex(0x0F172A), 0);
+
+    lv_obj_t *sdSection = createFirmwareSection(firmwarePanel, "Flash from SD Card");
+    lv_obj_t *sdHint = lv_label_create(sdSection);
+    lv_obj_set_width(sdHint, lv_pct(100));
+    lv_label_set_long_mode(sdHint, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(sdHint, "Select a validated .bin firmware image from /sdcard or /sdcard/firmware.");
+    lv_obj_set_style_text_font(sdHint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(sdHint, lv_color_hex(0x475569), 0);
+
+    lv_obj_t *sdControlsRow = createFirmwareControlsRow(sdSection);
+
+    _firmwareSdDropdown = lv_dropdown_create(sdControlsRow);
+    lv_obj_set_size(_firmwareSdDropdown, 220, 48);
+    lv_obj_set_flex_grow(_firmwareSdDropdown, 1);
+    lv_obj_add_event_cb(_firmwareSdDropdown, onFirmwareSelectionChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *sdRefreshButton = lv_btn_create(sdControlsRow);
+    lv_obj_set_size(sdRefreshButton, 92, 48);
+    lv_obj_set_style_radius(sdRefreshButton, 16, 0);
+    lv_obj_set_style_border_width(sdRefreshButton, 0, 0);
+    lv_obj_set_style_bg_color(sdRefreshButton, lv_color_hex(0xCBD5E1), 0);
+    lv_obj_add_event_cb(sdRefreshButton, onFirmwareSdRefreshClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *sdRefreshLabel = lv_label_create(sdRefreshButton);
+    lv_label_set_text(sdRefreshLabel, "Scan");
+    lv_obj_center(sdRefreshLabel);
+
+    _firmwareSdFlashButton = lv_btn_create(sdControlsRow);
+    lv_obj_set_size(_firmwareSdFlashButton, 92, 48);
+    lv_obj_set_style_radius(_firmwareSdFlashButton, 16, 0);
+    lv_obj_set_style_border_width(_firmwareSdFlashButton, 0, 0);
+    lv_obj_add_event_cb(_firmwareSdFlashButton, onFirmwareSdFlashClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *sdFlashLabel = lv_label_create(_firmwareSdFlashButton);
+    lv_label_set_text(sdFlashLabel, "Flash");
+    lv_obj_center(sdFlashLabel);
+
+    lv_obj_t *otaSection = createFirmwareSection(firmwarePanel, "Check GitHub Releases");
+    lv_obj_t *otaHint = lv_label_create(otaSection);
+    lv_obj_set_width(otaHint, lv_pct(100));
+    lv_label_set_long_mode(otaHint, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(otaHint, "Check GitHub releases, review installed and latest versions below, then tick one firmware to flash.");
+    lv_obj_set_style_text_font(otaHint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(otaHint, lv_color_hex(0x475569), 0);
+
+    lv_obj_t *otaControlsRow = createFirmwareControlsRow(otaSection);
+
+    _firmwareOtaCheckButton = lv_btn_create(otaControlsRow);
+    lv_obj_set_size(_firmwareOtaCheckButton, 96, 48);
+    lv_obj_set_style_radius(_firmwareOtaCheckButton, 16, 0);
+    lv_obj_set_style_border_width(_firmwareOtaCheckButton, 0, 0);
+    lv_obj_add_event_cb(_firmwareOtaCheckButton, onFirmwareOtaCheckClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *otaCheckLabel = lv_label_create(_firmwareOtaCheckButton);
+    lv_label_set_text(otaCheckLabel, "Check");
+    lv_obj_center(otaCheckLabel);
+
+    _firmwareOtaFlashButton = lv_btn_create(otaControlsRow);
+    lv_obj_set_size(_firmwareOtaFlashButton, 92, 48);
+    lv_obj_set_style_radius(_firmwareOtaFlashButton, 16, 0);
+    lv_obj_set_style_border_width(_firmwareOtaFlashButton, 0, 0);
+    lv_obj_add_event_cb(_firmwareOtaFlashButton, onFirmwareOtaFlashClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *otaFlashLabel = lv_label_create(_firmwareOtaFlashButton);
+    lv_label_set_text(otaFlashLabel, "Flash");
+    lv_obj_center(otaFlashLabel);
+
+    _firmwareOtaSummaryLabel = lv_label_create(otaSection);
+    lv_obj_set_width(_firmwareOtaSummaryLabel, lv_pct(100));
+    lv_label_set_long_mode(_firmwareOtaSummaryLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_firmwareOtaSummaryLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_firmwareOtaSummaryLabel, lv_color_hex(0x334155), 0);
+
+    _firmwareOtaListContainer = lv_obj_create(otaSection);
+    lv_obj_set_width(_firmwareOtaListContainer, lv_pct(100));
+    lv_obj_set_height(_firmwareOtaListContainer, 210);
+    lv_obj_set_style_radius(_firmwareOtaListContainer, 16, 0);
+    lv_obj_set_style_bg_color(_firmwareOtaListContainer, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_border_color(_firmwareOtaListContainer, lv_color_hex(0xCBD5E1), 0);
+    lv_obj_set_style_border_width(_firmwareOtaListContainer, 1, 0);
+    lv_obj_set_style_pad_all(_firmwareOtaListContainer, 12, 0);
+    lv_obj_set_style_pad_row(_firmwareOtaListContainer, 8, 0);
+    lv_obj_set_scroll_dir(_firmwareOtaListContainer, LV_DIR_VER);
+    lv_obj_set_flex_flow(_firmwareOtaListContainer, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(_firmwareOtaListContainer, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    _firmwareProgressBar = lv_bar_create(firmwarePanel);
+    lv_obj_set_width(_firmwareProgressBar, lv_pct(100));
+    lv_obj_set_height(_firmwareProgressBar, 18);
+    lv_bar_set_range(_firmwareProgressBar, 0, 100);
+    lv_bar_set_value(_firmwareProgressBar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(_firmwareProgressBar, 9, 0);
+    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0xCBD5E1), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_INDICATOR);
+
+    _firmwareProgressLabel = lv_label_create(firmwarePanel);
+    lv_obj_set_width(_firmwareProgressLabel, lv_pct(100));
+    lv_label_set_long_mode(_firmwareProgressLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(_firmwareProgressLabel, "Idle");
+    lv_obj_set_style_text_font(_firmwareProgressLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_firmwareProgressLabel, lv_color_hex(0x64748B), 0);
+
+    _firmwareStatusLabel = lv_label_create(firmwarePanel);
+    lv_obj_set_width(_firmwareStatusLabel, lv_pct(100));
+    lv_label_set_long_mode(_firmwareStatusLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_firmwareStatusLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_firmwareStatusLabel, lv_color_hex(0x334155), 0);
+
+    lv_obj_t *dangerSection = createFirmwareSection(firmwarePanel, "Danger Zone");
+    lv_obj_t *dangerHint = lv_label_create(dangerSection);
+    lv_obj_set_width(dangerHint, lv_pct(100));
+    lv_label_set_long_mode(dangerHint, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(dangerHint, "Factory reset clears saved Settings preferences including Wi-Fi credentials, display, audio, and timezone options.");
+    lv_obj_set_style_text_font(dangerHint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(dangerHint, lv_color_hex(0x7F1D1D), 0);
+
+    lv_obj_t *dangerControlsRow = createFirmwareControlsRow(dangerSection);
+    lv_obj_t *factoryResetButton = lv_btn_create(dangerControlsRow);
+    lv_obj_set_size(factoryResetButton, 170, 50);
+    lv_obj_set_style_radius(factoryResetButton, 16, 0);
+    lv_obj_set_style_border_width(factoryResetButton, 0, 0);
+    lv_obj_set_style_bg_color(factoryResetButton, lv_color_hex(0xDC2626), 0);
+    lv_obj_set_style_bg_opa(factoryResetButton, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(factoryResetButton, lv_color_hex(0xB91C1C), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_add_event_cb(factoryResetButton, onFirmwareFactoryResetClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *factoryResetLabel = lv_label_create(factoryResetButton);
+    lv_label_set_text(factoryResetLabel, "Factory Reset");
+    lv_obj_set_style_text_color(factoryResetLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(factoryResetLabel);
+
+    _screen_list[UI_FIRMWARE_SETTING_INDEX] = _firmwareScreen;
+    lv_obj_add_event_cb(_firmwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+#endif
 }
 
 bool AppSettings::loadNvsParam(void)
@@ -3443,6 +3599,69 @@ void AppSettings::setFirmwareStatus(const std::string &status, bool is_error)
     lv_obj_set_style_text_color(_firmwareStatusLabel, is_error ? lv_color_hex(0xB91C1C) : lv_color_hex(0x334155), 0);
 }
 
+void AppSettings::ensureFirmwareOtaCheckOverlay(void)
+{
+    if ((_firmwareOtaCheckOverlay != nullptr) && lv_obj_ready(_firmwareOtaCheckOverlay)) {
+        return;
+    }
+
+    _firmwareOtaCheckOverlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(_firmwareOtaCheckOverlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(_firmwareOtaCheckOverlay, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_bg_opa(_firmwareOtaCheckOverlay, LV_OPA_50, 0);
+    lv_obj_set_style_border_width(_firmwareOtaCheckOverlay, 0, 0);
+    lv_obj_set_style_pad_all(_firmwareOtaCheckOverlay, 0, 0);
+    lv_obj_add_flag(_firmwareOtaCheckOverlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_firmwareOtaCheckOverlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(_firmwareOtaCheckOverlay);
+    lv_obj_add_flag(_firmwareOtaCheckOverlay, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *firmwareOtaCheckCard = lv_obj_create(_firmwareOtaCheckOverlay);
+    lv_obj_set_size(firmwareOtaCheckCard, 320, 210);
+    lv_obj_center(firmwareOtaCheckCard);
+    lv_obj_set_style_radius(firmwareOtaCheckCard, 24, 0);
+    lv_obj_set_style_bg_color(firmwareOtaCheckCard, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_border_width(firmwareOtaCheckCard, 0, 0);
+    lv_obj_set_style_pad_all(firmwareOtaCheckCard, 20, 0);
+    lv_obj_set_style_pad_row(firmwareOtaCheckCard, 16, 0);
+    lv_obj_clear_flag(firmwareOtaCheckCard, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(firmwareOtaCheckCard, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(firmwareOtaCheckCard, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    _firmwareOtaCheckSpinner = lv_spinner_create(firmwareOtaCheckCard, 1000, 90);
+    lv_obj_set_size(_firmwareOtaCheckSpinner, 72, 72);
+
+    _firmwareOtaCheckStatusLabel = lv_label_create(firmwareOtaCheckCard);
+    lv_obj_set_width(_firmwareOtaCheckStatusLabel, lv_pct(100));
+    lv_label_set_long_mode(_firmwareOtaCheckStatusLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(_firmwareOtaCheckStatusLabel, "Checking GitHub for firmware releases...");
+    lv_obj_set_style_text_align(_firmwareOtaCheckStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(_firmwareOtaCheckStatusLabel, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(_firmwareOtaCheckStatusLabel, lv_color_hex(0x334155), 0);
+}
+
+void AppSettings::setFirmwareOtaCheckOverlayVisible(bool visible, const std::string &status)
+{
+    if (visible) {
+        ensureFirmwareOtaCheckOverlay();
+    }
+
+    if ((_firmwareOtaCheckOverlay == nullptr) || !lv_obj_ready(_firmwareOtaCheckOverlay)) {
+        return;
+    }
+
+    if ((_firmwareOtaCheckStatusLabel != nullptr) && lv_obj_ready(_firmwareOtaCheckStatusLabel) && !status.empty()) {
+        lv_label_set_text(_firmwareOtaCheckStatusLabel, status.c_str());
+    }
+
+    if (visible) {
+        lv_obj_move_foreground(_firmwareOtaCheckOverlay);
+        lv_obj_clear_flag(_firmwareOtaCheckOverlay, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(_firmwareOtaCheckOverlay, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void AppSettings::setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error)
 {
     if (!isUiActive()) {
@@ -3580,6 +3799,137 @@ void AppSettings::populateFirmwareDropdown(lv_obj_t *dropdown, const std::vector
     }
     lv_dropdown_set_options(dropdown, options.c_str());
     lv_dropdown_set_selected(dropdown, 0);
+}
+
+int AppSettings::getSelectedOtaFirmwareIndex(void) const
+{
+    if ((_selectedOtaFirmwareIndex < 0) || (static_cast<size_t>(_selectedOtaFirmwareIndex) >= _otaFirmwareEntries.size())) {
+        return -1;
+    }
+
+    return _selectedOtaFirmwareIndex;
+}
+
+void AppSettings::setSelectedOtaFirmwareIndex(int index)
+{
+    _selectedOtaFirmwareIndex = ((index >= 0) && (static_cast<size_t>(index) < _otaFirmwareEntries.size())) ? index : -1;
+
+    for (size_t entry_index = 0; entry_index < _firmwareOtaCheckboxes.size(); ++entry_index) {
+        lv_obj_t *checkbox = _firmwareOtaCheckboxes[entry_index];
+        if ((checkbox == nullptr) || !lv_obj_ready(checkbox)) {
+            continue;
+        }
+
+        if (static_cast<int>(entry_index) == _selectedOtaFirmwareIndex) {
+            lv_obj_add_state(checkbox, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(checkbox, LV_STATE_CHECKED);
+        }
+    }
+}
+
+void AppSettings::rebuildFirmwareOtaList(void)
+{
+    if ((_firmwareOtaListContainer == nullptr) || !lv_obj_ready(_firmwareOtaListContainer)) {
+        return;
+    }
+
+    lv_obj_clean(_firmwareOtaListContainer);
+    _firmwareOtaCheckboxes.clear();
+
+    const std::string current_version = getCurrentFirmwareVersion();
+    std::string latest_version = "No GitHub firmware checked yet";
+    for (const FirmwareEntry_t &entry : _otaFirmwareEntries) {
+        if (entry.is_valid) {
+            latest_version = entry.version.empty() ? entry.label : entry.version;
+            break;
+        }
+    }
+
+    if ((_selectedOtaFirmwareIndex >= 0) && (static_cast<size_t>(_selectedOtaFirmwareIndex) >= _otaFirmwareEntries.size())) {
+        _selectedOtaFirmwareIndex = -1;
+    }
+
+    if (_firmwareOtaSummaryLabel != nullptr) {
+        char summary[256] = {};
+        snprintf(summary,
+                 sizeof(summary),
+                 "Installed: %s\nLatest available: %s\nAvailable releases: %u",
+                 current_version.c_str(),
+                 latest_version.c_str(),
+                 static_cast<unsigned>(_otaFirmwareEntries.size()));
+        lv_label_set_text(_firmwareOtaSummaryLabel, summary);
+    }
+
+    if (_otaFirmwareEntries.empty()) {
+        lv_obj_t *emptyLabel = lv_label_create(_firmwareOtaListContainer);
+        lv_obj_set_width(emptyLabel, lv_pct(100));
+        lv_label_set_long_mode(emptyLabel, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(emptyLabel, "Press Check to load OTA-ready firmware releases from GitHub.");
+        lv_obj_set_style_text_color(emptyLabel, lv_color_hex(0x64748B), 0);
+        return;
+    }
+
+    _firmwareOtaCheckboxes.reserve(_otaFirmwareEntries.size());
+    for (size_t index = 0; index < _otaFirmwareEntries.size(); ++index) {
+        const FirmwareEntry_t &entry = _otaFirmwareEntries[index];
+
+        lv_obj_t *checkbox = lv_checkbox_create(_firmwareOtaListContainer);
+        lv_obj_set_width(checkbox, lv_pct(100));
+        lv_checkbox_set_text(checkbox, formatFirmwareLabel(entry).c_str());
+        lv_obj_set_style_pad_ver(checkbox, 8, 0);
+        lv_obj_set_style_text_font(checkbox, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(checkbox, lv_color_hex(0x0F172A), 0);
+        lv_obj_add_event_cb(checkbox, onFirmwareOtaEntryCheckedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+        lv_obj_set_user_data(checkbox, reinterpret_cast<void *>(index + 1));
+        if (!entry.is_valid) {
+            lv_obj_add_state(checkbox, LV_STATE_DISABLED);
+        }
+        _firmwareOtaCheckboxes.push_back(checkbox);
+    }
+
+    if ((_selectedOtaFirmwareIndex < 0) || (static_cast<size_t>(_selectedOtaFirmwareIndex) >= _otaFirmwareEntries.size()) ||
+        !_otaFirmwareEntries[_selectedOtaFirmwareIndex].is_valid) {
+        int preferred_index = -1;
+        for (size_t index = 0; index < _otaFirmwareEntries.size(); ++index) {
+            if (_otaFirmwareEntries[index].is_valid && _otaFirmwareEntries[index].is_newer) {
+                preferred_index = static_cast<int>(index);
+                break;
+            }
+        }
+        if ((preferred_index < 0) && !_otaFirmwareEntries.empty() && _otaFirmwareEntries.front().is_valid) {
+            preferred_index = 0;
+        }
+        _selectedOtaFirmwareIndex = preferred_index;
+    }
+
+    setSelectedOtaFirmwareIndex(_selectedOtaFirmwareIndex);
+}
+
+void AppSettings::releaseFirmwareOtaResources(void)
+{
+    _firmwareOtaCheckInProgress = false;
+    _selectedOtaFirmwareIndex = -1;
+
+    if ((_firmwareOtaListContainer != nullptr) && lv_obj_ready(_firmwareOtaListContainer)) {
+        lv_obj_clean(_firmwareOtaListContainer);
+    }
+
+    _firmwareOtaCheckboxes.clear();
+    std::vector<lv_obj_t *>().swap(_firmwareOtaCheckboxes);
+    _otaFirmwareEntries.clear();
+    std::vector<FirmwareEntry_t>().swap(_otaFirmwareEntries);
+
+    if ((_firmwareOtaSummaryLabel != nullptr) && lv_obj_ready(_firmwareOtaSummaryLabel)) {
+        lv_label_set_text(_firmwareOtaSummaryLabel, "");
+    }
+
+    if ((_firmwareOtaCheckOverlay != nullptr) && lv_obj_ready(_firmwareOtaCheckOverlay)) {
+        lv_obj_del(_firmwareOtaCheckOverlay);
+    }
+    _firmwareOtaCheckOverlay = nullptr;
+    _firmwareOtaCheckSpinner = nullptr;
+    _firmwareOtaCheckStatusLabel = nullptr;
 }
 
 bool AppSettings::hasOtaFlashSupport(void) const
@@ -3792,7 +4142,7 @@ void AppSettings::refreshFirmwareUi(void)
     return;
 #endif
     populateFirmwareDropdown(_firmwareSdDropdown, _sdFirmwareEntries, "No SD firmware found");
-    populateFirmwareDropdown(_firmwareOtaDropdown, _otaFirmwareEntries, "Run OTA check first");
+    rebuildFirmwareOtaList();
 
     if (_firmwareCurrentVersionLabel != nullptr) {
         const std::string current_version = getCurrentFirmwareVersion();
@@ -3809,9 +4159,11 @@ void AppSettings::refreshFirmwareUi(void)
 
     const bool ota_supported = hasOtaFlashSupport();
     const uint16_t sd_index = (_firmwareSdDropdown != nullptr) ? lv_dropdown_get_selected(_firmwareSdDropdown) : 0;
-    const uint16_t ota_index = (_firmwareOtaDropdown != nullptr) ? lv_dropdown_get_selected(_firmwareOtaDropdown) : 0;
-    const bool sd_ready = ota_supported && !_firmwareUpdateInProgress && (sd_index < _sdFirmwareEntries.size()) && _sdFirmwareEntries[sd_index].is_valid;
-    const bool ota_ready = ota_supported && !_firmwareUpdateInProgress && (ota_index < _otaFirmwareEntries.size()) && _otaFirmwareEntries[ota_index].is_valid;
+    const int ota_index = getSelectedOtaFirmwareIndex();
+    const bool controls_busy = _firmwareUpdateInProgress || _firmwareOtaCheckInProgress;
+    const bool sd_ready = ota_supported && !controls_busy && (sd_index < _sdFirmwareEntries.size()) && _sdFirmwareEntries[sd_index].is_valid;
+    const bool ota_ready = ota_supported && !controls_busy && (ota_index >= 0) &&
+                           (static_cast<size_t>(ota_index) < _otaFirmwareEntries.size()) && _otaFirmwareEntries[ota_index].is_valid;
 
     auto update_button = [](lv_obj_t *button, bool enabled) {
         if (button == nullptr) {
@@ -3828,17 +4180,26 @@ void AppSettings::refreshFirmwareUi(void)
     };
 
     update_button(_firmwareSdFlashButton, sd_ready);
+    update_button(_firmwareOtaCheckButton, !_firmwareUpdateInProgress && !_firmwareOtaCheckInProgress);
     update_button(_firmwareOtaFlashButton, ota_ready);
 
     if (_firmwareUpdateInProgress) {
         return;
     }
 
+    if (_firmwareOtaCheckInProgress) {
+        setFirmwareStatus("Checking GitHub for firmware releases...");
+        setFirmwareProgress(0, "Fetching release list from server...");
+        return;
+    }
+
     if (!ota_supported) {
         setFirmwareStatus("Flash buttons are disabled because this build has only a factory app partition. Safe in-app updates require OTA partitions.");
-    } else if ((ota_index < _otaFirmwareEntries.size()) && !_otaFirmwareEntries.empty()) {
-        setFirmwareStatus(_otaFirmwareEntries[ota_index].notes);
-        setFirmwareProgress(0, _otaFirmwareEntries[ota_index].release_notes.empty() ? "Ready to download and flash selected release." : "Release notes available for selected update.");
+    } else if ((ota_index >= 0) && (static_cast<size_t>(ota_index) < _otaFirmwareEntries.size())) {
+        const FirmwareEntry_t &entry = _otaFirmwareEntries[ota_index];
+        setFirmwareStatus(entry.release_notes.empty() ? (entry.notes.empty() ? std::string("No release notes available.") : entry.notes)
+                                                     : entry.release_notes);
+        setFirmwareProgress(0, "Ready to download and flash the selected GitHub firmware.");
     } else if ((sd_index < _sdFirmwareEntries.size()) && !_sdFirmwareEntries.empty()) {
         setFirmwareStatus(_sdFirmwareEntries[sd_index].notes);
         setFirmwareProgress(0, "Ready to flash selected SD firmware image.");
@@ -3857,7 +4218,17 @@ void AppSettings::applyAsyncFirmwareUiUpdate(void *arg)
     }
 
     context->app->_firmwareUpdateInProgress = context->busy;
-    context->app->setFirmwareStatus(context->status, context->is_error);
+    if (context->is_error) {
+        context->app->refreshFirmwareUi();
+        context->app->setFirmwareStatus(context->status, true);
+        context->app->setFirmwareProgress(context->percent, context->status, true);
+        delete context;
+        return;
+    }
+
+    if (!context->busy) {
+        context->app->setFirmwareStatus(context->status, false);
+    }
     context->app->setFirmwareProgress(context->percent, context->status, context->is_error);
     context->app->refreshFirmwareUi();
     delete context;
@@ -3904,9 +4275,12 @@ void AppSettings::persistPendingReleaseNotes(const FirmwareEntry_t &entry)
 
 bool AppSettings::flashFirmwareFromFile(const FirmwareEntry_t &entry, std::string &error_message)
 {
+    ESP_LOGI(TAG, "Starting SD firmware flash: label='%s' path='%s'", entry.label.c_str(), entry.path_or_url.c_str());
+
     FILE *file = fopen(entry.path_or_url.c_str(), "rb");
     if (file == nullptr) {
         error_message = "Unable to open selected firmware file.";
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         return false;
     }
 
@@ -3914,6 +4288,7 @@ bool AppSettings::flashFirmwareFromFile(const FirmwareEntry_t &entry, std::strin
     if (partition == nullptr) {
         fclose(file);
         error_message = "No OTA partition is available.";
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         return false;
     }
 
@@ -3922,38 +4297,49 @@ bool AppSettings::flashFirmwareFromFile(const FirmwareEntry_t &entry, std::strin
     if (err != ESP_OK) {
         fclose(file);
         error_message = std::string("esp_ota_begin failed: ") + esp_err_to_name(err);
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         return false;
     }
 
-    std::vector<uint8_t> buffer(4096);
-    std::vector<uint8_t> header_buffer;
-    header_buffer.reserve(512);
+    uint8_t *buffer = static_cast<uint8_t *>(allocate_psram_preferred_buffer(4096));
+    uint8_t *header_buffer = static_cast<uint8_t *>(allocate_psram_preferred_buffer(512));
+    size_t header_size = 0;
     bool header_checked = false;
     size_t written_total = 0;
     int last_percent = -1;
     bool success = false;
 
+    if ((buffer == nullptr) || (header_buffer == nullptr)) {
+        error_message = "Unable to allocate firmware flashing buffers.";
+        ESP_LOGE(TAG, "%s", error_message.c_str());
+        goto cleanup_alloc;
+    }
+
     while (true) {
-        const size_t read_bytes = fread(buffer.data(), 1, buffer.size(), file);
+        const size_t read_bytes = fread(buffer, 1, 4096, file);
         if (read_bytes == 0) {
             if (feof(file)) {
                 break;
             }
             error_message = "Reading firmware file failed.";
+            ESP_LOGE(TAG, "%s", error_message.c_str());
             goto cleanup;
         }
 
-        if (!header_checked && (header_buffer.size() < 512)) {
-            const size_t copy_bytes = std::min<size_t>(512 - header_buffer.size(), read_bytes);
-            header_buffer.insert(header_buffer.end(), buffer.begin(), buffer.begin() + copy_bytes);
-            if (!validateFirmwareImageHeader(header_buffer.data(), header_buffer.size(), entry.label, error_message, header_checked)) {
+        if (!header_checked && (header_size < 512)) {
+            const size_t copy_bytes = std::min<size_t>(512 - header_size, read_bytes);
+            memcpy(header_buffer + header_size, buffer, copy_bytes);
+            header_size += copy_bytes;
+            if (!validateFirmwareImageHeader(header_buffer, header_size, entry.label, error_message, header_checked)) {
+                ESP_LOGE(TAG, "%s", error_message.c_str());
                 goto cleanup;
             }
         }
 
-        err = esp_ota_write(ota_handle, buffer.data(), read_bytes);
+        err = esp_ota_write(ota_handle, buffer, read_bytes);
         if (err != ESP_OK) {
             error_message = std::string("esp_ota_write failed: ") + esp_err_to_name(err);
+            ESP_LOGE(TAG, "%s", error_message.c_str());
             goto cleanup;
         }
 
@@ -3972,35 +4358,58 @@ bool AppSettings::flashFirmwareFromFile(const FirmwareEntry_t &entry, std::strin
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK) {
         error_message = std::string("esp_ota_end failed: ") + esp_err_to_name(err);
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         goto cleanup_no_abort;
     }
 
     err = esp_ota_set_boot_partition(partition);
     if (err != ESP_OK) {
         error_message = std::string("esp_ota_set_boot_partition failed: ") + esp_err_to_name(err);
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         goto cleanup_no_abort;
     }
 
     success = true;
+    ESP_LOGI(TAG, "SD firmware flash staged successfully: version='%s'", entry.version.c_str());
 
 cleanup_no_abort:
+    heap_caps_free(header_buffer);
+    heap_caps_free(buffer);
     fclose(file);
     if (!success) {
         return false;
     }
     return true;
 
+cleanup_alloc:
+    heap_caps_free(header_buffer);
+    heap_caps_free(buffer);
+    fclose(file);
+    return false;
+
 cleanup:
     esp_ota_abort(ota_handle);
+    heap_caps_free(header_buffer);
+    heap_caps_free(buffer);
     fclose(file);
     return false;
 }
 
 bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string &error_message)
 {
+    ESP_LOGI(TAG, "Starting OTA firmware flash: label='%s' version='%s' url='%s'",
+             entry.label.c_str(), entry.version.c_str(), entry.path_or_url.c_str());
+
+    constexpr int kMaxHttpRedirects = 5;
+    constexpr int kHttpClientBufferSize = 4096;
+    struct RedirectCapture {
+        std::string location;
+    } redirect_capture;
+
     const esp_partition_t *partition = esp_ota_get_next_update_partition(nullptr);
     if (partition == nullptr) {
         error_message = "No OTA partition is available.";
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         return false;
     }
 
@@ -4008,12 +4417,29 @@ bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string
     config.url = entry.path_or_url.c_str();
     config.method = HTTP_METHOD_GET;
     config.timeout_ms = 15000;
+    config.buffer_size = kHttpClientBufferSize;
+    config.buffer_size_tx = kHttpClientBufferSize;
     config.crt_bundle_attach = esp_crt_bundle_attach;
-    config.disable_auto_redirect = false;
+    config.disable_auto_redirect = true;
+    config.max_redirection_count = kMaxHttpRedirects;
+    config.user_data = &redirect_capture;
+    config.event_handler = [](esp_http_client_event_t *event) {
+        if ((event == nullptr) || (event->user_data == nullptr)) {
+            return ESP_OK;
+        }
+
+        auto *capture = static_cast<RedirectCapture *>(event->user_data);
+        if ((event->event_id == HTTP_EVENT_ON_HEADER) && (event->header_key != nullptr) && (event->header_value != nullptr) &&
+            (strcasecmp(event->header_key, "Location") == 0)) {
+            capture->location = event->header_value;
+        }
+        return ESP_OK;
+    };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {
         error_message = "Failed to create HTTP client.";
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         return false;
     }
 
@@ -4023,13 +4449,65 @@ bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
         error_message = std::string("Failed to open release asset: ") + esp_err_to_name(err);
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         esp_http_client_cleanup(client);
         return false;
     }
 
-    const int status_code = esp_http_client_fetch_headers(client);
-    if ((status_code < 0) || ((esp_http_client_get_status_code(client) / 100) != 2)) {
-        error_message = "GitHub asset download request failed.";
+    int header_status = esp_http_client_fetch_headers(client);
+    int http_status = esp_http_client_get_status_code(client);
+    int redirect_count = 0;
+    while ((http_status >= 300) && (http_status < 400) && (redirect_count < kMaxHttpRedirects)) {
+        if (redirect_capture.location.empty()) {
+            error_message = "GitHub redirect response did not include a valid Location header.";
+            ESP_LOGE(TAG, "%s HTTP status=%d", error_message.c_str(), http_status);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+
+        ESP_LOGI(TAG,
+                 "Following OTA redirect %d/%d: HTTP status=%d location='%s'",
+                 redirect_count + 1,
+                 kMaxHttpRedirects,
+                 http_status,
+                 redirect_capture.location.c_str());
+
+        esp_http_client_close(client);
+        err = esp_http_client_set_url(client, redirect_capture.location.c_str());
+        if (err != ESP_OK) {
+            error_message = std::string("Failed to set redirected asset URL: ") + esp_err_to_name(err);
+            ESP_LOGE(TAG, "%s", error_message.c_str());
+            esp_http_client_cleanup(client);
+            return false;
+        }
+
+        redirect_capture.location.clear();
+        err = esp_http_client_open(client, 0);
+        if (err != ESP_OK) {
+            error_message = std::string("Failed to open redirected asset URL: ") + esp_err_to_name(err);
+            ESP_LOGE(TAG, "%s", error_message.c_str());
+            esp_http_client_cleanup(client);
+            return false;
+        }
+
+        header_status = esp_http_client_fetch_headers(client);
+        http_status = esp_http_client_get_status_code(client);
+        ++redirect_count;
+    }
+
+    if ((header_status < 0) || ((http_status / 100) != 2)) {
+        if ((http_status >= 300) && (http_status < 400)) {
+            error_message = "GitHub asset download redirect limit reached.";
+        } else {
+            error_message = "GitHub asset download request failed.";
+        }
+        ESP_LOGE(TAG,
+                 "%s HTTP status=%d header_status=%d redirects=%d",
+                 error_message.c_str(),
+                 http_status,
+                 header_status,
+                 redirect_count);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return false;
@@ -4040,40 +4518,51 @@ bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string
     err = esp_ota_begin(partition, OTA_SIZE_UNKNOWN, &ota_handle);
     if (err != ESP_OK) {
         error_message = std::string("esp_ota_begin failed: ") + esp_err_to_name(err);
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return false;
     }
 
-    std::vector<uint8_t> buffer(4096);
-    std::vector<uint8_t> header_buffer;
-    header_buffer.reserve(512);
+    uint8_t *buffer = static_cast<uint8_t *>(allocate_psram_preferred_buffer(4096));
+    uint8_t *header_buffer = static_cast<uint8_t *>(allocate_psram_preferred_buffer(512));
+    size_t header_size = 0;
     bool header_checked = false;
     int last_percent = -1;
     size_t written_total = 0;
     bool success = false;
 
+    if ((buffer == nullptr) || (header_buffer == nullptr)) {
+        error_message = "Unable to allocate OTA download buffers.";
+        ESP_LOGE(TAG, "%s", error_message.c_str());
+        goto ota_cleanup_alloc;
+    }
+
     while (true) {
-        const int read_bytes = esp_http_client_read(client, reinterpret_cast<char *>(buffer.data()), buffer.size());
+        const int read_bytes = esp_http_client_read(client, reinterpret_cast<char *>(buffer), 4096);
         if (read_bytes < 0) {
             error_message = "Release asset download failed.";
+            ESP_LOGE(TAG, "%s", error_message.c_str());
             goto ota_cleanup;
         }
         if (read_bytes == 0) {
             break;
         }
 
-        if (!header_checked && (header_buffer.size() < 512)) {
-            const size_t copy_bytes = std::min<size_t>(512 - header_buffer.size(), static_cast<size_t>(read_bytes));
-            header_buffer.insert(header_buffer.end(), buffer.begin(), buffer.begin() + copy_bytes);
-            if (!validateFirmwareImageHeader(header_buffer.data(), header_buffer.size(), entry.label, error_message, header_checked)) {
+        if (!header_checked && (header_size < 512)) {
+            const size_t copy_bytes = std::min<size_t>(512 - header_size, static_cast<size_t>(read_bytes));
+            memcpy(header_buffer + header_size, buffer, copy_bytes);
+            header_size += copy_bytes;
+            if (!validateFirmwareImageHeader(header_buffer, header_size, entry.label, error_message, header_checked)) {
+                ESP_LOGE(TAG, "%s", error_message.c_str());
                 goto ota_cleanup;
             }
         }
 
-        err = esp_ota_write(ota_handle, buffer.data(), static_cast<size_t>(read_bytes));
+        err = esp_ota_write(ota_handle, buffer, static_cast<size_t>(read_bytes));
         if (err != ESP_OK) {
             error_message = std::string("esp_ota_write failed: ") + esp_err_to_name(err);
+            ESP_LOGE(TAG, "%s", error_message.c_str());
             goto ota_cleanup;
         }
 
@@ -4092,18 +4581,23 @@ bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK) {
         error_message = std::string("esp_ota_end failed: ") + esp_err_to_name(err);
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         goto ota_cleanup_no_abort;
     }
 
     err = esp_ota_set_boot_partition(partition);
     if (err != ESP_OK) {
         error_message = std::string("esp_ota_set_boot_partition failed: ") + esp_err_to_name(err);
+        ESP_LOGE(TAG, "%s", error_message.c_str());
         goto ota_cleanup_no_abort;
     }
 
     success = true;
+    ESP_LOGI(TAG, "OTA firmware flash staged successfully: version='%s'", entry.version.c_str());
 
 ota_cleanup_no_abort:
+    heap_caps_free(header_buffer);
+    heap_caps_free(buffer);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     if (!success) {
@@ -4111,8 +4605,17 @@ ota_cleanup_no_abort:
     }
     return true;
 
+ota_cleanup_alloc:
+    heap_caps_free(header_buffer);
+    heap_caps_free(buffer);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+
 ota_cleanup:
     esp_ota_abort(ota_handle);
+    heap_caps_free(header_buffer);
+    heap_caps_free(buffer);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return false;
@@ -4123,6 +4626,7 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
     auto *context = new FirmwareUpdateTaskContext{this, entry, source};
     if (context == nullptr) {
         setFirmwareStatus("Failed to allocate firmware update task.", true);
+        ESP_LOGE(TAG, "Failed to allocate firmware update task context");
         return false;
     }
 
@@ -4130,6 +4634,12 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
     refreshFirmwareUi();
     setFirmwareProgress(0, source == FIRMWARE_UPDATE_SOURCE_OTA ? "Preparing OTA update..." : "Preparing SD flash...");
     setFirmwareStatus(source == FIRMWARE_UPDATE_SOURCE_OTA ? "Starting OTA update..." : "Starting SD flash...");
+    ESP_LOGI(TAG,
+             "Queueing firmware update task: source=%s label='%s' version='%s' target='%s'",
+             source == FIRMWARE_UPDATE_SOURCE_OTA ? "ota" : "sd",
+             entry.label.c_str(),
+             entry.version.c_str(),
+             entry.path_or_url.c_str());
 
     if (create_background_task_prefer_psram(firmwareUpdateTask, "firmware_update", FIRMWARE_UPDATE_TASK_STACK_SIZE,
                                             context, FIRMWARE_UPDATE_TASK_PRIORITY, nullptr, 1) != pdPASS) {
@@ -4137,6 +4647,7 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
         _firmwareUpdateInProgress = false;
         refreshFirmwareUi();
         setFirmwareStatus("Failed to start firmware update task.", true);
+        ESP_LOGE(TAG, "Failed to start firmware update background task");
         return false;
     }
 
@@ -4163,11 +4674,22 @@ void AppSettings::firmwareUpdateTask(void *arg)
                         : app->flashFirmwareFromFile(entry, error_message);
 
     if (!ok) {
+        ESP_LOGE(TAG,
+                 "Firmware update failed: source=%s label='%s' version='%s' reason='%s'",
+                 source == FIRMWARE_UPDATE_SOURCE_OTA ? "ota" : "sd",
+                 entry.label.c_str(),
+                 entry.version.c_str(),
+                 error_message.empty() ? "Firmware update failed." : error_message.c_str());
         app->queueFirmwareUiUpdate(error_message.empty() ? "Firmware update failed." : error_message.c_str(), 0, false, true);
         vTaskDelete(nullptr);
         return;
     }
 
+    ESP_LOGI(TAG,
+             "Firmware update complete, rebooting: source=%s label='%s' version='%s'",
+             source == FIRMWARE_UPDATE_SOURCE_OTA ? "ota" : "sd",
+             entry.label.c_str(),
+             entry.version.c_str());
     app->persistPendingReleaseNotes(entry);
     app->queueFirmwareUiUpdate("Firmware update complete. Rebooting...", 100, false, false);
     vTaskDelay(pdMS_TO_TICKS(1500));
@@ -4626,6 +5148,12 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     }
     #endif
 
+    #if CONFIG_JC4880_FEATURE_OTA
+    if ((last_scr_index == UI_FIRMWARE_SETTING_INDEX) && (app->_screen_index != UI_FIRMWARE_SETTING_INDEX)) {
+        app->releaseFirmwareOtaResources();
+    }
+    #endif
+
     #if APP_SETTINGS_FEATURE_WIFI
     if (app->_screen_index == UI_WIFI_SCAN_INDEX) {
         app->stopWifiScan();
@@ -4659,6 +5187,7 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
 
     #if CONFIG_JC4880_FEATURE_OTA
     if (app->_screen_index == UI_FIRMWARE_SETTING_INDEX) {
+        app->scanSdFirmwareEntries();
         app->refreshFirmwareUi();
     }
     #endif
@@ -4696,21 +5225,25 @@ void AppSettings::onMainMenuItemClickedEventCallback(lv_event_t *e)
     #endif
     #if CONFIG_JC4880_FEATURE_ZIGBEE
     if (target == app->_zigbeeMenuItem) {
+        app->ensureZigbeeScreen();
         lv_scr_load_anim(app->_zigbeeScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else
     #endif
     #if APP_SETTINGS_FEATURE_HARDWARE_MENU
     if (target == app->_hardwareMenuItem) {
+        app->ensureHardwareScreen();
         lv_scr_load_anim(app->_hardwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else
     #endif
     #if CONFIG_JC4880_FEATURE_SECURITY
     if (target == app->_securityMenuItem) {
+        app->ensureSecurityScreen();
         lv_scr_load_anim(app->_securityScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else
     #endif
     #if CONFIG_JC4880_FEATURE_OTA
     if (target == app->_firmwareMenuItem) {
+        app->ensureFirmwareScreen();
         lv_scr_load_anim(app->_firmwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else
     #endif
@@ -4729,6 +5262,7 @@ void AppSettings::onFirmwareMenuClickedEventCallback(lv_event_t *e)
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
+    app->ensureFirmwareScreen();
     lv_scr_load_anim(app->_firmwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
 
 end:
@@ -4760,14 +5294,28 @@ void AppSettings::onFirmwareOtaCheckClickedEventCallback(lv_event_t *e)
         goto end;
     }
 
+    if (app->_firmwareOtaCheckInProgress) {
+        goto end;
+    }
+
+    app->_firmwareOtaCheckInProgress = true;
+    app->refreshFirmwareUi();
+    app->setFirmwareOtaCheckOverlayVisible(true, "Checking GitHub for firmware releases...\nPlease wait.");
+    lv_refr_now(nullptr);
     app->setFirmwareStatus("Checking GitHub releases...");
     app->setFirmwareProgress(0, "Querying GitHub releases...");
     if (!app->fetchGithubFirmwareEntries()) {
+        app->setSelectedOtaFirmwareIndex(-1);
+        app->_firmwareOtaCheckInProgress = false;
+        app->setFirmwareOtaCheckOverlayVisible(false);
         app->refreshFirmwareUi();
         app->setFirmwareStatus("No OTA .bin assets were found in GitHub releases, or the request failed.", true);
         goto end;
     }
 
+    app->setSelectedOtaFirmwareIndex(-1);
+    app->_firmwareOtaCheckInProgress = false;
+    app->setFirmwareOtaCheckOverlayVisible(false);
     app->refreshFirmwareUi();
 
 end:
@@ -4819,13 +5367,40 @@ void AppSettings::onFirmwareOtaFlashClickedEventCallback(lv_event_t *e)
         return;
     }
 
-    const uint16_t selected = (app->_firmwareOtaDropdown != nullptr) ? lv_dropdown_get_selected(app->_firmwareOtaDropdown) : 0;
-    if ((selected >= app->_otaFirmwareEntries.size()) || !app->_otaFirmwareEntries[selected].is_valid) {
+    const int selected = app->getSelectedOtaFirmwareIndex();
+    if ((selected < 0) || (static_cast<size_t>(selected) >= app->_otaFirmwareEntries.size()) || !app->_otaFirmwareEntries[selected].is_valid) {
         app->setFirmwareStatus("Select a valid GitHub release asset first.", true);
         return;
     }
 
     app->flashFirmwareEntry(app->_otaFirmwareEntries[selected], FIRMWARE_UPDATE_SOURCE_OTA);
+}
+
+void AppSettings::onFirmwareOtaEntryCheckedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        ESP_LOGE(TAG, "Invalid app pointer");
+        return;
+    }
+
+    lv_obj_t *target = lv_event_get_target(e);
+    if (target == nullptr) {
+        return;
+    }
+
+    const uintptr_t index_value = reinterpret_cast<uintptr_t>(lv_obj_get_user_data(target));
+    if (index_value == 0) {
+        return;
+    }
+
+    const int index = static_cast<int>(index_value - 1);
+    if (lv_obj_has_state(target, LV_STATE_CHECKED)) {
+        app->setSelectedOtaFirmwareIndex(index);
+    } else if (app->getSelectedOtaFirmwareIndex() == index) {
+        app->setSelectedOtaFirmwareIndex(-1);
+    }
+    app->refreshFirmwareUi();
 }
 
 void AppSettings::onFirmwareSelectionChangedEventCallback(lv_event_t *e)

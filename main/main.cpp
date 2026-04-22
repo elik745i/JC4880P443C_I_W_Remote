@@ -826,15 +826,21 @@ static void close_reset_notice_popup(lv_event_t *event)
 static void show_pending_release_notes_popup(void *context)
 {
     std::unique_ptr<PendingReleaseNotesContext> notes(static_cast<PendingReleaseNotesContext *>(context));
-    if ((notes == nullptr) || notes->notes.empty()) {
+    if ((notes == nullptr) || (notes->notes.empty() && notes->version.empty())) {
         return;
     }
 
     clear_pending_release_notes();
 
-    static const char *buttons[] = {"OK", ""};
-    const std::string title = notes->version.empty() ? std::string("What's New") : (std::string("What's New in ") + notes->version);
-    lv_obj_t *msgbox = lv_msgbox_create(nullptr, title.c_str(), notes->notes.c_str(), buttons, false);
+    static const char *buttons[] = {"Close", ""};
+    std::string body = "Firmware installed successfully.";
+    if (!notes->version.empty()) {
+        body += "\nVersion: " + notes->version;
+    }
+    body += "\n\nNotes:\n";
+    body += notes->notes.empty() ? std::string("No release notes were provided.") : notes->notes;
+
+    lv_obj_t *msgbox = lv_msgbox_create(nullptr, "Firmware Installed", body.c_str(), buttons, false);
     if (msgbox == nullptr) {
         return;
     }

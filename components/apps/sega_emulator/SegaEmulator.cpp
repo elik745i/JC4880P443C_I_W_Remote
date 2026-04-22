@@ -16,6 +16,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_attr.h"
 #include "esp_timer.h"
 #include "esp_lcd_touch.h"
 #include "freertos/idf_additions.h"
@@ -2028,7 +2029,7 @@ void SegaEmulator::showLoadStatePicker()
                                  kSaveSlotPreviewHeight,
                                  LV_IMG_CF_TRUE_COLOR);
         } else {
-            static lv_color_t emptyPreview[kSaveSlotPreviewWidth * kSaveSlotPreviewHeight] = {};
+            static EXT_RAM_BSS_ATTR lv_color_t emptyPreview[kSaveSlotPreviewWidth * kSaveSlotPreviewHeight] = {};
             lv_canvas_set_buffer(preview,
                                  emptyPreview,
                                  kSaveSlotPreviewWidth,

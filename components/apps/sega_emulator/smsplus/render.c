@@ -25,14 +25,15 @@
 #include "shared.h"
 #include "hvc.h"
 #include "../psram_alloc.h"
+#include "esp_attr.h"
 
-struct
+static struct
 {
   uint16 yrange;
   uint16 xpos;
   uint16 attr;
   uint16 _pad0;
-} object_info[64];
+} object_info[64] EXT_RAM_BSS_ATTR;
 
 /* Background drawing function */
 void (*render_bg)(int line) = NULL;
@@ -46,7 +47,7 @@ static uint8 sms_cram_expand_table[4];
 static uint8 gg_cram_expand_table[16];
 
 /* Internal buffer for drawing non 8-bit displays */
-static uint8 internal_buffer[0x200];
+static EXT_RAM_BSS_ATTR uint8 internal_buffer[0x200];
 
 /* Precalculated pixel table */
 static uint16 pixel[PALETTE_SIZE];

@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.3 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.4 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -44,6 +44,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Auto timezone detection from the internet after Wi-Fi connects.
 - Firmware screen factory reset button with confirmation and settings wipe.
 - Firmware releases now publish OTA-detectable `.bin` assets directly instead of ZIP-only packages.
+- GitHub OTA updates now follow release-asset redirects correctly, keep visible status during checks and flashes, and preserve failure messages instead of silently dropping the update flow.
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
 - Additional low-risk PSRAM placement for radio preview workers, background service stacks, and emulator lookup / ROM buffers to preserve internal SRAM for time-sensitive work.
@@ -63,6 +64,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
 - Files, Music, and Radio startup paths were hardened to avoid preallocating unnecessary runtime memory before launch.
 - Internal SRAM usage was reduced substantially by moving large SEGA emulator permanent buffers and tables into PSRAM-backed BSS.
+- Additional SEGA emulator permanent RAM, preview buffers, and SMS / Genesis scratch state now live in PSRAM-backed BSS, which cuts fresh-boot internal SRAM pressure before the emulator is launched.
 - Additional boot-time SRAM pressure was removed by deferring heavy Internet Radio, Image Display, and SEGA UI/runtime setup until first launch.
 - The unused camera and deep-learning component stack was removed from the resolved build graph to reduce flash footprint and memory pressure.
 - Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
@@ -146,7 +148,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.3 validates at `0x65bb80`, leaving `0x134480` bytes free in the smaller OTA app slot.
+- Version 1.2.4 validates at `0x65DE80`, leaving `0x132180` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

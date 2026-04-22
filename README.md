@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.1.11 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.2 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -17,6 +17,18 @@ Battery and speaker case v1:
 ![Case render 2](3D/r4.jpg)
 
 Printable STL files for the enclosure and related 3D assets are stored in `3D/`, including the original V1 files, the updated V2 and V3 case variants, separate lid / ring / fix parts, and editable Max or 3MF source files for the enclosure work.
+
+### Attachable Joystick Work In Progress
+
+An attachable joystick accessory for the device is currently in progress. The repo already includes the current hardware view and the early wiring reference used for that add-on work.
+
+Joystick view:
+
+![Attachable joystick view](3D/joystick.jpg)
+
+Joystick circuit draft:
+
+![Attachable joystick circuit](User_Manual/Joystick_circuit.png)
 
 ## What Changed Versus The Vendor Base
 
@@ -62,6 +74,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Radio station catalogs, stream working buffers, and the shared audio playback task now prefer PSRAM more aggressively to preserve internal SRAM during radio use.
 - Internet-backed Radio flows now fail fast when Wi-Fi has no usable IP or DNS, which avoids long timeout paths when the device is connected to Wi-Fi without real internet access.
 - Radio app close/reopen handling now clears stale LVGL screen pointers on teardown, preventing the main-screen artifacts and close-time panic that could occur after failed online lookups.
+- Attachable joystick hardware support is now being prepared in parallel with the main firmware and enclosure work, with the current mechanical and circuit references tracked in this repo.
 - Panic behavior now reboots automatically, and the next boot shows a short recovery popup that distinguishes crash, watchdog, brownout, and CPU lockup resets.
 - Flash-backed core dump capture is now enabled, and the next boot persists a readable crash report under SPIFFS for later developer analysis.
 - The reboot recovery popup can now show a manual `Report` action that tries to submit the saved crash report when Wi-Fi is connected, otherwise it reports that the device is offline or the private relay is not configured.
@@ -127,7 +140,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.1.11 validates at `0x64b4a0`, leaving `0x144b60` bytes free in the smaller OTA app slot.
+- Version 1.2.2 validates at `0x652280`, leaving `0x13dd80` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

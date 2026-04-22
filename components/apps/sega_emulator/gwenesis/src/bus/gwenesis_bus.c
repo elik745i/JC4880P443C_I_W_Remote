@@ -29,6 +29,7 @@ __license__ = "GPLv3"
 #include "ym2612.h"
 #include "z80inst.h"
 #include "gwenesis_bus.h"
+#include "../../../psram_alloc.h"
 #include "gwenesis_io.h"
 #include "gwenesis_vdp.h"
 #include "gwenesis_sn76489.h"
@@ -119,7 +120,7 @@ void load_cartridge(unsigned char *buffer, size_t size)
     #ifdef RETRO_GO
     ROM_DATA = buffer;
     #else
-    ROM_DATA = realloc(ROM_DATA, (size & ~0xFFFF) + 0x10000); // 64KB align just in case
+    ROM_DATA = sega_psram_realloc(ROM_DATA, (size & ~0xFFFF) + 0x10000); // 64KB align just in case
     memcpy(ROM_DATA, buffer, size);
     #endif
 
@@ -128,7 +129,7 @@ void load_cartridge(unsigned char *buffer, size_t size)
     {
       printf("--SMD de-interleave mode--\n");
       memmove(ROM_DATA, ROM_DATA + 512, size - 512);
-      uint8 *temp = malloc(0x4000);
+      uint8 *temp = sega_psram_malloc(0x4000);
       for (size_t i = 0; i < size; i += 0x4000)
       {
         memcpy(temp, ROM_DATA + i, 0x4000);
@@ -138,7 +139,7 @@ void load_cartridge(unsigned char *buffer, size_t size)
           ROM_DATA[i + (j * 2) + 1] = temp[0x0000 + j];
         }
       }
-      free(temp);
+      sega_psram_free(temp);
     }
 
     #ifdef ROM_SWAP

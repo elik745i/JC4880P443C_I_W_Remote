@@ -162,7 +162,7 @@ bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t frame
     }
 
     if (fread(rom_buffer, 1, (size_t)rom_size_long, file) != (size_t)rom_size_long) {
-        free(rom_buffer);
+        sega_psram_free(rom_buffer);
         fclose(file);
         return false;
     }
@@ -170,13 +170,13 @@ bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t frame
 
     VRAM = sega_psram_malloc(VRAM_MAX_SIZE);
     if (VRAM == NULL) {
-        free(rom_buffer);
+        sega_psram_free(rom_buffer);
         return false;
     }
 
     memset(framebuffer, 0, framebuffer_size);
     load_cartridge(rom_buffer, (size_t)rom_size_long);
-    free(rom_buffer);
+    sega_psram_free(rom_buffer);
 
     power_on();
     reset_emulation();
@@ -189,7 +189,7 @@ void sega_gwenesis_set_input_mask(uint32_t input_mask)
     s_input_mask = input_mask;
 }
 
-void sega_gwenesis_run_frame(void)
+void sega_gwenesis_run_frame(bool draw_frame)
 {
     extern unsigned char gwenesis_vdp_regs[0x20];
     extern unsigned int gwenesis_vdp_status;
@@ -221,7 +221,7 @@ void sega_gwenesis_run_frame(void)
             ym2612_run(system_clock + VDP_CYCLES_PER_LINE);
         }
 
-        if (scan_line < screen_height) {
+        if (draw_frame && (scan_line < screen_height)) {
             gwenesis_vdp_render_line(scan_line);
         }
 
@@ -322,11 +322,11 @@ int sega_gwenesis_get_audio_sample_rate(void)
 void sega_gwenesis_shutdown(void)
 {
     if (ROM_DATA != NULL) {
-        free(ROM_DATA);
+        sega_psram_free(ROM_DATA);
         ROM_DATA = NULL;
     }
     if (VRAM != NULL) {
-        free(VRAM);
+        sega_psram_free(VRAM);
         VRAM = NULL;
     }
     s_input_mask = 0;

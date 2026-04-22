@@ -16,7 +16,7 @@ extern "C" {
 
 bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t framebuffer_size);
 void sega_gwenesis_set_input_mask(uint32_t input_mask);
-void sega_gwenesis_run_frame(void);
+void sega_gwenesis_run_frame(bool draw_frame);
 size_t sega_gwenesis_mix_audio_stereo(int16_t *destination, size_t frame_capacity);
 const uint16_t *sega_gwenesis_get_palette(void);
 int sega_gwenesis_get_screen_width(void);

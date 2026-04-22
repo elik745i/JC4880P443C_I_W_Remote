@@ -21,6 +21,8 @@
 #include "esp_codec_dev.h"
 #include "sdkconfig.h"
 
+typedef struct esp_lcd_touch_s *esp_lcd_touch_handle_t;
+
 #if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
@@ -310,6 +312,15 @@ lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg);
  * @return Pointer to LVGL input device or NULL when not initialized
  */
 lv_indev_t *bsp_display_get_input_dev(void);
+
+/**
+ * @brief Get pointer to raw touch controller handle
+ *
+ * @note The touch controller is initialized in bsp_display_start().
+ *
+ * @return Pointer to touch handle or NULL when not initialized
+ */
+esp_lcd_touch_handle_t bsp_display_get_touch_handle(void);
 
 /**
  * @brief Take LVGL mutex

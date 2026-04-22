@@ -23,6 +23,7 @@
  ******************************************************************************/
 
 #include "shared.h"
+#include "../psram_alloc.h"
 
 /* VDP context */
 vdp_t vdp;
@@ -148,7 +149,7 @@ void vdp_init(void)
   vdp.lpf = sms.display ? 313 : 262;
 
   if (!vdp.vram)
-    vdp.vram = malloc(0x4000);
+    vdp.vram = sega_psram_calloc(1, 0x4000);
   assert(vdp.vram != NULL);
 
   /* reset viewport */
@@ -158,7 +159,7 @@ void vdp_init(void)
 
 void vdp_shutdown(void)
 {
-  free(vdp.vram);
+  sega_psram_free(vdp.vram);
   vdp.vram = NULL;
 }
 

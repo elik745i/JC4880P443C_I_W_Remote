@@ -27,3 +27,18 @@ static inline void *sega_psram_calloc(size_t count, size_t size)
 
     return calloc(count, size);
 }
+
+static inline void *sega_psram_realloc(void *ptr, size_t size)
+{
+    void *new_ptr = heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (new_ptr != NULL) {
+        return new_ptr;
+    }
+
+    return realloc(ptr, size);
+}
+
+static inline void sega_psram_free(void *ptr)
+{
+    free(ptr);
+}

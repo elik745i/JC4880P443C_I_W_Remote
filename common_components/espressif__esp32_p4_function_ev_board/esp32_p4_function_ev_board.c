@@ -38,6 +38,7 @@ static const char *TAG = "ESP32_P4_EV";
 
 #if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
 static lv_indev_t *disp_indev = NULL;
+static esp_lcd_touch_handle_t disp_touch = NULL;
 #endif // (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
 
 sdmmc_card_t *bsp_sdcard = NULL;    // Global uSD card handler
@@ -802,6 +803,8 @@ static lv_indev_t *bsp_display_indev_init(lv_display_t *disp)
         .handle = tp,
     };
 
+    disp_touch = tp;
+
     return lvgl_port_add_touch(&touch_cfg);
 }
 
@@ -846,6 +849,11 @@ lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg)
 lv_indev_t *bsp_display_get_input_dev(void)
 {
     return disp_indev;
+}
+
+esp_lcd_touch_handle_t bsp_display_get_touch_handle(void)
+{
+    return disp_touch;
 }
 
 void bsp_display_rotate(lv_display_t *disp, lv_disp_rotation_t rotation)

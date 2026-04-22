@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.2 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.3 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -37,6 +37,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Files app for browsing both `/sdcard` and SPIFFS directly on the device.
 - Internet Radio app with station discovery by popularity, country, language, and category.
 - Native SEGA app with Master System, Game Gear, SG-1000, and Genesis / Mega Drive ROM support.
+- SEGA browser now includes an optional FPS overlay toggle, and the in-game control surface is tuned for the rotated handheld presentation.
 - Shared launcher icon set sized to fit the OTA partition budget.
 - Persistent Wi-Fi credentials and reconnect behavior backed by NVS.
 - Display timezone dropdown in GMT format with saved preference storage.
@@ -79,6 +80,9 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash-backed core dump capture is now enabled, and the next boot persists a readable crash report under SPIFFS for later developer analysis.
 - The reboot recovery popup can now show a manual `Report` action that tries to submit the saved crash report when Wi-Fi is connected, otherwise it reports that the device is offline or the private relay is not configured.
 - Additional enclosure revisions and raw CAD exports are included under `3D/` for the updated hardware fit iterations.
+- SEGA manual saves now use separate `SAVE` and `LOAD` actions instead of auto-resume behavior, so launching a ROM always starts from a clean boot unless a save is chosen explicitly.
+- The SEGA load flow now pauses emulation and shows a rotated save-slot picker with up to five recent preview thumbnails pulled from SD-card save folders.
+- Genesis runtime timing, audio pacing, and framebuffer rotation were tuned further to match the handheld layout and reduce slow-background-music behavior.
 
 ## Feature Summary
 
@@ -126,6 +130,8 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - The SEGA app scans `/sdcard/sega_games` for `.sms`, `.gg`, `.sg`, `.md`, `.gen`, `.bin`, and `.smd` ROMs.
 - SMS and Game Gear battery saves are written next to the ROM as `.sav` sidecars.
 - Genesis / Mega Drive support is integrated through the adapted Gwenesis path.
+- Manual save states are stored under `/sdcard/saved_games/<game>_<hash>/` with up to five recent slots and thumbnail previews.
+- The in-game `LOAD` action opens a rotated preview picker and pauses the emulator until a slot is chosen or cancelled.
 
 ## Hardware Target
 
@@ -140,13 +146,14 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.2 validates at `0x652280`, leaving `0x13dd80` bytes free in the smaller OTA app slot.
+- Version 1.2.3 validates at `0x65bb80`, leaving `0x134480` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 
 - `/sdcard/music` for music content.
 - `/sdcard/image` for image content.
 - `/sdcard/sega_games` for SEGA ROMs.
+- `/sdcard/saved_games` for SEGA manual save-state folders and preview thumbnails.
 - `/sdcard/firmware` for local `.bin` firmware packages.
 
 ## Build

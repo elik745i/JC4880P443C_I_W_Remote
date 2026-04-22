@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "psram_alloc.h"
 #include "sega_emulator/gwenesis/gwenesis.h"
 
@@ -23,11 +25,30 @@ int ym2612_clock = 0;
 
 static uint32_t s_input_mask = 0;
 static FILE *s_savestate_file = NULL;
+static sega_gwenesis_perf_stats_t s_perf_stats = {0};
+static bool s_perf_stats_enabled = false;
+
+static void *sega_hot_malloc(size_t size)
+{
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        return ptr;
+    }
+
+    return sega_psram_malloc(size);
+}
 
 typedef struct {
     char key[28];
     uint32_t length;
 } gwenesis_save_var_t;
+
+static void perf_update_max(uint32_t *slot, uint32_t value)
+{
+    if (value > *slot) {
+        *slot = value;
+    }
+}
 
 static void update_button_state(uint32_t mask, int button)
 {
@@ -168,7 +189,7 @@ bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t frame
     }
     fclose(file);
 
-    VRAM = sega_psram_malloc(VRAM_MAX_SIZE);
+    VRAM = sega_hot_malloc(VRAM_MAX_SIZE);
     if (VRAM == NULL) {
         sega_psram_free(rom_buffer);
         return false;
@@ -184,9 +205,71 @@ bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t frame
     return true;
 }
 
+bool sega_gwenesis_load_state_file(const char *path)
+{
+    FILE *file;
+
+    if (path == NULL) {
+        return false;
+    }
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        return false;
+    }
+
+    s_savestate_file = file;
+    gwenesis_load_state();
+    fclose(file);
+    s_savestate_file = NULL;
+    return true;
+}
+
+bool sega_gwenesis_save_state_file(const char *path)
+{
+    FILE *file;
+
+    if (path == NULL) {
+        return false;
+    }
+
+    file = fopen(path, "wb");
+    if (file == NULL) {
+        return false;
+    }
+
+    s_savestate_file = file;
+    gwenesis_save_state();
+    fclose(file);
+    s_savestate_file = NULL;
+    return true;
+}
+
 void sega_gwenesis_set_input_mask(uint32_t input_mask)
 {
     s_input_mask = input_mask;
+}
+
+void sega_gwenesis_reset_perf_stats(void)
+{
+    memset(&s_perf_stats, 0, sizeof(s_perf_stats));
+}
+
+void sega_gwenesis_get_perf_stats(sega_gwenesis_perf_stats_t *stats)
+{
+    if (stats == NULL) {
+        return;
+    }
+
+    *stats = s_perf_stats;
+}
+
+void sega_gwenesis_set_perf_stats_enabled(bool enabled)
+{
+    s_perf_stats_enabled = enabled;
+    if (!enabled) {
+        sega_gwenesis_reset_perf_stats();
+    }
 }
 
 void sega_gwenesis_run_frame(bool draw_frame)
@@ -212,17 +295,50 @@ void sega_gwenesis_run_frame(bool draw_frame)
     sn76489_index = 0;
     scan_line = 0;
 
+    uint64_t cpuTimeUs = 0;
+    uint64_t renderTimeUs = 0;
+    uint64_t synthTimeUs = 0;
+    uint32_t cpuMaxUs = 0;
+    uint32_t renderMaxUs = 0;
+    uint32_t synthMaxUs = 0;
+
     while (scan_line < lines_per_frame) {
-        m68k_run(system_clock + VDP_CYCLES_PER_LINE);
-        z80_run(system_clock + VDP_CYCLES_PER_LINE);
+        if (s_perf_stats_enabled) {
+            int64_t sectionStartUs = esp_timer_get_time();
+            m68k_run(system_clock + VDP_CYCLES_PER_LINE);
+            z80_run(system_clock + VDP_CYCLES_PER_LINE);
+            uint32_t sectionUs = (uint32_t)(esp_timer_get_time() - sectionStartUs);
+            cpuTimeUs += sectionUs;
+            perf_update_max(&cpuMaxUs, sectionUs);
 
-        if (GWENESIS_AUDIO_ACCURATE == 0) {
-            gwenesis_SN76489_run(system_clock + VDP_CYCLES_PER_LINE);
-            ym2612_run(system_clock + VDP_CYCLES_PER_LINE);
-        }
+            if (GWENESIS_AUDIO_ACCURATE == 0) {
+                sectionStartUs = esp_timer_get_time();
+                gwenesis_SN76489_run(system_clock + VDP_CYCLES_PER_LINE);
+                ym2612_run(system_clock + VDP_CYCLES_PER_LINE);
+                sectionUs = (uint32_t)(esp_timer_get_time() - sectionStartUs);
+                synthTimeUs += sectionUs;
+                perf_update_max(&synthMaxUs, sectionUs);
+            }
 
-        if (draw_frame && (scan_line < screen_height)) {
-            gwenesis_vdp_render_line(scan_line);
+            if (draw_frame && (scan_line < screen_height)) {
+                sectionStartUs = esp_timer_get_time();
+                gwenesis_vdp_render_line(scan_line);
+                sectionUs = (uint32_t)(esp_timer_get_time() - sectionStartUs);
+                renderTimeUs += sectionUs;
+                perf_update_max(&renderMaxUs, sectionUs);
+            }
+        } else {
+            m68k_run(system_clock + VDP_CYCLES_PER_LINE);
+            z80_run(system_clock + VDP_CYCLES_PER_LINE);
+
+            if (GWENESIS_AUDIO_ACCURATE == 0) {
+                gwenesis_SN76489_run(system_clock + VDP_CYCLES_PER_LINE);
+                ym2612_run(system_clock + VDP_CYCLES_PER_LINE);
+            }
+
+            if (draw_frame && (scan_line < screen_height)) {
+                gwenesis_vdp_render_line(scan_line);
+            }
         }
 
         if ((scan_line == 0) || (scan_line > screen_height)) {
@@ -256,11 +372,30 @@ void sega_gwenesis_run_frame(bool draw_frame)
     }
 
     if (GWENESIS_AUDIO_ACCURATE == 1) {
-        gwenesis_SN76489_run(system_clock);
-        ym2612_run(system_clock);
+        if (s_perf_stats_enabled) {
+            const int64_t synthStartUs = esp_timer_get_time();
+            gwenesis_SN76489_run(system_clock);
+            ym2612_run(system_clock);
+            const uint32_t synthUs = (uint32_t)(esp_timer_get_time() - synthStartUs);
+            synthTimeUs += synthUs;
+            perf_update_max(&synthMaxUs, synthUs);
+        } else {
+            gwenesis_SN76489_run(system_clock);
+            ym2612_run(system_clock);
+        }
     }
 
     m68k.cycles -= system_clock;
+
+    if (s_perf_stats_enabled) {
+        s_perf_stats.cpu_time_us += cpuTimeUs;
+        s_perf_stats.render_time_us += renderTimeUs;
+        s_perf_stats.synth_time_us += synthTimeUs;
+        s_perf_stats.frame_count += 1;
+        perf_update_max(&s_perf_stats.cpu_max_us, cpuMaxUs);
+        perf_update_max(&s_perf_stats.render_max_us, renderMaxUs);
+        perf_update_max(&s_perf_stats.synth_max_us, synthMaxUs);
+    }
 }
 
 size_t sega_gwenesis_mix_audio_stereo(int16_t *destination, size_t frame_capacity)
@@ -316,7 +451,12 @@ int sega_gwenesis_get_screen_height(void)
 
 int sega_gwenesis_get_audio_sample_rate(void)
 {
-    return GWENESIS_AUDIO_FREQ_NTSC;
+    return gwenesis_runtime_mode_pal ? GWENESIS_AUDIO_FREQ_PAL : GWENESIS_AUDIO_FREQ_NTSC;
+}
+
+int sega_gwenesis_get_refresh_rate(void)
+{
+    return gwenesis_runtime_mode_pal ? GWENESIS_REFRESH_RATE_PAL : GWENESIS_REFRESH_RATE_NTSC;
 }
 
 void sega_gwenesis_shutdown(void)

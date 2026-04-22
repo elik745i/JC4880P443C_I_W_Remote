@@ -53,6 +53,8 @@ __license__ = "GPLv3"
 #define GWENESIS_AUDIO_BUFFER_LENGTH_NTSC 888
 #define GWENESIS_AUDIO_BUFFER_LENGTH_PAL 1056
 
+extern int gwenesis_runtime_mode_pal;
+
 /* Audio buffer length */
 
 enum mapped_address

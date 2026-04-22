@@ -8,9 +8,11 @@
 #include <vector>
 
 #include "esp_heap_caps.h"
+#include "driver/ppa.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "bsp/display.h"
 #include "esp_brookesia.hpp"
 #include "storage_access.h"
 
@@ -87,6 +89,7 @@ private:
     struct RomEntry {
         SegaString name;
         SegaString path;
+        uint64_t lastPlayedAt = 0;
         lv_obj_t *button = nullptr;
     };
 
@@ -105,8 +108,21 @@ private:
         bool forceReindex = false;
     };
 
-    static constexpr int kCanvasWidth = 400;
-    static constexpr int kCanvasHeight = 300;
+    struct SaveSlotEntry {
+        SegaString slotId;
+        SegaString statePath;
+        SegaString thumbPath;
+        uint64_t sortKey = 0;
+        lv_color_t *previewBuffer = nullptr;
+    };
+
+    struct SaveSlotButtonContext {
+        SegaEmulator *app = nullptr;
+        size_t index = 0;
+    };
+
+    static constexpr int kCanvasWidth = BSP_LCD_H_RES;
+    static constexpr int kCanvasHeight = BSP_LCD_V_RES;
     static constexpr int kSmsAudioSampleRate = 44100;
 
     static void onRomSelected(lv_event_t *event);
@@ -118,6 +134,9 @@ private:
     static void onPrevPageClicked(lv_event_t *event);
     static void onNextPageClicked(lv_event_t *event);
     static void onControlButtonEvent(lv_event_t *event);
+    static void onPlayerActionEvent(lv_event_t *event);
+    static void onLoadSlotSelected(lv_event_t *event);
+    static void onLoadPickerCancel(lv_event_t *event);
     static void onBrowserScreenDeleted(lv_event_t *event);
     static void onPlayerScreenDeleted(lv_event_t *event);
     static void emulatorTaskEntry(void *context);
@@ -145,8 +164,23 @@ private:
     void emulatorTask();
     void setBrowserStatus(const char *text);
     void setPlayerStatus(const char *text);
+    void setPlayerFps(uint32_t emulatedFpsTimes10, uint32_t drawnFpsTimes10);
+    void setPlayerLoadButtonEnabled(bool enabled);
+    void showLoadStatePicker();
+    void closeLoadStatePicker();
+    void setPlayerFullscreen(bool fullscreen);
     void setIndexingOverlayVisible(bool visible);
+    bool queueFramePresentation();
+    void resetPerformanceStats();
     void renderCurrentFrame();
+    bool rotateFrameWithPpa(const lv_color_t *sourceBuffer,
+                            int sourceWidth,
+                            int sourceHeight,
+                            lv_color_t *targetBuffer,
+                            int dstOffsetX,
+                            int dstOffsetY,
+                            int dstWidth,
+                            int dstHeight);
     void presentFrameOnUiThread();
     void finishEmulationOnUiThread();
     void updateSmsInputState();
@@ -156,11 +190,23 @@ private:
     void teardownAudio();
     bool loadBatterySave();
     void saveBatterySave();
+    bool loadResumeState(const SegaString &path);
+    bool saveResumeState();
+    bool saveResumeState(const SegaString &path);
+    bool hasManualSaveState() const;
+    bool collectSavedStates(SegaVector<SaveSlotEntry> &entries, bool limitResults) const;
+    bool saveStateThumbnail(const SegaString &path);
+    void releaseSaveSlotEntries(SegaVector<SaveSlotEntry> &entries);
     bool loadIndexFile();
     bool saveIndexFile(const SegaVector<RomEntry> &entries) const;
+    void sortRomEntries();
+    void markRomAsPlayed(const SegaString &path);
     void setSearchKeyboardVisible(bool visible);
     bool matchesRomFilter(const RomEntry &rom) const;
-    SegaString buildSavePath() const;
+    SegaString buildBatterySavePath() const;
+    SegaString buildSavedGamesRootPath() const;
+    SegaString buildGameSaveDirectory() const;
+    SegaString buildSaveSlotBaseName() const;
     static bool hasSupportedExtension(const SegaString &path);
     static EmulatorCore getCoreForPath(const SegaString &path);
 
@@ -180,7 +226,9 @@ private:
     lv_obj_t *_indexPromptMessageBox = nullptr;
     lv_obj_t *_playerStatus = nullptr;
     lv_obj_t *_playerTitle = nullptr;
+    lv_obj_t *_playerFps = nullptr;
     lv_obj_t *_canvas = nullptr;
+    lv_obj_t *_loadStateModal = nullptr;
 
     lv_obj_t *_upButton = nullptr;
     lv_obj_t *_downButton = nullptr;
@@ -190,10 +238,15 @@ private:
     lv_obj_t *_buttonB = nullptr;
     lv_obj_t *_buttonC = nullptr;
     lv_obj_t *_startButton = nullptr;
+    lv_obj_t *_loadButton = nullptr;
+    lv_obj_t *_saveButton = nullptr;
+    lv_obj_t *_exitButton = nullptr;
 
     SegaVector<RomEntry> _romEntries;
     SegaVector<ControlBinding> _controlBindings;
+    SegaVector<SaveSlotEntry> _saveSlotEntries;
     std::vector<ControlRegion> _controlRegions;
+    std::vector<SaveSlotButtonContext> _saveSlotButtonContexts;
 
     std::atomic<bool> _running{false};
     std::atomic<bool> _stopRequested{false};
@@ -202,6 +255,10 @@ private:
     TaskHandle_t _indexTask = nullptr;
     std::atomic<bool> _indexing{false};
     std::atomic<bool> _closingApp{false};
+    std::atomic<bool> _saveRequested{false};
+    std::atomic<bool> _loadRequested{false};
+    std::atomic<bool> _loadMenuActive{false};
+    std::atomic<bool> _showFrameStats{false};
 
     SegaString _activeRomPath;
     SegaString _activeRomName;
@@ -212,13 +269,22 @@ private:
 
     lv_color_t *_canvasFrontBuffer = nullptr;
     lv_color_t *_canvasBackBuffer = nullptr;
+    lv_color_t *_ppaSourceBuffer = nullptr;
     uint8_t *_emulatorBuffer = nullptr;
+    ppa_client_handle_t _ppaHandle = nullptr;
+    size_t _cacheLineSize = 0;
     std::atomic<bool> _framePresentationQueued{false};
+    std::atomic<uint64_t> _presentTotalUs{0};
+    std::atomic<uint32_t> _presentCount{0};
+    std::atomic<uint32_t> _presentMaxUs{0};
+    std::atomic<uint32_t> _presentQueueBusyCount{0};
     std::mutex _frameBufferMutex;
     std::mutex _indexStateMutex;
+    std::mutex _saveStateMutex;
     SegaString _pendingBrowserStatus;
     SegaString _pendingIndexProgress;
     SegaString _pendingIndexStatus;
+    SegaString _pendingLoadStatePath;
     SegaVector<RomEntry> _pendingIndexedEntries;
     std::atomic<bool> _finishUiQueued{false};
 };

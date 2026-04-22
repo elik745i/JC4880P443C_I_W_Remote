@@ -57,8 +57,8 @@ extern unsigned short VSRAM[];        // VSRAM - Scrolling
 unsigned char *screen, *scaled_screen;
 
 // Define screen buffers for embedded 565 format
-static uint8_t *screen_buffer_line=0;
-static uint8_t *screen_buffer=0;
+static uint16_t *screen_buffer_line=0;
+static uint16_t *screen_buffer=0;
 
     // Overflow is the maximum size we can draw outside to avoid
     // wasting time and code in clipping. The maximum object is a 4x4 sprite,
@@ -1119,44 +1119,42 @@ void gwenesis_vdp_render_line(int line)
 
   /* Mode Highlight/shadow is enabled */
   if (MODE_SHI) {
+      uint16_t *video_out = screen_buffer_line;
     for (int x = 0; x < screen_width; x++) {
       uint8_t plane = pb[x];
       uint8_t sprite = ps[x];
+        uint16_t rgb565;
 
       if ((plane & 0xC0) < (sprite & 0xC0)) {
         switch (sprite & 0x3F) {
         // Palette=3, Sprite=14 :> draw plane, force highlight
         case 0x3E:
-          screen_buffer_line[x] = plane; // 0x8410 | CRAM565[plane] >> 1;
+            rgb565 = 0x8410 | (CRAM565[plane] >> 1);
           break;
         // Palette=3, Sprite=15 :> draw plane, force shadow
         case 0x3F:
-          screen_buffer_line[x] = plane; // CRAM565[plane] >> 1;
+            rgb565 = CRAM565[plane] >> 1;
           break;
         // draw sprite, normal
         default:
-          screen_buffer_line[x] = sprite;
+            rgb565 = CRAM565[sprite];
           break;
         }
       } else {
-        screen_buffer_line[x] = plane;
+          rgb565 = CRAM565[plane];
       }
+
+        video_out[x] = rgb565;
     }
 
     /* Normal mode*/
   } else {
-#if 0
     uint32_t *video_out = (uint32_t *) &screen_buffer_line[0];
 
     for (int x = 0; x < screen_width; x+=2) {
-
-      //screen_buffer_line[x] = CRAM565[pb[x]];
       // 2 pixels : 32 bits write  access is faster
       *video_out++ = CRAM565[pb[x]] | CRAM565[pb[x+1]] << 16;
     }
-#else
-  memcpy(screen_buffer_line, pb, screen_width);
-#endif
   }
 
   #endif

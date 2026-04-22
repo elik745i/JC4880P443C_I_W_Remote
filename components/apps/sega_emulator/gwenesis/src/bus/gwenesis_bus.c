@@ -68,18 +68,19 @@ unsigned char *M68K_RAM=(void *)(uint32_t)(0); // 68K RAM
 #else
 
 unsigned char *ROM_DATA; // 68K Main Program (uncompressed)
-EXT_RAM_BSS_ATTR unsigned char M68K_RAM[MAX_RAM_SIZE];    // 68K RAM
+unsigned char M68K_RAM[MAX_RAM_SIZE];    // 68K RAM
 #endif
 
 
 // Setup Z80 Memory
-EXT_RAM_BSS_ATTR unsigned char ZRAM[MAX_Z80_RAM_SIZE]; // Z80 RAM
+unsigned char ZRAM[MAX_Z80_RAM_SIZE]; // Z80 RAM
 unsigned char TMSS[0x4];
 extern unsigned short gwenesis_vdp_status;
 
 // TMSS
 int tmss_state = 0;
 int tmss_count = 0;
+int gwenesis_runtime_mode_pal = 0;
 
 /******************************************************************************
  *
@@ -184,7 +185,11 @@ void power_on() {
 //     gwenesis_SN76489_Init(3579545, GWENESIS_AUDIO_BUFFER_LENGTH_NTSC*60,AUDIO_FREQ_DIVISOR);
 //   }
   
-  gwenesis_SN76489_Init(3579545, 888*60,AUDIO_FREQ_DIVISOR);
+  if (gwenesis_runtime_mode_pal) {
+    gwenesis_SN76489_Init(3546895, GWENESIS_AUDIO_BUFFER_LENGTH_PAL * GWENESIS_REFRESH_RATE_PAL, AUDIO_FREQ_DIVISOR);
+  } else {
+    gwenesis_SN76489_Init(3579545, GWENESIS_AUDIO_BUFFER_LENGTH_NTSC * GWENESIS_REFRESH_RATE_NTSC, AUDIO_FREQ_DIVISOR);
+  }
 
 }
 
@@ -284,6 +289,7 @@ void set_region()
     if (country & 4){
       printf("Oversea-NTSC USA 60Hz\n");
       gwenesis_io_set_reg(0, 0x81);
+      gwenesis_runtime_mode_pal = 0;
    //   gwenesis_vdp_status &= 0xFFFE;
      // mode_pal = 0;
       return;
@@ -292,6 +298,7 @@ void set_region()
     if (country & 8){
       printf("Oversea-PAL Europe 50Hz\n");
       gwenesis_io_set_reg(0, 0xC1);
+      gwenesis_runtime_mode_pal = 1;
     //  gwenesis_vdp_status |= 0x1;
       //mode_pal = 1;
       return;
@@ -300,12 +307,14 @@ void set_region()
     if (country & 1){
       printf("Domestic-NTSC Asia 60Hz\n");
       gwenesis_io_set_reg(0, 0x1);
+      gwenesis_runtime_mode_pal = 0;
     //  gwenesis_vdp_status &= 0xFFFE;
       //mode_pal = 0;
       return;
     }
       printf("Oversea-NTSC USA 60Hz no detection>> default mode\n");
       gwenesis_io_set_reg(0, 0x81);
+      gwenesis_runtime_mode_pal = 0;
      // gwenesis_vdp_status &= 0xFFFE;
      // mode_pal = 0;
 

@@ -1,3 +1,118 @@
+menu "JC4880 Modular Configuration"
+
+    comment "Use menuconfig / sdkconfig as the ESP-IDF equivalent of a build-time feature ini"
+
+    menu "Feature Domains"
+
+        menu "Connectivity"
+
+            config JC4880_FEATURE_WIFI
+                bool "Wi-Fi features"
+                default y
+                help
+                    Master switch for Wi-Fi-oriented user features. This is the intended
+                    top-level feature toggle for Wi-Fi driven modules.
+
+            config JC4880_FEATURE_BLUETOOTH
+                bool "Bluetooth features"
+                default y
+                help
+                    Master switch for Bluetooth-oriented user features.
+
+            config JC4880_FEATURE_BLE
+                bool "BLE features"
+                default y
+                depends on JC4880_FEATURE_BLUETOOTH
+                help
+                    Master switch for BLE-oriented features exposed by the firmware.
+
+            config JC4880_FEATURE_ZIGBEE
+                bool "ZigBee features"
+                default y
+                help
+                    Master switch for ZigBee-oriented features.
+
+            config JC4880_FEATURE_TIME_SYNC
+                bool "Internet time and date sync"
+                default y
+                depends on JC4880_FEATURE_WIFI
+                help
+                    Master switch for SNTP and internet-backed timezone/date features.
+
+        endmenu
+
+        menu "System"
+
+            config JC4880_FEATURE_HARDWARE_INFO
+                bool "Hardware information features"
+                default y
+
+            config JC4880_FEATURE_BATTERY
+                bool "Battery management features"
+                default y
+
+            config JC4880_FEATURE_DISPLAY
+                bool "Display functions and features"
+                default y
+
+            config JC4880_FEATURE_AUDIO
+                bool "Audio functions and features"
+                default y
+
+            config JC4880_FEATURE_SECURITY
+                bool "Security functions and features"
+                default y
+                help
+                    Controls security-related runtime hooks currently wired in main.
+
+            config JC4880_FEATURE_OTA
+                bool "Firmware OTA functions and features"
+                default y
+
+            config JC4880_FEATURE_ABOUT_DEVICE
+                bool "About device functions and features"
+                default y
+
+        endmenu
+
+    endmenu
+
+    menu "Launcher Applications"
+
+        config JC4880_APP_SETTINGS
+            bool "Settings"
+            default y
+
+        config JC4880_APP_CALCULATOR
+            bool "Calculator"
+            default y
+
+        config JC4880_APP_SEGA_EMULATOR
+            bool "SEGA emulator"
+            default y
+
+        config JC4880_APP_IMAGE_VIEWER
+            bool "Image viewer"
+            default y
+
+        config JC4880_APP_FILE_MANAGER
+            bool "File manager"
+            default y
+
+        config JC4880_APP_MUSIC_PLAYER
+            bool "Music player"
+            default y
+            depends on JC4880_FEATURE_AUDIO
+
+        config JC4880_APP_INTERNET_RADIO
+            bool "Internet radio"
+            default y
+            depends on JC4880_FEATURE_WIFI && JC4880_FEATURE_AUDIO
+
+    endmenu
+
+endmenu
+
 menu "Video Configuration"
 
     config EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR

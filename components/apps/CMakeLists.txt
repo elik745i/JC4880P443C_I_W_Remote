@@ -1,16 +1,42 @@
-set(APPS_DIR ./)
-file(GLOB_RECURSE APPS_C_SRCS ${APPS_DIR}/*.c)
-file(GLOB_RECURSE APPS_CPP_SRCS ${APPS_DIR}/*.cpp)
-set(APPS_SHARED_SRCS ${APPS_DIR}/system_ui_service.cpp)
-file(GLOB_RECURSE APPS_CAMERA_C_SRCS ${APPS_DIR}/camera/*.c)
-file(GLOB_RECURSE APPS_CAMERA_CPP_SRCS ${APPS_DIR}/camera/*.cpp)
-set(APPS_EXTRA_SRCS ${APPS_DIR}/internet_radio/assets/img_app_radio_browser.c/radio.c)
-list(REMOVE_ITEM APPS_C_SRCS ${APPS_CAMERA_C_SRCS})
-list(REMOVE_ITEM APPS_CPP_SRCS ${APPS_CAMERA_CPP_SRCS})
-list(REMOVE_ITEM APPS_CPP_SRCS ${APPS_SHARED_SRCS})
+set(APPS_DIR ${CMAKE_CURRENT_LIST_DIR})
+set(APPS_SRCS ${APPS_DIR}/system_ui_service.cpp)
+
+function(jc4880_append_app_sources out_var dir_path)
+    file(GLOB_RECURSE APP_C_SRCS ${dir_path}/*.c)
+    file(GLOB_RECURSE APP_CPP_SRCS ${dir_path}/*.cpp)
+    set(${out_var} ${${out_var}} ${APP_C_SRCS} ${APP_CPP_SRCS} PARENT_SCOPE)
+endfunction()
+
+if(CONFIG_JC4880_APP_SETTINGS)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/setting)
+endif()
+
+if(CONFIG_JC4880_APP_CALCULATOR)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/calculator)
+endif()
+
+if(CONFIG_JC4880_APP_SEGA_EMULATOR)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/sega_emulator)
+endif()
+
+if(CONFIG_JC4880_APP_IMAGE_VIEWER)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/image_display)
+endif()
+
+if(CONFIG_JC4880_APP_FILE_MANAGER)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/file_manager)
+endif()
+
+if(CONFIG_JC4880_APP_MUSIC_PLAYER)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/music_player)
+endif()
+
+if(CONFIG_JC4880_APP_INTERNET_RADIO)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/internet_radio)
+endif()
 
 idf_component_register(
-    SRCS ${APPS_C_SRCS} ${APPS_CPP_SRCS} ${APPS_SHARED_SRCS} ${APPS_EXTRA_SRCS}
+    SRCS ${APPS_SRCS}
     INCLUDE_DIRS ${APPS_DIR}
                  ${APPS_DIR}/music_player
                  ${APPS_DIR}/sega_emulator/smsplus

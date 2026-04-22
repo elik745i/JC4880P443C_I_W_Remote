@@ -140,6 +140,116 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 
 This project targets ESP-IDF 5.5.x and `esp32p4`.
 
+### Modular Build Configuration
+
+The ESP-IDF equivalent of a project `configuration.ini` in this repo is `menuconfig` / `sdkconfig`.
+
+This firmware now exposes a top-level `JC4880 Modular Configuration` menu where a programmer can enable or disable major launcher apps and major feature domains before building.
+
+![JC4880 menuconfig modular configuration](User_Manual/menu_config.jpg)
+
+Current modular switches include:
+
+- Connectivity domains: Wi-Fi, Bluetooth, BLE, ZigBee, internet time/date sync.
+- System domains: hardware info, battery, display, audio, security, OTA, about-device.
+- Launcher apps: Settings, Calculator, SEGA Emulator, Image Viewer, File Manager, Music Player, Internet Radio.
+
+Within the Settings app, these feature flags now also gate the actual Settings sections and their supporting runtime work. For example, disabling BLE removes the Bluetooth entry from Settings and skips its startup path, and disabling OTA removes the firmware updater entry and screen.
+
+Current limitation:
+
+- `CONFIG_JC4880_FEATURE_BATTERY` is reserved for a future dedicated battery screen/card. The existing hardware monitor is currently gated by the broader hardware domain.
+
+### How To Open The Config UI
+
+Run `menuconfig` from the project root:
+
+```text
+C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote
+```
+
+If you are using the ESP-IDF extension in VS Code, the simplest path is to open an `ESP-IDF Terminal` and run:
+
+```bash
+idf.py menuconfig
+```
+
+If you are in a normal PowerShell terminal and accidentally activated a Python virtual environment such as `.venv` or `.venv-1`, leave that environment first. `idf.py` must use the ESP-IDF-managed Python environment, not a project venv.
+
+PowerShell example:
+
+```powershell
+deactivate
+& "C:\Espressif\frameworks\esp-idf-v5.5.4\export.ps1"
+idf.py menuconfig
+```
+
+If the ESP-IDF extension is configured correctly, you can also use its SDK Configuration Editor instead of typing the command manually.
+
+Open the config UI with:
+
+```bash
+idf.py menuconfig
+```
+
+Then go to:
+
+```text
+JC4880 Modular Configuration
+```
+
+Inside that menu:
+
+- Open `Feature Domains` to control top-level platform capabilities such as Wi-Fi, Bluetooth, BLE, ZigBee, OTA, audio, display, and security.
+- Open `Launcher Applications` to include or exclude whole apps from the launcher build.
+- Save before exiting so the selected values are written into `sdkconfig`.
+
+The generated file updated by `menuconfig` is `sdkconfig`. The option definitions themselves live in `components/apps/Kconfig.projbuild`.
+
+Example `sdkconfig` values:
+
+```text
+CONFIG_JC4880_APP_SETTINGS=y
+# CONFIG_JC4880_APP_INTERNET_RADIO is not set
+CONFIG_JC4880_FEATURE_WIFI=y
+```
+
+That means:
+
+- Settings app is enabled.
+- Internet Radio app is disabled.
+- Wi-Fi feature domain is enabled.
+
+If you prefer editing by hand instead of using the UI, you can modify the `CONFIG_JC4880_*` lines in `sdkconfig` directly, then rebuild. The UI is still the safer path because it preserves dependencies.
+
+### Typical Command Examples
+
+Open the configuration editor:
+
+```bash
+idf.py menuconfig
+```
+
+Rebuild after changing switches:
+
+```bash
+idf.py build
+```
+
+Build and flash to the board:
+
+```bash
+idf.py -p COM10 flash
+```
+
+Build, flash, and open the serial monitor:
+
+```bash
+idf.py -p COM10 flash monitor
+```
+
+After changing the switches, rebuild and flash as usual:
+
 ```bash
 idf.py set-target esp32p4
 idf.py build
@@ -150,6 +260,95 @@ To flash and open the serial monitor:
 ```bash
 idf.py -p PORT flash monitor
 ```
+
+### Preset Profiles
+
+The repo now includes three ready-made modular profiles:
+
+- `sdkconfig.defaults.full`
+- `sdkconfig.defaults.media`
+- `sdkconfig.defaults.minimal`
+
+To build one of those profiles without replacing your current checked-in `sdkconfig.defaults`, layer it on top of the base defaults:
+
+```bash
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.media" reconfigure build
+```
+
+Swap `sdkconfig.defaults.media` for `sdkconfig.defaults.full` or `sdkconfig.defaults.minimal` as needed.
+
+Examples:
+
+Build the full profile:
+
+```bash
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.full" reconfigure build
+```
+
+Build the media profile:
+
+```bash
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.media" reconfigure build
+```
+
+Build the minimal profile:
+
+```bash
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.minimal" reconfigure build
+```
+
+These preset commands are useful when you want repeatable build variants without manually flipping many switches in `menuconfig` each time.
+
+### Common Configuration Errors
+
+If `idf.py menuconfig` fails, the problem is usually the shell environment rather than the project.
+
+`No module named 'click'`
+
+- Cause: `idf.py` was launched from a normal Python virtual environment such as `.venv` or `.venv-1` instead of the ESP-IDF Python environment.
+- Fix: leave the Python venv, load ESP-IDF, then run `idf.py` again.
+
+```powershell
+deactivate
+& "C:\Espressif\frameworks\esp-idf-v5.5.4\export.ps1"
+idf.py menuconfig
+```
+
+`idf.py` works in the ESP-IDF extension but not in your terminal
+
+- Cause: the VS Code extension has the right ESP-IDF environment loaded, but your normal terminal does not.
+- Fix: use an `ESP-IDF Terminal` from the extension, or run the `export.ps1` command above in your shell first.
+
+Wrong directory
+
+- Cause: `idf.py` was run from `main/`, `components/`, or another subfolder instead of the project root.
+- Fix: run it from:
+
+```text
+C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote
+```
+
+Wrong serial port during flash
+
+- Cause: the board COM port changed or the command used the wrong port.
+- Fix: use the correct port explicitly, for example:
+
+```bash
+idf.py -p COM10 flash monitor
+```
+
+If flash fails, re-check Device Manager or the ESP-IDF port selector in VS Code.
+
+Build does not reflect changed config
+
+- Cause: the project needs a rebuild or reconfigure after `sdkconfig` changes.
+- Fix: run:
+
+```bash
+idf.py reconfigure build
+```
+
+If you changed preset defaults with `SDKCONFIG_DEFAULTS`, keep using the same command line for that profile so the build graph stays consistent.
 
 ## VS Code Flash Target Switch
 

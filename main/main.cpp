@@ -27,7 +27,11 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
 #include "bsp_board_extra.h"
+
+#if CONFIG_JC4880_FEATURE_SECURITY
 #include "device_security.hpp"
+#endif
+
 #include "sdmmc_cmd.h"
 
 #include "esp_brookesia.hpp"
@@ -73,7 +77,11 @@ struct CrashReportUploadTaskContext {
 static SemaphoreHandle_t s_sdcardMutex = nullptr;
 static bool s_sdcardMounted = false;
 static TickType_t s_nextSdcardMountAttempt = 0;
+
+#if CONFIG_JC4880_APP_INTERNET_RADIO
 static InternetRadio *s_internetRadioApp = nullptr;
+#endif
+
 static bool s_crashReportUploadInFlight = false;
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
@@ -500,10 +508,13 @@ static void print_serial_command_help(void)
 {
     printf("[serial] Commands:\r\n");
     printf("[serial]   help\r\n");
+
+#if CONFIG_JC4880_APP_INTERNET_RADIO
     printf("[serial]   radio.status\r\n");
     printf("[serial]   radio.stop\r\n");
     printf("[serial]   radio.play Country|Station\r\n");
     printf("[serial] Example: radio.play Azerbaijan|AVTO FM\r\n");
+#endif
 }
 
 static void handle_serial_command(const std::string &raw_command)
@@ -519,6 +530,7 @@ static void handle_serial_command(const std::string &raw_command)
         return;
     }
 
+#if CONFIG_JC4880_APP_INTERNET_RADIO
     if (command == "radio.status") {
         if (s_internetRadioApp == nullptr) {
             printf("[radio] app unavailable\r\n");
@@ -563,6 +575,12 @@ static void handle_serial_command(const std::string &raw_command)
         printf("[radio] play %s\r\n", s_internetRadioApp->debugPlayStation(country, station) ? "queued" : "failed");
         return;
     }
+#else
+    if ((command == "radio.status") || (command == "radio.stop") || (command.rfind("radio.play ", 0) == 0)) {
+        printf("[radio] internet radio app is disabled in menuconfig\r\n");
+        return;
+    }
+#endif
 
     printf("[serial] Unknown command. Type 'help'.\r\n");
 }
@@ -983,19 +1001,33 @@ extern "C" void app_main(void)
     }
     install_app_or_delete(*phone, new PhoneAppSquareline(), "phone app squareline");
 
+#if CONFIG_JC4880_APP_CALCULATOR
     install_app_or_delete(*phone, new Calculator(), "calculator");
+#endif
 
+#if CONFIG_JC4880_APP_SETTINGS
     install_app_or_delete(*phone, new AppSettings(), "settings");
+#endif
 
+#if CONFIG_JC4880_APP_SEGA_EMULATOR
     install_app_or_delete(*phone, new SegaEmulator(), "sega emulator");
-        
+#endif
+
+#if CONFIG_JC4880_APP_IMAGE_VIEWER
     install_app_or_delete(*phone, new AppImageDisplay(), "image viewer");
+#endif
 
+#if CONFIG_JC4880_APP_FILE_MANAGER
     install_app_or_delete(*phone, new FileManager(), "file manager");
+#endif
 
+#if CONFIG_JC4880_APP_MUSIC_PLAYER
     install_app_or_delete(*phone, new MusicPlayer(), "music player");
+#endif
 
+#if CONFIG_JC4880_APP_INTERNET_RADIO
     s_internetRadioApp = install_app_or_delete(*phone, new InternetRadio(), "internet radio");
+#endif
 
     uint16_t free_sram_size_kb = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
     uint16_t total_sram_size_kb = heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024;
@@ -1005,7 +1037,9 @@ extern "C" void app_main(void)
                          "free psram size: %d KB, total psram size: %d KB",
                          free_sram_size_kb, total_sram_size_kb, free_psram_size_kb, total_psram_size_kb);
 
+#if CONFIG_JC4880_FEATURE_SECURITY
     device_security::init(phone);
+#endif
 
     free_sram_size_kb = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
     total_sram_size_kb = heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024;
@@ -1019,7 +1053,11 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG,"setup done");
     bsp_display_unlock();
     init_serial_command_console();
+
+#if CONFIG_JC4880_FEATURE_SECURITY
     device_security::promptBootUnlockIfNeeded();
+#endif
+
     schedule_previous_reset_notice_popup();
     schedule_pending_release_notes_popup();
 }

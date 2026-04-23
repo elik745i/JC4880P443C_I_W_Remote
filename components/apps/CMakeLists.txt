@@ -1,6 +1,12 @@
 set(APPS_DIR ${CMAKE_CURRENT_LIST_DIR})
 set(APPS_SRCS ${APPS_DIR}/system_ui_service.cpp)
 
+list(APPEND APPS_SRCS ${APPS_DIR}/hardware_history_service.cpp)
+
+if(CONFIG_JC4880_FEATURE_BATTERY)
+    list(APPEND APPS_SRCS ${APPS_DIR}/battery_history_service.cpp)
+endif()
+
 function(jc4880_append_app_sources out_var dir_path)
     file(GLOB_RECURSE APP_C_SRCS ${dir_path}/*.c)
     file(GLOB_RECURSE APP_CPP_SRCS ${dir_path}/*.cpp)

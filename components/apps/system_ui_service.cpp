@@ -4,11 +4,12 @@
 #include <atomic>
 #include <ctime>
 
+#include "battery_history_service.h"
+#include "hardware_history_service.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
 
-#include "adc_battery_estimation.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -25,7 +26,6 @@ static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(2000);
 static constexpr TickType_t kBatteryRefreshPeriod = pdMS_TO_TICKS(5000);
 
 static ESP_Brookesia_StatusBar *s_statusBar = nullptr;
-static adc_battery_estimation_handle_t s_batteryEstimationHandle = nullptr;
 static std::atomic<bool> s_initialized{false};
 static std::atomic<bool> s_wifiConnected{false};
 static std::atomic<int> s_wifiSignalLevel{0};
@@ -129,49 +129,17 @@ static void battery_refresh_task(void *arg)
     (void)arg;
 
     while (true) {
-        if ((s_statusBar != nullptr) && (s_batteryEstimationHandle != nullptr)) {
-            float capacity = 0.0f;
-            bool charging = false;
-            if ((adc_battery_estimation_get_capacity(s_batteryEstimationHandle, &capacity) == ESP_OK) &&
-                (adc_battery_estimation_get_charging_state(s_batteryEstimationHandle, &charging) == ESP_OK)) {
+        if (s_statusBar != nullptr) {
+            battery_history_service::Status status = {};
+            if (battery_history_service::get_status(status)) {
                 bsp_display_lock(0);
-                s_statusBar->setBatteryPercent(charging, static_cast<int>(capacity));
+                s_statusBar->setBatteryPercent(status.charging, status.capacity_percent);
                 bsp_display_unlock();
             }
         }
 
         vTaskDelay(kBatteryRefreshPeriod);
     }
-}
-
-static bool initialize_battery_estimation(void)
-{
-    if (s_batteryEstimationHandle != nullptr) {
-        return true;
-    }
-
-    adc_battery_estimation_t config = {
-        .internal = {
-            .adc_unit = ADC_UNIT_2,
-            .adc_bitwidth = ADC_BITWIDTH_DEFAULT,
-            .adc_atten = ADC_ATTEN_DB_12,
-        },
-        .adc_channel = ADC_CHANNEL_4,
-        .upper_resistor = 68000,
-        .lower_resistor = 100000,
-        .battery_points = default_battery_points,
-        .battery_points_count = DEFAULT_POINTS_COUNT,
-        .charging_detect_cb = nullptr,
-        .charging_detect_user_data = nullptr,
-    };
-
-    s_batteryEstimationHandle = adc_battery_estimation_create(&config);
-    if (s_batteryEstimationHandle == nullptr) {
-        ESP_LOGW(TAG, "Failed to initialize battery estimation handle");
-        return false;
-    }
-
-    return true;
 }
 
 } // namespace
@@ -190,7 +158,10 @@ bool initialize(ESP_Brookesia_Phone &phone)
         return false;
     }
 
-    initialize_battery_estimation();
+#if CONFIG_JC4880_FEATURE_BATTERY
+    battery_history_service::initialize();
+#endif
+    hardware_history_service::initialize();
 
     if (create_background_task_prefer_psram(status_refresh_task,
                                             "status_refresh",
@@ -202,7 +173,7 @@ bool initialize(ESP_Brookesia_Phone &phone)
         return false;
     }
 
-    if (s_batteryEstimationHandle != nullptr) {
+    if (battery_history_service::initialize()) {
         if (create_background_task_prefer_psram(battery_refresh_task,
                                                 "battery_refresh",
                                                 kBatteryRefreshTaskStack,

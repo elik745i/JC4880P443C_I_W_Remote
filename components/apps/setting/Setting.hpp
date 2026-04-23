@@ -108,6 +108,29 @@ private:
         std::string password;
     };
 
+    enum HardwareTrendCardIndex {
+        HARDWARE_TREND_CPU_LOAD = 0,
+        HARDWARE_TREND_SRAM,
+        HARDWARE_TREND_PSRAM,
+        HARDWARE_TREND_CPU_TEMP,
+        HARDWARE_TREND_WIFI,
+        HARDWARE_TREND_CARD_COUNT,
+    };
+
+    struct HardwareTrendUi {
+        lv_obj_t *card;
+        lv_obj_t *expandLabel;
+        lv_obj_t *expandedArea;
+        lv_obj_t *historyTitleLabel;
+        lv_obj_t *historySummaryLabel;
+        lv_obj_t *historyChart;
+        lv_chart_series_t *historySeries;
+        lv_obj_t *historyLeftLabel;
+        lv_obj_t *historyRightLabel;
+        lv_obj_t *historyFooterLabel;
+        bool expanded;
+    };
+
     struct WifiConnectTaskContext {
         AppSettings *app;
         SavedWifiCredential credential;
@@ -134,6 +157,8 @@ private:
     void refreshSecurityUi(void);
     void refreshFirmwareUi(void);
     void refreshHardwareMonitorUi(void);
+    void setBatteryHistoryExpanded(bool expanded, bool animate);
+    void setHardwareTrendExpanded(HardwareTrendCardIndex index, bool expanded, bool animate);
     void applyDisplayIdleSettings(void);
     void applyManualTimezonePreference(void);
     bool syncAutoTimezoneFromInternet(void);
@@ -246,6 +271,8 @@ private:
     static void onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback(lv_event_t *e);
     static void onSecurityToggleRequestFinished(bool success, void *user_data);
     static void onMainMenuItemClickedEventCallback(lv_event_t *e);
+    static void onHardwareBatteryCardClickedEventCallback(lv_event_t *e);
+    static void onHardwareTrendCardClickedEventCallback(lv_event_t *e);
     static void onFirmwareMenuClickedEventCallback(lv_event_t *e);
     static void onFirmwareSdRefreshClickedEventCallback(lv_event_t *e);
     static void onFirmwareOtaCheckClickedEventCallback(lv_event_t *e);
@@ -333,6 +360,23 @@ private:
     lv_obj_t *_hardwareCpuSpeedValueLabel;
     lv_obj_t *_hardwareCpuSpeedDetailLabel;
     lv_obj_t *_hardwareCpuSpeedBar;
+    lv_obj_t *_hardwareBatteryCard;
+    lv_obj_t *_hardwareBatteryValueLabel;
+    lv_obj_t *_hardwareBatteryDetailLabel;
+    lv_obj_t *_hardwareBatteryBar;
+    lv_obj_t *_hardwareBatteryExpandedArea;
+    lv_obj_t *_hardwareBatteryExpandLabel;
+    lv_obj_t *_hardwareBatteryHistoryTitleLabel;
+    lv_obj_t *_hardwareBatteryHistorySummaryLabel;
+    lv_obj_t *_hardwareBatteryHistoryChart;
+    lv_chart_series_t *_hardwareBatteryHistorySeries;
+    lv_obj_t *_hardwareBatteryHistoryLeftLabel;
+    lv_obj_t *_hardwareBatteryHistoryRightLabel;
+    lv_obj_t *_hardwareBatteryHistoryFooterLabel;
+    bool _hardwareBatteryExpanded;
+    std::array<HardwareTrendUi, HARDWARE_TREND_CARD_COUNT> _hardwareTrendUi;
+    uint8_t *_hardwareFastHistoryScratch;
+    uint8_t *_hardwareSlowHistoryScratch;
     lv_obj_t *_hardwareCpuTempValueLabel;
     lv_obj_t *_hardwareCpuTempDetailLabel;
     lv_obj_t *_hardwareCpuTempBar;

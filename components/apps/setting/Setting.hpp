@@ -81,15 +81,6 @@ private:
     };
 
     typedef enum {
-        WIFI_KEYBOARD_PRESSED_NONE = 0,
-        WIFI_KEYBOARD_PRESSED_SHIFT_FROM_LOWER,
-        WIFI_KEYBOARD_PRESSED_SHIFT_FROM_UPPER,
-        WIFI_KEYBOARD_PRESSED_RESET_STATE,
-        WIFI_KEYBOARD_PRESSED_ALPHA,
-        WIFI_KEYBOARD_PRESSED_OTHER,
-    } WifiKeyboardPressedAction_t;
-
-    typedef enum {
         WIFI_SIGNAL_STRENGTH_NONE = 0,
         WIFI_SIGNAL_STRENGTH_WEAK = 1,
         WIFI_SIGNAL_STRENGTH_MODERATE = 2,
@@ -165,9 +156,11 @@ private:
     void initializeDefaultNvsParams(void);
     bool factoryResetPreferences(void);
     void setWifiKeyboardVisible(bool visible);
+    void setWifiApKeyboardVisible(bool visible, lv_obj_t *textarea = nullptr);
     void setBluetoothKeyboardVisible(bool visible);
     void setZigbeeKeyboardVisible(bool visible);
-    void updateWifiPasswordVisibility(bool visible);
+    void refreshWifiApUi(void);
+    bool persistWifiApSettingsFromUi(bool apply_runtime);
     bool persistBluetoothNameFromUi(void);
     bool persistZigbeeNameFromUi(void);
     void handleSecurityToggleResult(device_security::LockType type, bool success);
@@ -207,7 +200,9 @@ private:
     bool loadNvsStringParam(const char *key, char *buffer, size_t buffer_size);
     bool setNvsStringParam(const char *key, const char *value);
     SavedWifiCredential sanitizeWifiCredential(const char *ssid, const char *password) const;
+    SavedWifiCredential sanitizeWifiApCredential(const char *ssid, const char *password) const;
     void populateWifiStaConfig(wifi_config_t &wifi_config, const SavedWifiCredential &credential) const;
+    void populateWifiApConfig(wifi_config_t &wifi_config, const SavedWifiCredential &credential) const;
     std::vector<SavedWifiCredential> loadSavedWifiCredentials(void) const;
     bool saveSavedWifiCredentials(const std::vector<SavedWifiCredential> &credentials);
     bool loadLatestSavedWifiCredential(SavedWifiCredential &credential);
@@ -220,6 +215,7 @@ private:
     void updateUiByNvsParam(void);
     // WiFi
     esp_err_t initWifi(void);
+    esp_err_t applyWifiOperatingMode(bool reconnect_sta, const char *reason);
     void requestWifiConnect(const char *reason);
     bool restoreWifiCredentials(void);
     void startWifiScan(void);
@@ -249,8 +245,12 @@ private:
     static void onButtonWifiListClickedEventCallback(lv_event_t * e);
     static void onKeyboardScreenSettingVerificationClickedEventCallback(lv_event_t *e);
     static void onWifiPasswordFieldEventCallback(lv_event_t *e);
-    static void onWifiPasswordToggleClickedEventCallback(lv_event_t *e);
     static void onWifiScanClickedEventCallback(lv_event_t *e);
+    static void onWifiApSwitchValueChangeEventCallback(lv_event_t *e);
+    static void onWifiApFieldEventCallback(lv_event_t *e);
+    static void onWifiApSaveClickedEventCallback(lv_event_t *e);
+    static void onWifiApKeyboardEventCallback(lv_event_t *e);
+    static void onWifiKeyboardBackdropClickedEventCallback(lv_event_t *e);
     static void onSavedWifiDropdownClickedEventCallback(lv_event_t *e);
     static void onConnectSavedWifiClickedEventCallback(lv_event_t *e);
     static void onForgetSavedWifiClickedEventCallback(lv_event_t *e);
@@ -308,13 +308,19 @@ private:
     lv_obj_t *_savedWifiExpandButton;
     lv_obj_t *_savedWifiExpandLabel;
     lv_obj_t *_savedWifiListContainer;
+    lv_obj_t *_wifiApPanel;
+    lv_obj_t *_wifiApSwitch;
+    lv_obj_t *_wifiApStatusLabel;
+    lv_obj_t *_wifiApSsidTextArea;
+    lv_obj_t *_wifiApPasswordTextArea;
+    lv_obj_t *_wifiApSaveButton;
+    lv_obj_t *_wifiApKeyboard;
+    lv_obj_t *_wifiApKeyboardTarget;
     bool _savedWifiListExpanded;
     bool _suppressDisconnectRecovery;
     std::string _savedWifiUiStateKey;
     std::string _wifiScanUiStateKey;
     lv_obj_t *_aboutWifiValueLabel;
-    lv_obj_t *_wifiPasswordToggleButton;
-    lv_obj_t *_wifiPasswordToggleLabel;
     lv_obj_t *_displayAdaptiveBrightnessSwitch;
     lv_obj_t *_displayScreensaverSwitch;
     lv_obj_t *_displayTimeoffDropdown;
@@ -407,10 +413,6 @@ private:
     lv_obj_t *_firmwareProgressLabel;
     bool _firmwareUpdateInProgress;
     bool _firmwareOtaCheckInProgress;
-    bool _isWifiPasswordVisible;
-    bool _wifiKeyboardCapsLockEnabled;
-    bool _wifiKeyboardSingleShiftPending;
-    WifiKeyboardPressedAction_t _wifiKeyboardPressedAction;
     bool _bluetoothStatusIconInstalled;
     bool _zigbeeStatusIconInstalled;
     struct SecurityToggleContext {

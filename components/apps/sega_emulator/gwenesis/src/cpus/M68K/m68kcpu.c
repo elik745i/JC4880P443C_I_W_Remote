@@ -421,6 +421,7 @@ void gwenesis_m68k_save_state() {
   state = saveGwenesisStateOpenForWrite("m68k");
   
   saveGwenesisStateSetBuffer(state, "REG_D", REG_D, sizeof(REG_D));
+  saveGwenesisStateSetBuffer(state, "REG_A", REG_A, sizeof(REG_A));
   saveGwenesisStateSet(state, "SR", m68ki_get_sr());
   saveGwenesisStateSet(state, "REG_PC", REG_PC);
   saveGwenesisStateSet(state, "REG_SP", REG_SP);
@@ -437,6 +438,7 @@ void gwenesis_m68k_save_state() {
 void gwenesis_m68k_load_state() {
   SaveState *state = saveGwenesisStateOpenForRead("m68k");
   saveGwenesisStateGetBuffer(state, "REG_D", REG_D, sizeof(REG_D));
+  saveGwenesisStateGetBuffer(state, "REG_A", REG_A, sizeof(REG_A));
 
   m68ki_set_sr(saveGwenesisStateGet(state, "SR"));
   REG_PC = saveGwenesisStateGet(state, "REG_PC");

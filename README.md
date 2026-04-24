@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.5 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.6 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -40,6 +40,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - SEGA browser now includes an optional FPS overlay toggle, and the in-game control surface is tuned for the rotated handheld presentation.
 - Shared launcher icon set sized to fit the OTA partition budget.
 - Persistent Wi-Fi credentials and reconnect behavior backed by NVS.
+- Wi-Fi Settings now also includes device AP mode setup with saved hotspot enable, SSID, and password controls.
 - Display timezone dropdown in GMT format with saved preference storage.
 - Auto timezone detection from the internet after Wi-Fi connects.
 - Firmware screen factory reset button with confirmation and settings wipe.
@@ -87,7 +88,11 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Additional enclosure revisions and raw CAD exports are included under `3D/` for the updated hardware fit iterations.
 - SEGA manual saves now use separate `SAVE` and `LOAD` actions instead of auto-resume behavior, so launching a ROM always starts from a clean boot unless a save is chosen explicitly.
 - The SEGA load flow now pauses emulation and shows a rotated save-slot picker with up to five recent preview thumbnails pulled from SD-card save folders.
+- Genesis save-state loading now restores the full 68K register set and rejects older incompatible save files instead of crashing after load.
+- The SEGA browser now keeps the top bar visible on entry and return-from-game while gameplay itself stays fullscreen.
+- The SEGA browser header and save-slot picker scrolling were cleaned up so the title no longer overlaps and the horizontal save list no longer recenters itself while browsing.
 - Genesis runtime timing, audio pacing, and framebuffer rotation were tuned further to match the handheld layout and reduce slow-background-music behavior.
+- On-screen keyboards now share the same shift and password-toggle behavior across Settings, File Manager, Music Player, and other text-entry flows.
 
 ## Feature Summary
 
@@ -111,6 +116,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Saved networks remain connectable even if they are not in the latest scan result set.
 - Failed switches to unavailable saved networks can restore the previously connected network automatically.
 - Intentional disconnects no longer trigger unwanted reconnect attempts.
+- Wi-Fi Settings can also run the device as an AP with editable SSID and password fields from the same screen.
 - Signal strength and scan results are exposed in Settings.
 - System time is sourced from SNTP and converted with the configured local timezone.
 - Manual timezone selection is available in GMT offsets.
@@ -151,7 +157,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.5 validates at `0x662730`, leaving `0x12D8D0` bytes free in the smaller OTA app slot.
+- Version 1.2.6 validates at `0x667590`, leaving `0x128A70` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

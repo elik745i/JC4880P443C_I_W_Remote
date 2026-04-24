@@ -195,6 +195,15 @@ esp_err_t bsp_extra_i2s_write(void *audio_buffer, size_t len, size_t *bytes_writ
 esp_err_t bsp_extra_codec_init();
 
 /**
+ * @brief Fully deinitialize codec and underlying audio transport resources.
+ *
+ * @return
+ *      - ESP_OK: Success
+ *      - Others: Fail
+ */
+esp_err_t bsp_extra_codec_deinit();
+
+/**
  * @brief Initialize audio player task.
  *
  * @param path file path

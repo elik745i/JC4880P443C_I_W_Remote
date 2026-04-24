@@ -28,6 +28,7 @@ extern int text_counter;
 
 /* Function prototypes */
 extern void make_tms_tables(void);
+extern void free_tms_tables(void);
 extern void render_bg_tms(int line);
 extern void render_obj_tms(int line);
 extern void parse_line(int line);

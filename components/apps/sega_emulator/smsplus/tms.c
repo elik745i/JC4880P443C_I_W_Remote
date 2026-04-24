@@ -398,6 +398,15 @@ void make_tms_tables(void)
     }
 }
 
+void free_tms_tables(void)
+{
+    if (tables != NULL)
+    {
+        free(tables);
+        tables = NULL;
+    }
+}
+
 
 void render_bg_tms(int line)
 {

@@ -11,6 +11,7 @@
 
 #include "esp_log.h"
 #include "bsp/esp-bsp.h"
+#include "lvgl_input_helper.h"
 #include "storage_access.h"
 
 static const char *TAG = "FileManager";
@@ -349,6 +350,7 @@ bool FileManager::buildUi()
     lv_obj_set_size(_keyboard, 480, 260);
     lv_obj_align(_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(_keyboard, _inputTextArea);
+    jc4880_keyboard_install_case_behavior(_keyboard);
     lv_obj_add_event_cb(_keyboard, onKeyboardDone, LV_EVENT_READY, this);
     lv_obj_add_event_cb(_keyboard, onKeyboardDone, LV_EVENT_CANCEL, this);
     lv_obj_add_flag(_keyboard, LV_OBJ_FLAG_HIDDEN);

@@ -79,6 +79,7 @@ public:
     bool resume() override;
     bool back() override;
     bool close() override;
+    bool cleanResource() override;
 
 private:
     enum class EmulatorCore {
@@ -127,6 +128,7 @@ private:
 
     static void onRomSelected(lv_event_t *event);
     static void onRefreshClicked(lv_event_t *event);
+    static void onRotationChanged(lv_event_t *event);
     static void onSearchChanged(lv_event_t *event);
     static void onSearchFieldEvent(lv_event_t *event);
     static void onSearchKeyboardEvent(lv_event_t *event);
@@ -138,6 +140,7 @@ private:
     static void onLoadSlotSelected(lv_event_t *event);
     static void onLoadPickerCancel(lv_event_t *event);
     static void onBrowserScreenDeleted(lv_event_t *event);
+    static void onBrowserScreenLoaded(lv_event_t *event);
     static void onPlayerScreenDeleted(lv_event_t *event);
     static void emulatorTaskEntry(void *context);
     static void indexingTaskEntry(void *context);
@@ -146,9 +149,12 @@ private:
     static void indexingProgressAsync(void *context);
     static void indexingFinishedAsync(void *context);
 
+    bool ensureRuntimeResources();
+    void releaseRuntimeResources();
     bool ensureUiReady();
     void createBrowserScreen();
     void createPlayerScreen();
+    void recreatePlayerScreen();
     void resetBrowserUiPointers();
     void resetPlayerUiPointers();
     void releaseUiState();
@@ -169,6 +175,8 @@ private:
     void showLoadStatePicker();
     void closeLoadStatePicker();
     void setPlayerFullscreen(bool fullscreen);
+    void setBrowserChrome();
+    void restoreHomeChrome();
     void setIndexingOverlayVisible(bool visible);
     bool queueFramePresentation();
     void resetPerformanceStats();
@@ -202,6 +210,7 @@ private:
     void sortRomEntries();
     void markRomAsPlayed(const SegaString &path);
     void setSearchKeyboardVisible(bool visible);
+    uint16_t getPlayerRotationDegrees() const;
     bool matchesRomFilter(const RomEntry &rom) const;
     SegaString buildBatterySavePath() const;
     SegaString buildSavedGamesRootPath() const;
@@ -216,6 +225,7 @@ private:
     lv_obj_t *_browserStatus = nullptr;
     lv_obj_t *_searchField = nullptr;
     lv_obj_t *_searchKeyboard = nullptr;
+    lv_obj_t *_rotationDropdown = nullptr;
     lv_obj_t *_refreshButton = nullptr;
     lv_obj_t *_clearButton = nullptr;
     lv_obj_t *_prevPageButton = nullptr;
@@ -264,6 +274,7 @@ private:
     SegaString _activeRomName;
     SegaString _romFilter;
     EmulatorCore _currentCore = EmulatorCore::SmsPlus;
+    uint16_t _playerRotationDegrees = 270;
     bool _indexLoaded = false;
     size_t _currentPage = 0;
 

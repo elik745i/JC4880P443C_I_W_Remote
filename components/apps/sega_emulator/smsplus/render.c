@@ -202,6 +202,19 @@ static inline void write_dword(void *address, uint32 data)
 
 void render_shutdown(void)
 {
+  if (lut)
+  {
+    sega_psram_free((void *)lut);
+    lut = NULL;
+  }
+
+  if (bp_lut)
+  {
+    sega_psram_free((void *)bp_lut);
+    bp_lut = NULL;
+  }
+
+  free_tms_tables();
 }
 
 /* Initialize the rendering data */

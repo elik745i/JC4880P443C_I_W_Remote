@@ -14,6 +14,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "lvgl_input_helper.h"
 #include "nvs.h"
 #include "../app_sntp.h"
 #include "../../system_ui_service.h"
@@ -21,6 +22,15 @@
 
 static const char TAG[] = "EUI_Setting";
 static constexpr const char *kNvsStorageNamespace = "storage";
+static constexpr const char *kWifiApDefaultSsid = "JC4880P443C Remote";
+static constexpr uint8_t kWifiApDefaultChannel = 1;
+static constexpr uint8_t kWifiApMaxConnections = 4;
+
+static bool is_ignorable_wifi_transition_error(esp_err_t err)
+{
+    return (err == ESP_OK) || (err == ESP_ERR_WIFI_NOT_INIT) || (err == ESP_ERR_WIFI_NOT_STARTED) ||
+           (err == ESP_ERR_WIFI_STATE) || (err == ESP_ERR_WIFI_CONN);
+}
 
 static std::string safe_json_string(cJSON *object, const char *key)
 {
@@ -64,6 +74,8 @@ bool s_wifi_restore_in_progress = false;
 
 char st_wifi_ssid[WIFI_SSID_STORAGE_SIZE] = {0};
 char st_wifi_password[WIFI_PASSWORD_STORAGE_SIZE] = {0};
+char st_wifi_ap_ssid[WIFI_AP_SSID_STORAGE_SIZE] = {0};
+char st_wifi_ap_password[WIFI_AP_PASSWORD_STORAGE_SIZE] = {0};
 
 lv_obj_t *panel_wifi_btn[SCAN_LIST_SIZE] = {nullptr};
 lv_obj_t *label_wifi_ssid[SCAN_LIST_SIZE] = {nullptr};
@@ -87,6 +99,22 @@ AppSettings::SavedWifiCredential AppSettings::sanitizeWifiCredential(const char 
     return credential;
 }
 
+AppSettings::SavedWifiCredential AppSettings::sanitizeWifiApCredential(const char *ssid, const char *password) const
+{
+    SavedWifiCredential credential;
+    credential.ssid = trim_copy((ssid != nullptr) ? ssid : "");
+    credential.password = (password != nullptr) ? password : "";
+
+    if (credential.ssid.size() >= WIFI_AP_SSID_STORAGE_SIZE) {
+        credential.ssid.resize(WIFI_AP_SSID_STORAGE_SIZE - 1);
+    }
+    if (credential.password.size() >= WIFI_AP_PASSWORD_STORAGE_SIZE) {
+        credential.password.resize(WIFI_AP_PASSWORD_STORAGE_SIZE - 1);
+    }
+
+    return credential;
+}
+
 void AppSettings::populateWifiStaConfig(wifi_config_t &wifi_config, const SavedWifiCredential &credential) const
 {
     wifi_config = {};
@@ -101,6 +129,29 @@ void AppSettings::populateWifiStaConfig(wifi_config_t &wifi_config, const SavedW
     wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
     wifi_config.sta.bssid_set = false;
     wifi_config.sta.channel = 0;
+}
+
+void AppSettings::populateWifiApConfig(wifi_config_t &wifi_config, const SavedWifiCredential &credential) const
+{
+    wifi_config = {};
+
+    const std::string ssid = credential.ssid.empty() ? std::string(kWifiApDefaultSsid) : credential.ssid;
+    std::string password = credential.password;
+    const bool use_open_auth = password.empty() || (password.size() < 8);
+    if (use_open_auth) {
+        password.clear();
+    }
+
+    memcpy(wifi_config.ap.ssid,
+           ssid.c_str(),
+           std::min(ssid.size(), sizeof(wifi_config.ap.ssid) - 1));
+    memcpy(wifi_config.ap.password,
+           password.c_str(),
+           std::min(password.size(), sizeof(wifi_config.ap.password) - 1));
+    wifi_config.ap.ssid_len = ssid.size();
+    wifi_config.ap.channel = kWifiApDefaultChannel;
+    wifi_config.ap.max_connection = kWifiApMaxConnections;
+    wifi_config.ap.authmode = use_open_auth ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
 }
 
 std::vector<AppSettings::SavedWifiCredential> AppSettings::loadSavedWifiCredentials(void) const
@@ -697,6 +748,121 @@ bool AppSettings::restoreWifiCredentials(void)
     return true;
 }
 
+esp_err_t AppSettings::applyWifiOperatingMode(bool reconnect_sta, const char *reason)
+{
+    if (s_wifi_event_group == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const bool wifi_enabled = _nvs_param_map[NVS_KEY_WIFI_ENABLE] != 0;
+    const bool ap_enabled = wifi_enabled && (_nvs_param_map[NVS_KEY_WIFI_AP_ENABLE] != 0);
+
+    if (st_wifi_ap_ssid[0] == '\0') {
+        loadNvsStringParam(NVS_KEY_WIFI_AP_SSID, st_wifi_ap_ssid, sizeof(st_wifi_ap_ssid));
+    }
+    if (st_wifi_ap_password[0] == '\0') {
+        loadNvsStringParam(NVS_KEY_WIFI_AP_PASSWORD, st_wifi_ap_password, sizeof(st_wifi_ap_password));
+    }
+    if ((st_wifi_ssid[0] == '\0') && wifi_enabled) {
+        SavedWifiCredential credential;
+        if (loadLatestSavedWifiCredential(credential)) {
+            snprintf(st_wifi_ssid, sizeof(st_wifi_ssid), "%s", credential.ssid.c_str());
+            snprintf(st_wifi_password, sizeof(st_wifi_password), "%s", credential.password.c_str());
+        }
+    }
+
+    stopWifiScan();
+    _suppressDisconnectRecovery = true;
+    esp_err_t err = esp_wifi_disconnect();
+    if (!is_ignorable_wifi_transition_error(err)) {
+        ESP_LOGW(TAG, "Wi-Fi disconnect before mode switch failed: %s", esp_err_to_name(err));
+    }
+
+    xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED | WIFI_EVENT_CONNECTING);
+    system_ui_service::set_wifi_connected(false);
+
+    err = esp_wifi_stop();
+    if (!is_ignorable_wifi_transition_error(err)) {
+        ESP_LOGE(TAG, "Wi-Fi stop before mode switch failed: %s", esp_err_to_name(err));
+        _suppressDisconnectRecovery = false;
+        return err;
+    }
+
+    if (!wifi_enabled) {
+        err = esp_wifi_set_mode(WIFI_MODE_NULL);
+        if ((err != ESP_OK) && (err != ESP_ERR_WIFI_NOT_INIT)) {
+            ESP_LOGW(TAG, "Failed to set Wi-Fi NULL mode while disabled: %s", esp_err_to_name(err));
+        }
+
+        refreshSavedWifiUi();
+        refreshAboutWifiUi();
+        refreshWifiApUi();
+        return ESP_OK;
+    }
+
+    s_wifi_restore_in_progress = true;
+
+    const wifi_mode_t mode = ap_enabled ? WIFI_MODE_APSTA : WIFI_MODE_STA;
+    err = esp_wifi_set_mode(mode);
+    if (err != ESP_OK) {
+        s_wifi_restore_in_progress = false;
+        _suppressDisconnectRecovery = false;
+        ESP_LOGE(TAG, "Failed to set Wi-Fi mode %d: %s", static_cast<int>(mode), esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+    if (err != ESP_OK) {
+        s_wifi_restore_in_progress = false;
+        _suppressDisconnectRecovery = false;
+        ESP_LOGE(TAG, "Failed to set Wi-Fi storage before mode switch: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (st_wifi_ssid[0] != '\0') {
+        wifi_config_t sta_config = {};
+        populateWifiStaConfig(sta_config, sanitizeWifiCredential(st_wifi_ssid, st_wifi_password));
+        err = esp_wifi_set_config(WIFI_IF_STA, &sta_config);
+        if (err != ESP_OK) {
+            s_wifi_restore_in_progress = false;
+            _suppressDisconnectRecovery = false;
+            ESP_LOGE(TAG, "Failed to set station config: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+
+    if (ap_enabled) {
+        wifi_config_t ap_config = {};
+        populateWifiApConfig(ap_config, sanitizeWifiApCredential(st_wifi_ap_ssid, st_wifi_ap_password));
+        err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+        if (err != ESP_OK) {
+            s_wifi_restore_in_progress = false;
+            _suppressDisconnectRecovery = false;
+            ESP_LOGE(TAG, "Failed to set AP config: %s", esp_err_to_name(err));
+            return err;
+        }
+    }
+
+    err = esp_wifi_start();
+    s_wifi_restore_in_progress = false;
+    if (err != ESP_OK) {
+        _suppressDisconnectRecovery = false;
+        ESP_LOGE(TAG, "Failed to restart Wi-Fi after mode switch: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    _suppressDisconnectRecovery = false;
+
+    if (reconnect_sta && (st_wifi_ssid[0] != '\0')) {
+        requestWifiConnect(reason);
+    }
+
+    refreshSavedWifiUi();
+    refreshAboutWifiUi();
+    refreshWifiApUi();
+    return ESP_OK;
+}
+
 esp_err_t AppSettings::initWifi()
 {
     s_wifi_event_group = xEventGroupCreate();
@@ -713,6 +879,8 @@ esp_err_t AppSettings::initWifi()
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
     assert(sta_netif);
+    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    assert(ap_netif);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
@@ -730,15 +898,10 @@ esp_err_t AppSettings::initWifi()
                                                         this,
                                                         &instance_got_ip));
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    s_wifi_restore_in_progress = true;
-    ESP_ERROR_CHECK(esp_wifi_start());
+    loadNvsStringParam(NVS_KEY_WIFI_AP_SSID, st_wifi_ap_ssid, sizeof(st_wifi_ap_ssid));
+    loadNvsStringParam(NVS_KEY_WIFI_AP_PASSWORD, st_wifi_ap_password, sizeof(st_wifi_ap_password));
     const bool has_saved_wifi = restoreWifiCredentials();
-    s_wifi_restore_in_progress = false;
-
-    if (_nvs_param_map[NVS_KEY_WIFI_ENABLE] && has_saved_wifi) {
-        requestWifiConnect("saved credentials");
-    }
+    ESP_ERROR_CHECK(applyWifiOperatingMode(has_saved_wifi, "saved credentials"));
 
     return ESP_OK;
 }
@@ -1112,7 +1275,7 @@ void AppSettings::wifiConnectTask(void *arg)
             app->processWifiConnect(WIFI_CONNECT_HIDE);
             if (dismiss_keyboard) {
                 app->setWifiKeyboardVisible(false);
-                app->updateWifiPasswordVisibility(false);
+                jc4880_password_textarea_set_visibility(ui_TextAreaScreenSettingVerificationPassword, false);
                 lv_textarea_set_text(ui_TextAreaScreenSettingVerificationPassword, "");
             }
             app->refreshSavedWifiUi();
@@ -1162,7 +1325,7 @@ void AppSettings::wifiConnectTask(void *arg)
             app->processWifiConnect(WIFI_CONNECT_HIDE);
             if (dismiss_keyboard) {
                 app->setWifiKeyboardVisible(false);
-                app->updateWifiPasswordVisibility(false);
+                jc4880_password_textarea_set_visibility(ui_TextAreaScreenSettingVerificationPassword, false);
                 lv_textarea_set_text(ui_TextAreaScreenSettingVerificationPassword, "");
             }
             if (!navigate_back_on_success && (app->_screen_index == UI_WIFI_SCAN_INDEX)) {
@@ -1181,6 +1344,16 @@ void AppSettings::wifiEventHandler(void *arg, esp_event_base_t event_base, int32
 
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
         ESP_LOGI(TAG, "Connected to AP SSID:%s", st_wifi_ssid);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_START) {
+        ESP_LOGI(TAG, "SoftAP started with SSID:%s", (st_wifi_ap_ssid[0] != '\0') ? st_wifi_ap_ssid : kWifiApDefaultSsid);
+        if (app != nullptr) {
+            app->refreshWifiApUi();
+        }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STOP) {
+        ESP_LOGI(TAG, "SoftAP stopped");
+        if (app != nullptr) {
+            app->refreshWifiApUi();
+        }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         if ((app != nullptr) && !s_wifi_restore_in_progress) {
             app->requestWifiConnect("station start");

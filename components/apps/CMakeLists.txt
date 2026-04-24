@@ -1,5 +1,6 @@
 set(APPS_DIR ${CMAKE_CURRENT_LIST_DIR})
 set(APPS_SRCS ${APPS_DIR}/system_ui_service.cpp)
+list(APPEND APPS_SRCS ${APPS_DIR}/lvgl_input_helper.c)
 
 list(APPEND APPS_SRCS ${APPS_DIR}/hardware_history_service.cpp)
 

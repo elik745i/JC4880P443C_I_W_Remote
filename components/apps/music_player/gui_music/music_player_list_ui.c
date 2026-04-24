@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 
+#include "lvgl_input_helper.h"
 #include "music_player_main_ui.h"
 
 #include "music_player_ui.h"
@@ -472,6 +473,7 @@ lv_obj_t * _music_player_list_ui_create(lv_obj_t * parent)
     lv_obj_set_width(url_keyboard, lv_pct(100));
     lv_obj_set_height(url_keyboard, 150);
     lv_keyboard_set_textarea(url_keyboard, url_textarea);
+    jc4880_keyboard_install_case_behavior(url_keyboard);
     lv_obj_add_event_cb(url_keyboard, url_keyboard_event_cb, LV_EVENT_READY, NULL);
     lv_obj_add_event_cb(url_keyboard, url_keyboard_event_cb, LV_EVENT_CANCEL, NULL);
 

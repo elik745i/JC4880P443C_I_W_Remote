@@ -53,6 +53,7 @@
 #include "app_sntp.h"
 #include "battery_history_service.h"
 #include "hardware_history_service.h"
+#include "lvgl_input_helper.h"
 #include "storage_access.h"
 #include "system_ui_service.h"
 
@@ -1373,11 +1374,17 @@ AppSettings::AppSettings():
     _savedWifiExpandButton(nullptr),
     _savedWifiExpandLabel(nullptr),
     _savedWifiListContainer(nullptr),
+    _wifiApPanel(nullptr),
+    _wifiApSwitch(nullptr),
+    _wifiApStatusLabel(nullptr),
+    _wifiApSsidTextArea(nullptr),
+    _wifiApPasswordTextArea(nullptr),
+    _wifiApSaveButton(nullptr),
+    _wifiApKeyboard(nullptr),
+    _wifiApKeyboardTarget(nullptr),
     _savedWifiListExpanded(false),
     _suppressDisconnectRecovery(false),
     _aboutWifiValueLabel(nullptr),
-    _wifiPasswordToggleButton(nullptr),
-    _wifiPasswordToggleLabel(nullptr),
     _displayAdaptiveBrightnessSwitch(nullptr),
     _displayScreensaverSwitch(nullptr),
     _displayTimeoffDropdown(nullptr),
@@ -1470,10 +1477,6 @@ AppSettings::AppSettings():
     _firmwareProgressLabel(nullptr),
     _firmwareUpdateInProgress(false),
     _firmwareOtaCheckInProgress(false),
-    _isWifiPasswordVisible(false),
-    _wifiKeyboardCapsLockEnabled(false),
-    _wifiKeyboardSingleShiftPending(false),
-    _wifiKeyboardPressedAction(WIFI_KEYBOARD_PRESSED_NONE),
     _bluetoothStatusIconInstalled(false),
     _zigbeeStatusIconInstalled(false),
     _deviceLockToggleContext{this, device_security::LockType::Device},
@@ -1502,6 +1505,7 @@ AppSettings::~AppSettings()
 void AppSettings::initializeDefaultNvsParams(void)
 {
     _nvs_param_map[NVS_KEY_WIFI_ENABLE] = false;
+    _nvs_param_map[NVS_KEY_WIFI_AP_ENABLE] = false;
     _nvs_param_map[NVS_KEY_BLE_ENABLE] = false;
     _nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] = false;
     _nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL] = 13;
@@ -1880,9 +1884,104 @@ void AppSettings::extraUiInit(void)
     // Switch
     lv_obj_add_event_cb(ui_SwitchPanelScreenSettingWiFiSwitch, onSwitchPanelScreenSettingWiFiSwitchValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
+
+    _wifiApPanel = lv_obj_create(ui_ScreenSettingWiFi);
+    lv_obj_set_size(_wifiApPanel, lv_pct(90), 250);
+    lv_obj_align_to(_wifiApPanel, ui_PanelScreenSettingWiFiSwitch, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
+    lv_obj_clear_flag(_wifiApPanel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(_wifiApPanel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_radius(_wifiApPanel, 18, 0);
+    lv_obj_set_style_border_width(_wifiApPanel, 0, 0);
+    lv_obj_set_style_bg_color(_wifiApPanel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(_wifiApPanel, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(_wifiApPanel, 18, 0);
+    lv_obj_set_style_pad_right(_wifiApPanel, 18, 0);
+    lv_obj_set_style_pad_top(_wifiApPanel, 14, 0);
+    lv_obj_set_style_pad_bottom(_wifiApPanel, 14, 0);
+
+    lv_obj_t *wifiApTitle = lv_label_create(_wifiApPanel);
+    lv_label_set_text(wifiApTitle, "AP Mode");
+    lv_obj_set_style_text_font(wifiApTitle, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(wifiApTitle, lv_color_hex(0x111827), 0);
+    lv_obj_align(wifiApTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _wifiApSwitch = lv_switch_create(_wifiApPanel);
+    lv_obj_align(_wifiApSwitch, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_add_event_cb(_wifiApSwitch, onWifiApSwitchValueChangeEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    _wifiApStatusLabel = lv_label_create(_wifiApPanel);
+    lv_obj_set_width(_wifiApStatusLabel, lv_pct(100));
+    lv_label_set_long_mode(_wifiApStatusLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_wifiApStatusLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_wifiApStatusLabel, lv_color_hex(0x475569), 0);
+    lv_obj_align_to(_wifiApStatusLabel, wifiApTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
+
+    lv_obj_t *wifiApNameTitle = lv_label_create(_wifiApPanel);
+    lv_label_set_text(wifiApNameTitle, "Name");
+    lv_obj_set_style_text_font(wifiApNameTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(wifiApNameTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align_to(wifiApNameTitle, _wifiApStatusLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 14);
+
+    _wifiApSsidTextArea = lv_textarea_create(_wifiApPanel);
+    lv_obj_set_size(_wifiApSsidTextArea, lv_pct(100), 52);
+    lv_obj_align_to(_wifiApSsidTextArea, wifiApNameTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+    lv_textarea_set_one_line(_wifiApSsidTextArea, true);
+    lv_textarea_set_max_length(_wifiApSsidTextArea, 32);
+    lv_textarea_set_placeholder_text(_wifiApSsidTextArea, "JC4880P443C Remote");
+    lv_obj_set_style_radius(_wifiApSsidTextArea, 16, 0);
+    lv_obj_set_style_border_width(_wifiApSsidTextArea, 1, 0);
+    lv_obj_set_style_border_color(_wifiApSsidTextArea, lv_color_hex(0xC6D4E1), 0);
+    lv_obj_set_style_bg_color(_wifiApSsidTextArea, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(_wifiApSsidTextArea, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(_wifiApSsidTextArea, 16, 0);
+    lv_obj_set_style_pad_right(_wifiApSsidTextArea, 16, 0);
+    lv_obj_set_style_text_font(_wifiApSsidTextArea, &lv_font_montserrat_18, 0);
+    lv_obj_add_event_cb(_wifiApSsidTextArea, onWifiApFieldEventCallback, LV_EVENT_ALL, this);
+
+    lv_obj_t *wifiApPasswordTitle = lv_label_create(_wifiApPanel);
+    lv_label_set_text(wifiApPasswordTitle, "Password");
+    lv_obj_set_style_text_font(wifiApPasswordTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(wifiApPasswordTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align_to(wifiApPasswordTitle, _wifiApSsidTextArea, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 12);
+
+    _wifiApPasswordTextArea = lv_textarea_create(_wifiApPanel);
+    lv_obj_set_size(_wifiApPasswordTextArea, lv_pct(100), 52);
+    lv_obj_align_to(_wifiApPasswordTextArea, wifiApPasswordTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+    lv_textarea_set_one_line(_wifiApPasswordTextArea, true);
+    lv_textarea_set_max_length(_wifiApPasswordTextArea, 64);
+    lv_textarea_set_password_mode(_wifiApPasswordTextArea, true);
+    lv_textarea_set_placeholder_text(_wifiApPasswordTextArea, "Leave blank for open hotspot");
+    lv_obj_set_style_radius(_wifiApPasswordTextArea, 16, 0);
+    lv_obj_set_style_border_width(_wifiApPasswordTextArea, 1, 0);
+    lv_obj_set_style_border_color(_wifiApPasswordTextArea, lv_color_hex(0xC6D4E1), 0);
+    lv_obj_set_style_bg_color(_wifiApPasswordTextArea, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(_wifiApPasswordTextArea, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(_wifiApPasswordTextArea, 16, 0);
+    lv_obj_set_style_pad_right(_wifiApPasswordTextArea, 16, 0);
+    lv_obj_set_style_text_font(_wifiApPasswordTextArea, &lv_font_montserrat_18, 0);
+    lv_obj_add_event_cb(_wifiApPasswordTextArea, onWifiApFieldEventCallback, LV_EVENT_ALL, this);
+    jc4880_password_textarea_install_toggle(_wifiApPasswordTextArea);
+    lv_obj_add_event_cb(_wifiApPanel, onWifiKeyboardBackdropClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(ui_ScreenSettingWiFi, onWifiKeyboardBackdropClickedEventCallback, LV_EVENT_CLICKED, this);
+
+    _wifiApSaveButton = lv_btn_create(_wifiApPanel);
+    lv_obj_set_size(_wifiApSaveButton, 136, 42);
+    lv_obj_align_to(_wifiApSaveButton, _wifiApPasswordTextArea, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, 12);
+    lv_obj_set_style_radius(_wifiApSaveButton, 14, 0);
+    lv_obj_set_style_bg_color(_wifiApSaveButton, lv_color_hex(0x0F766E), 0);
+    lv_obj_set_style_bg_opa(_wifiApSaveButton, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(_wifiApSaveButton, 0, 0);
+    lv_obj_add_event_cb(_wifiApSaveButton, onWifiApSaveClickedEventCallback, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *wifiApSaveLabel = lv_label_create(_wifiApSaveButton);
+    lv_label_set_text(wifiApSaveLabel, "Save AP");
+    lv_obj_set_style_text_color(wifiApSaveLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(wifiApSaveLabel, &lv_font_montserrat_16, 0);
+    lv_obj_center(wifiApSaveLabel);
+
     _savedWifiPanel = lv_obj_create(ui_ScreenSettingWiFi);
     lv_obj_set_size(_savedWifiPanel, lv_pct(90), 120);
-    lv_obj_align_to(_savedWifiPanel, ui_PanelScreenSettingWiFiSwitch, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
+    lv_obj_align_to(_savedWifiPanel, _wifiApPanel, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
     lv_obj_clear_flag(_savedWifiPanel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(_savedWifiPanel, 18, 0);
     lv_obj_set_style_border_width(_savedWifiPanel, 0, 0);
@@ -1984,6 +2083,16 @@ void AppSettings::extraUiInit(void)
         }
     }
     lv_obj_add_flag(ui_ButtonScreenSettingWiFiReturn, LV_OBJ_FLAG_HIDDEN);
+
+    _wifiApKeyboard = lv_keyboard_create(ui_ScreenSettingWiFi);
+    lv_obj_set_size(_wifiApKeyboard, lv_pct(100), lv_pct(32));
+    lv_obj_align(_wifiApKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_popovers(_wifiApKeyboard, true);
+    lv_obj_add_flag(_wifiApKeyboard, LV_OBJ_FLAG_HIDDEN);
+    jc4880_keyboard_install_case_behavior(_wifiApKeyboard);
+    lv_obj_add_event_cb(_wifiApKeyboard, onWifiApKeyboardEventCallback, LV_EVENT_READY, this);
+    lv_obj_add_event_cb(_wifiApKeyboard, onWifiApKeyboardEventCallback, LV_EVENT_CANCEL, this);
+
     // Connect
     lv_obj_add_flag(ui_SpinnerScreenSettingVerification, LV_OBJ_FLAG_HIDDEN);
     _panel_wifi_connect = lv_obj_create(lv_layer_top());
@@ -2037,31 +2146,19 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_style_text_color(ui_TextAreaScreenSettingVerificationPassword, lv_color_hex(0x0F172A), 0);
     lv_obj_set_style_text_color(ui_TextAreaScreenSettingVerificationPassword, lv_color_hex(0x94A3B8), LV_PART_TEXTAREA_PLACEHOLDER);
     lv_obj_add_event_cb(ui_TextAreaScreenSettingVerificationPassword, onWifiPasswordFieldEventCallback, LV_EVENT_ALL, this);
-
-    _wifiPasswordToggleButton = lv_btn_create(ui_ScreenSettingVerification);
-    lv_obj_set_size(_wifiPasswordToggleButton, 56, 56);
-    lv_obj_align_to(_wifiPasswordToggleButton, ui_TextAreaScreenSettingVerificationPassword, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
-    lv_obj_set_style_radius(_wifiPasswordToggleButton, 18, 0);
-    lv_obj_set_style_bg_color(_wifiPasswordToggleButton, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(_wifiPasswordToggleButton, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(_wifiPasswordToggleButton, lv_color_hex(0xC6D4E1), 0);
-    lv_obj_set_style_border_width(_wifiPasswordToggleButton, 1, 0);
-    lv_obj_set_style_shadow_width(_wifiPasswordToggleButton, 0, 0);
-    lv_obj_add_event_cb(_wifiPasswordToggleButton, onWifiPasswordToggleClickedEventCallback, LV_EVENT_CLICKED, this);
-
-    _wifiPasswordToggleLabel = lv_label_create(_wifiPasswordToggleButton);
-    lv_obj_set_style_text_font(_wifiPasswordToggleLabel, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(_wifiPasswordToggleLabel, lv_color_hex(0x0F172A), 0);
-    lv_obj_center(_wifiPasswordToggleLabel);
-    updateWifiPasswordVisibility(false);
+    jc4880_password_textarea_install_toggle(ui_TextAreaScreenSettingVerificationPassword);
+    lv_obj_add_event_cb(ui_ScreenSettingVerification, onWifiKeyboardBackdropClickedEventCallback, LV_EVENT_CLICKED, this);
 
     lv_obj_set_size(ui_KeyboardScreenSettingVerification, lv_pct(100), lv_pct(34));
     lv_obj_align(ui_KeyboardScreenSettingVerification, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(ui_KeyboardScreenSettingVerification, ui_TextAreaScreenSettingVerificationPassword);
     lv_keyboard_set_popovers(ui_KeyboardScreenSettingVerification, true);
     lv_obj_add_flag(ui_KeyboardScreenSettingVerification, LV_OBJ_FLAG_HIDDEN);
+    jc4880_keyboard_install_case_behavior(ui_KeyboardScreenSettingVerification);
     lv_obj_add_event_cb(ui_KeyboardScreenSettingVerification, onKeyboardScreenSettingVerificationClickedEventCallback,
-                        LV_EVENT_ALL, this);
+                        LV_EVENT_READY, this);
+    lv_obj_add_event_cb(ui_KeyboardScreenSettingVerification, onKeyboardScreenSettingVerificationClickedEventCallback,
+                        LV_EVENT_CANCEL, this);
     // Record the screen index and install the screen loaded event callback
     lv_obj_add_flag(ui_ButtonScreenSettingBLEReturn, LV_OBJ_FLAG_HIDDEN);
     _screen_list[UI_WIFI_SCAN_INDEX] = ui_ScreenSettingWiFi;
@@ -2227,6 +2324,7 @@ void AppSettings::extraUiInit(void)
     lv_obj_align(_bluetoothKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_popovers(_bluetoothKeyboard, true);
     lv_obj_add_flag(_bluetoothKeyboard, LV_OBJ_FLAG_HIDDEN);
+    jc4880_keyboard_install_case_behavior(_bluetoothKeyboard);
     lv_obj_add_event_cb(_bluetoothKeyboard, onBluetoothKeyboardEventCallback, LV_EVENT_ALL, this);
 
     lv_obj_add_event_cb(ui_SwitchPanelScreenSettingBLESwitch, onSwitchPanelScreenSettingBluetoothValueChangeEventCallback,
@@ -2419,10 +2517,9 @@ void AppSettings::extraUiInit(void)
         lv_obj_set_height(row, LV_SIZE_CONTENT);
         lv_obj_set_style_min_height(row, 72, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(row, 18, 0);
+        lv_obj_set_style_radius(row, 0, 0);
         lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
         lv_obj_set_style_pad_left(row, 16, 0);
         lv_obj_set_style_pad_right(row, 16, 0);
         lv_obj_set_style_pad_top(row, 12, 0);
@@ -2449,6 +2546,9 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_scroll_dir(ui_PanelScreenSettingAbout, LV_DIR_VER);
     lv_obj_set_size(ui_PanelScreenSettingAbout, lv_pct(92), 650);
     lv_obj_align(ui_PanelScreenSettingAbout, LV_ALIGN_TOP_MID, 0, 92);
+    lv_obj_set_style_radius(ui_PanelScreenSettingAbout, 0, 0);
+    lv_obj_set_style_border_width(ui_PanelScreenSettingAbout, 0, 0);
+    lv_obj_set_style_bg_opa(ui_PanelScreenSettingAbout, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_all(ui_PanelScreenSettingAbout, 0, 0);
     lv_obj_set_style_pad_row(ui_PanelScreenSettingAbout, 12, 0);
     styleAboutRow(ui_PanelPanelScreenSettingAbout, ui_LabelPanelPanelScreenSettingAboutDevice, ui_LabelPanelPanelScreenSettingAbout2);
@@ -2463,10 +2563,9 @@ void AppSettings::extraUiInit(void)
         lv_obj_set_width(card, lv_pct(100));
         lv_obj_set_height(card, LV_SIZE_CONTENT);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(card, 18, 0);
+        lv_obj_set_style_radius(card, 0, 0);
         lv_obj_set_style_border_width(card, 0, 0);
-        lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_opa(card, LV_OPA_TRANSP, 0);
         lv_obj_set_style_pad_left(card, 16, 0);
         lv_obj_set_style_pad_right(card, 16, 0);
         lv_obj_set_style_pad_top(card, 14, 0);
@@ -2512,10 +2611,9 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_width(wifiInfoCard, lv_pct(100));
     lv_obj_set_height(wifiInfoCard, LV_SIZE_CONTENT);
     lv_obj_clear_flag(wifiInfoCard, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(wifiInfoCard, 18, 0);
+    lv_obj_set_style_radius(wifiInfoCard, 0, 0);
     lv_obj_set_style_border_width(wifiInfoCard, 0, 0);
-    lv_obj_set_style_bg_color(wifiInfoCard, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_bg_opa(wifiInfoCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(wifiInfoCard, LV_OPA_TRANSP, 0);
     lv_obj_set_style_pad_left(wifiInfoCard, 16, 0);
     lv_obj_set_style_pad_right(wifiInfoCard, 16, 0);
     lv_obj_set_style_pad_top(wifiInfoCard, 14, 0);
@@ -3012,6 +3110,7 @@ void AppSettings::ensureZigbeeScreen(void)
     lv_obj_set_size(_zigbeeKeyboard, lv_pct(100), lv_pct(34));
     lv_obj_align(_zigbeeKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
+    jc4880_keyboard_install_case_behavior(_zigbeeKeyboard);
     lv_obj_add_event_cb(_zigbeeKeyboard, onZigbeeKeyboardEventCallback, LV_EVENT_ALL, this);
 
     _screen_list[UI_ZIGBEE_SETTING_INDEX] = _zigbeeScreen;
@@ -3106,23 +3205,6 @@ void AppSettings::ensureFirmwareScreen(void)
     lv_obj_set_style_bg_color(_firmwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(_firmwareScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_clear_flag(_firmwareScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *firmwareBackButton = lv_btn_create(_firmwareScreen);
-    lv_obj_set_size(firmwareBackButton, 60, 60);
-    lv_obj_align(firmwareBackButton, LV_ALIGN_TOP_LEFT, 18, 18);
-    lv_obj_set_style_bg_color(firmwareBackButton, lv_color_hex(0xE5F3FF), 0);
-    lv_obj_set_style_border_width(firmwareBackButton, 0, 0);
-    lv_obj_add_event_cb(firmwareBackButton, [](lv_event_t *e) {
-        if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
-            lv_scr_load_anim(ui_ScreenSettingMain, LV_SCR_LOAD_ANIM_MOVE_RIGHT, kSettingScreenAnimTimeMs, 0, false);
-        }
-    }, LV_EVENT_CLICKED, nullptr);
-
-    lv_obj_t *firmwareBackImage = lv_img_create(firmwareBackButton);
-    lv_img_set_src(firmwareBackImage, &ui_img_return_png);
-    lv_obj_center(firmwareBackImage);
-    lv_obj_set_style_img_recolor(firmwareBackImage, lv_color_hex(0x000000), 0);
-    lv_obj_set_style_img_recolor_opa(firmwareBackImage, 255, 0);
 
     lv_obj_t *firmwareTitle = lv_label_create(_firmwareScreen);
     lv_label_set_text(firmwareTitle, "Firmware");
@@ -5024,6 +5106,8 @@ void AppSettings::updateUiByNvsParam(void)
 #if APP_SETTINGS_FEATURE_WIFI
     loadNvsStringParam(NVS_KEY_WIFI_SSID, st_wifi_ssid, sizeof(st_wifi_ssid));
     loadNvsStringParam(NVS_KEY_WIFI_PASSWORD, st_wifi_password, sizeof(st_wifi_password));
+    loadNvsStringParam(NVS_KEY_WIFI_AP_SSID, st_wifi_ap_ssid, sizeof(st_wifi_ap_ssid));
+    loadNvsStringParam(NVS_KEY_WIFI_AP_PASSWORD, st_wifi_ap_password, sizeof(st_wifi_ap_password));
 #endif
 
 #if APP_SETTINGS_FEATURE_WIFI
@@ -5032,6 +5116,7 @@ void AppSettings::updateUiByNvsParam(void)
     } else {
         lv_obj_clear_state(ui_SwitchPanelScreenSettingWiFiSwitch, LV_STATE_CHECKED);
     }
+    refreshWifiApUi();
 #endif
 
 #if APP_SETTINGS_FEATURE_DISPLAY_MENU
@@ -5671,7 +5756,11 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
 
     if (app->_screen_index != UI_WIFI_CONNECT_INDEX) {
         app->setWifiKeyboardVisible(false);
-        app->updateWifiPasswordVisibility(false);
+        jc4880_password_textarea_set_visibility(ui_TextAreaScreenSettingVerificationPassword, false);
+    }
+    if (app->_screen_index != UI_WIFI_SCAN_INDEX) {
+        app->setWifiApKeyboardVisible(false);
+        jc4880_password_textarea_set_visibility(app->_wifiApPasswordTextArea, false);
     }
     #endif
 
@@ -5696,6 +5785,7 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     #if APP_SETTINGS_FEATURE_WIFI
     if (app->_screen_index == UI_WIFI_SCAN_INDEX) {
         app->stopWifiScan();
+        app->refreshWifiApUi();
         app->refreshSavedWifiUi();
     }
     #endif
@@ -6181,8 +6271,10 @@ void AppSettings::onZigbeeNameTextAreaEventCallback(lv_event_t *e)
 
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
-    if (code == LV_EVENT_FOCUSED) {
+    if ((code == LV_EVENT_FOCUSED) || (code == LV_EVENT_CLICKED)) {
         app->setZigbeeKeyboardVisible(true);
+    } else if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
+        app->setZigbeeKeyboardVisible(false);
     }
 
 end:

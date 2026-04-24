@@ -143,7 +143,7 @@ i2c_master_bus_handle_t bsp_i2c_get_handle(void);
 /**
  * @brief Init audio
  *
- * @note There is no deinit audio function. Users can free audio resources by calling i2s_del_channel()
+ * @note Use bsp_audio_deinit() to release audio resources created by this function when they are no longer needed.
  * @warning The type of i2s_config param is depending on IDF version.
  * @param[in]  i2s_config I2S configuration. Pass NULL to use default values (Mono, duplex, 16bit, 22050 Hz)
  * @return
@@ -155,6 +155,14 @@ i2c_master_bus_handle_t bsp_i2c_get_handle(void);
  *      - ESP_ERR_INVALID_STATE This channel has not initialized or already started
  */
 esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config);
+
+/**
+ * @brief Deinitialize audio resources created by bsp_audio_init() and codec init helpers.
+ *
+ * @return
+ *      - ESP_OK on success
+ */
+esp_err_t bsp_audio_deinit(void);
 
 /**
  * @brief Initialize speaker codec device

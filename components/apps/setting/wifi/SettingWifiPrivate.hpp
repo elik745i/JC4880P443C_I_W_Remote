@@ -26,8 +26,11 @@
 #define WIFI_RECONNECT_RETRY_PERIOD_MS  (5 * 1000)
 
 #define NVS_KEY_WIFI_ENABLE             "wifi_en"
+#define NVS_KEY_WIFI_AP_ENABLE          "wifi_ap_en"
 #define NVS_KEY_WIFI_SSID               "wifi_ssid"
 #define NVS_KEY_WIFI_PASSWORD           "wifi_pass"
+#define NVS_KEY_WIFI_AP_SSID            "wifi_ap_ssid"
+#define NVS_KEY_WIFI_AP_PASSWORD        "wifi_ap_pass"
 #define NVS_KEY_WIFI_NETWORKS           "wifi_nets"
 #define NVS_KEY_DISPLAY_TZ_AUTO         "disp_tz_auto"
 
@@ -40,6 +43,8 @@
 
 #define WIFI_SSID_STORAGE_SIZE      32
 #define WIFI_PASSWORD_STORAGE_SIZE  64
+#define WIFI_AP_SSID_STORAGE_SIZE   33
+#define WIFI_AP_PASSWORD_STORAGE_SIZE 65
 #define SCAN_LIST_SIZE      25
 #define WIFI_SAVED_NETWORK_LIMIT 20
 
@@ -48,6 +53,8 @@ extern bool s_wifi_restore_in_progress;
 
 extern char st_wifi_ssid[WIFI_SSID_STORAGE_SIZE];
 extern char st_wifi_password[WIFI_PASSWORD_STORAGE_SIZE];
+extern char st_wifi_ap_ssid[WIFI_AP_SSID_STORAGE_SIZE];
+extern char st_wifi_ap_password[WIFI_AP_PASSWORD_STORAGE_SIZE];
 
 extern lv_obj_t *panel_wifi_btn[SCAN_LIST_SIZE];
 extern lv_obj_t *label_wifi_ssid[SCAN_LIST_SIZE];

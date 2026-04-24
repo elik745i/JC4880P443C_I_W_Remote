@@ -18,8 +18,10 @@
 #include "esp_err.h"
 #include "esp_attr.h"
 #include "esp_timer.h"
+#include "nvs.h"
 #include "esp_lcd_touch.h"
 #include "freertos/idf_additions.h"
+#include "lvgl_input_helper.h"
 
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
@@ -41,6 +43,8 @@ constexpr const char *kIndexTempFilePath = BSP_SD_MOUNT_POINT "/.jc4880_sega_ind
 constexpr const char *kLegacyIndexFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_sega_index_v1.txt";
 constexpr const char *kLegacyIndexTempFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc4880_sega_index_v1.tmp";
 constexpr const char *kSavedGamesRootPath = BSP_SD_MOUNT_POINT "/saved_games";
+constexpr const char *kNvsStorageNamespace = "storage";
+constexpr const char *kRotationDegreesKey = "sega_rot_deg";
 
 constexpr uint32_t kInputUp = 1u << 0;
 constexpr uint32_t kInputDown = 1u << 1;
@@ -55,12 +59,14 @@ constexpr lv_coord_t kButtonWidth = 82;
 constexpr lv_coord_t kButtonHeight = 56;
 constexpr lv_coord_t kBrowserListHeight = 504;
 constexpr lv_coord_t kBrowserListHeightWithKeyboard = 248;
-constexpr lv_coord_t kSearchRowY = 112;
-constexpr lv_coord_t kFpsPanelY = 170;
-constexpr lv_coord_t kBrowserListY = 228;
+constexpr lv_coord_t kRotationRowY = 112;
+constexpr lv_coord_t kSearchRowY = 170;
+constexpr lv_coord_t kFpsPanelY = 228;
+constexpr lv_coord_t kBrowserListY = 286;
 constexpr lv_coord_t kSearchFieldWidth = 352;
 constexpr lv_coord_t kSearchButtonWidth = 88;
 constexpr lv_coord_t kSearchControlHeight = 48;
+constexpr lv_coord_t kRotationDropdownWidth = 140;
 constexpr lv_coord_t kPageButtonWidth = 88;
 constexpr lv_coord_t kPageButtonHeight = 42;
 constexpr lv_coord_t kPageNavBottomOffset = -8;
@@ -73,6 +79,8 @@ constexpr lv_coord_t kSideButtonWidth = 70;
 constexpr lv_coord_t kSideButtonHeight = 122;
 constexpr lv_coord_t kSmallOverlayButtonWidth = 64;
 constexpr lv_coord_t kSmallOverlayButtonHeight = 104;
+constexpr int kPlayerScreenWidth = BSP_LCD_H_RES;
+constexpr int kPlayerScreenHeight = BSP_LCD_V_RES;
 constexpr size_t kSaveSlotPreviewWidth = 96;
 constexpr size_t kSaveSlotPreviewHeight = 54;
 constexpr size_t kMaxVisibleSaveSlots = 5;
@@ -128,12 +136,15 @@ void set_button_label(lv_obj_t *button, const char *label)
     lv_obj_center(text);
 }
 
-void set_rotated_button_label(lv_obj_t *button, const char *label)
+void set_rotated_button_label(lv_obj_t *button, const char *label, lv_coord_t angle)
 {
     lv_obj_t *text = lv_label_create(button);
     lv_label_set_text(text, label);
     lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_transform_angle(text, 900, 0);
+    lv_obj_set_style_transform_angle(text, angle, 0);
+    lv_obj_update_layout(text);
+    lv_obj_set_style_transform_pivot_x(text, lv_obj_get_width(text) / 2, 0);
+    lv_obj_set_style_transform_pivot_y(text, lv_obj_get_height(text) / 2, 0);
     lv_obj_center(text);
 }
 
@@ -169,6 +180,158 @@ bool is_directory_path(const char *path)
 bool point_in_area(uint16_t x, uint16_t y, const lv_area_t &area)
 {
     return (x >= area.x1) && (x <= area.x2) && (y >= area.y1) && (y <= area.y2);
+}
+
+void release_loaded_cartridge_memory()
+{
+    if (cart.rom != nullptr) {
+        sega_psram_free(cart.rom);
+        cart.rom = nullptr;
+    }
+    if (cart.sram != nullptr) {
+        sega_psram_free(cart.sram);
+        cart.sram = nullptr;
+    }
+
+    cart.loaded = 0;
+}
+
+uint16_t rotation_index_to_degrees(uint16_t index)
+{
+    static constexpr uint16_t kRotationOptions[] = {0, 90, 180, 270};
+    return (index < (sizeof(kRotationOptions) / sizeof(kRotationOptions[0]))) ? kRotationOptions[index] : 270;
+}
+
+uint16_t rotation_degrees_to_index(uint16_t degrees)
+{
+    switch (degrees) {
+        case 0:
+            return 0;
+        case 90:
+            return 1;
+        case 180:
+            return 2;
+        case 270:
+        default:
+            return 3;
+    }
+}
+
+lv_coord_t rotation_label_angle(uint16_t degrees)
+{
+    switch (degrees) {
+        case 0:
+            return 0;
+        case 90:
+            return 2700;
+        case 180:
+            return 1800;
+        case 270:
+        default:
+            return 900;
+    }
+}
+
+bool rotation_swaps_axes(uint16_t degrees)
+{
+    return (degrees == 90) || (degrees == 270);
+}
+
+ppa_srm_rotation_angle_t ppa_rotation_angle_for_degrees(uint16_t degrees)
+{
+    switch (degrees) {
+        case 0:
+            return PPA_SRM_ROTATION_ANGLE_0;
+        case 90:
+            return PPA_SRM_ROTATION_ANGLE_90;
+        case 180:
+            return PPA_SRM_ROTATION_ANGLE_180;
+        case 270:
+        default:
+            return PPA_SRM_ROTATION_ANGLE_270;
+    }
+}
+
+void map_rotated_source_coordinate(uint16_t degrees,
+                                   int x,
+                                   int y,
+                                   int dstWidth,
+                                   int dstHeight,
+                                   int srcWidth,
+                                   int srcHeight,
+                                   int &srcX,
+                                   int &srcY)
+{
+    switch (degrees) {
+        case 0:
+            srcX = (x * srcWidth) / dstWidth;
+            srcY = (y * srcHeight) / dstHeight;
+            break;
+        case 90:
+            srcX = srcWidth - 1 - ((y * srcWidth) / dstHeight);
+            srcY = (x * srcHeight) / dstWidth;
+            break;
+        case 180:
+            srcX = srcWidth - 1 - ((x * srcWidth) / dstWidth);
+            srcY = srcHeight - 1 - ((y * srcHeight) / dstHeight);
+            break;
+        case 270:
+        default:
+            srcX = (y * srcWidth) / dstHeight;
+            srcY = srcHeight - 1 - ((x * srcHeight) / dstWidth);
+            break;
+    }
+}
+
+struct FrameRect {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+};
+
+FrameRect get_player_game_bounds(uint16_t rotationDegrees)
+{
+    if (rotationDegrees == 0) {
+        return FrameRect{0, 0, kPlayerScreenWidth, kPlayerScreenHeight / 2};
+    }
+
+    if (rotationDegrees == 180) {
+        return FrameRect{0, kPlayerScreenHeight / 2, kPlayerScreenWidth, kPlayerScreenHeight / 2};
+    }
+
+    return FrameRect{0, 0, kPlayerScreenWidth, kPlayerScreenHeight};
+}
+
+FrameRect fit_rotated_frame_into_bounds(uint16_t rotationDegrees,
+                                        int sourceWidth,
+                                        int sourceHeight,
+                                        const FrameRect &bounds)
+{
+    if ((sourceWidth <= 0) || (sourceHeight <= 0) || (bounds.width <= 0) || (bounds.height <= 0)) {
+        return FrameRect{};
+    }
+
+    if ((rotationDegrees == 90) || (rotationDegrees == 270)) {
+        return bounds;
+    }
+
+    const int rotatedWidth = rotation_swaps_axes(rotationDegrees) ? sourceHeight : sourceWidth;
+    const int rotatedHeight = rotation_swaps_axes(rotationDegrees) ? sourceWidth : sourceHeight;
+    const int widthLimitedHeight = std::max(1, (bounds.width * rotatedHeight) / rotatedWidth);
+
+    FrameRect fitted = bounds;
+    if (widthLimitedHeight <= bounds.height) {
+        fitted.height = widthLimitedHeight;
+        fitted.width = bounds.width;
+    } else {
+        fitted.width = std::max(1, (bounds.height * rotatedWidth) / rotatedHeight);
+        fitted.height = bounds.height;
+    }
+
+    fitted.x = bounds.x + ((bounds.width - fitted.width) / 2);
+    fitted.y = bounds.y + ((bounds.height - fitted.height) / 2);
+    return fitted;
 }
 
 bool file_exists(const char *path)
@@ -409,10 +572,90 @@ size_t aligned_buffer_size(size_t size, size_t alignment)
 {
     return (alignment > 0) ? ALIGN_UP_BY(size, alignment) : size;
 }
+
+bool queue_lvgl_async_locked(lv_async_cb_t callback, void *userData)
+{
+    if (!bsp_display_lock(0)) {
+        return false;
+    }
+
+    const lv_res_t result = lv_async_call(callback, userData);
+    bsp_display_unlock();
+    return result == LV_RES_OK;
+}
+
+uint16_t load_saved_rotation_degrees()
+{
+    nvs_handle_t nvsHandle = 0;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &nvsHandle) != ESP_OK) {
+        return 270;
+    }
+
+    int32_t storedDegrees = 270;
+    const esp_err_t err = nvs_get_i32(nvsHandle, kRotationDegreesKey, &storedDegrees);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        nvs_set_i32(nvsHandle, kRotationDegreesKey, storedDegrees);
+        nvs_commit(nvsHandle);
+    }
+    nvs_close(nvsHandle);
+
+    switch (storedDegrees) {
+        case 0:
+        case 90:
+        case 180:
+        case 270:
+            return static_cast<uint16_t>(storedDegrees);
+        default:
+            return 270;
+    }
+}
+
+void save_rotation_degrees(uint16_t degrees)
+{
+    nvs_handle_t nvsHandle = 0;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &nvsHandle) != ESP_OK) {
+        return;
+    }
+
+    if (nvs_set_i32(nvsHandle, kRotationDegreesKey, degrees) == ESP_OK) {
+        nvs_commit(nvsHandle);
+    }
+    nvs_close(nvsHandle);
+}
 }
 
 SegaEmulator::SegaEmulator()
-    : ESP_Brookesia_PhoneApp("SEGA Emulator", &img_app_sega, true)
+    : ESP_Brookesia_PhoneApp(
+        {
+            .name = "SEGA Emulator",
+            .launcher_icon = ESP_BROOKESIA_STYLE_IMAGE(&img_app_sega),
+            .screen_size = ESP_BROOKESIA_STYLE_SIZE_RECT_PERCENT(100, 100),
+            .flags = {
+                .enable_default_screen = 1,
+                .enable_recycle_resource = 1,
+                .enable_resize_visual_area = 0,
+            },
+        },
+        {
+            .app_launcher_page_index = 0,
+            .status_icon_area_index = 0,
+            .status_icon_data = {
+                .size = {},
+                .icon = {
+                    .image_num = 1,
+                    .images = {
+                        ESP_BROOKESIA_STYLE_IMAGE(&img_app_sega),
+                    },
+                },
+            },
+            .status_bar_visual_mode = ESP_BROOKESIA_STATUS_BAR_VISUAL_MODE_SHOW_FIXED,
+            .navigation_bar_visual_mode = ESP_BROOKESIA_NAVIGATION_BAR_VISUAL_MODE_HIDE,
+            .flags = {
+                .enable_status_icon_common_size = 1,
+                .enable_navigation_gesture = 1,
+            },
+        }
+    )
 {
 }
 
@@ -421,6 +664,63 @@ SegaEmulator::~SegaEmulator()
     stopEmulation();
     _controlBindings.clear();
 
+    releaseRuntimeResources();
+}
+
+bool SegaEmulator::ensureRuntimeResources()
+{
+    if ((_canvasFrontBuffer != nullptr) && (_canvasBackBuffer != nullptr) && (_ppaSourceBuffer != nullptr) && (_emulatorBuffer != nullptr)) {
+        return true;
+    }
+
+    _cacheLineSize = (_cacheLineSize == 0) ? CONFIG_CACHE_L2_CACHE_LINE_SIZE : _cacheLineSize;
+
+    const size_t canvasBufferBytes = sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight;
+    const size_t ppaSourceBytes = sizeof(lv_color_t) * kMaxPpaSourcePixels;
+
+    if (_canvasFrontBuffer == nullptr) {
+        _canvasFrontBuffer = static_cast<lv_color_t *>(
+            heap_caps_aligned_alloc(_cacheLineSize, canvasBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (_canvasBackBuffer == nullptr) {
+        _canvasBackBuffer = static_cast<lv_color_t *>(
+            heap_caps_aligned_alloc(_cacheLineSize, canvasBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (_ppaSourceBuffer == nullptr) {
+        _ppaSourceBuffer = static_cast<lv_color_t *>(
+            aligned_alloc_prefer_internal(_cacheLineSize, ppaSourceBytes));
+    }
+    if (_emulatorBuffer == nullptr) {
+        _emulatorBuffer = static_cast<uint8_t *>(
+            alloc_prefer_internal(std::max(kSmsFrameBufferSize, kGenesisFrameBufferSize)));
+    }
+
+    if ((_canvasFrontBuffer == nullptr) || (_canvasBackBuffer == nullptr) || (_ppaSourceBuffer == nullptr) || (_emulatorBuffer == nullptr)) {
+        releaseRuntimeResources();
+        ESP_LOGE(kTag, "Failed to allocate emulator frame buffers");
+        return false;
+    }
+
+    if (_ppaHandle == nullptr) {
+        ppa_client_config_t ppaClientConfig = {
+            .oper_type = PPA_OPERATION_SRM,
+        };
+        if (ppa_register_client(&ppaClientConfig, &_ppaHandle) != ESP_OK) {
+            ESP_LOGW(kTag, "Failed to register PPA SRM client, using software rendering fallback");
+            _ppaHandle = nullptr;
+        }
+    }
+
+    memset(_canvasFrontBuffer, 0, canvasBufferBytes);
+    memset(_canvasBackBuffer, 0, canvasBufferBytes);
+    memset(_ppaSourceBuffer, 0, ppaSourceBytes);
+    memset(_emulatorBuffer, 0, std::max(kSmsFrameBufferSize, kGenesisFrameBufferSize));
+
+    return true;
+}
+
+void SegaEmulator::releaseRuntimeResources()
+{
     if (_canvasFrontBuffer != nullptr) {
         heap_caps_free(_canvasFrontBuffer);
         _canvasFrontBuffer = nullptr;
@@ -445,39 +745,9 @@ SegaEmulator::~SegaEmulator()
 
 bool SegaEmulator::init()
 {
-    _cacheLineSize = CONFIG_CACHE_L2_CACHE_LINE_SIZE;
+    _playerRotationDegrees = load_saved_rotation_degrees();
 
-    const size_t canvasBufferBytes = sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight;
-    const size_t ppaSourceBytes = sizeof(lv_color_t) * kMaxPpaSourcePixels;
-
-    _canvasFrontBuffer = static_cast<lv_color_t *>(
-        heap_caps_aligned_alloc(_cacheLineSize, canvasBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    _canvasBackBuffer = static_cast<lv_color_t *>(
-        heap_caps_aligned_alloc(_cacheLineSize, canvasBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    _ppaSourceBuffer = static_cast<lv_color_t *>(
-        aligned_alloc_prefer_internal(_cacheLineSize, ppaSourceBytes));
-    _emulatorBuffer = static_cast<uint8_t *>(
-        alloc_prefer_internal(std::max(kSmsFrameBufferSize, kGenesisFrameBufferSize)));
-
-    if ((_canvasFrontBuffer == nullptr) || (_canvasBackBuffer == nullptr) || (_ppaSourceBuffer == nullptr) || (_emulatorBuffer == nullptr)) {
-        ESP_LOGE(kTag, "Failed to allocate emulator frame buffers");
-        return false;
-    }
-
-    ppa_client_config_t ppaClientConfig = {
-        .oper_type = PPA_OPERATION_SRM,
-    };
-    if (ppa_register_client(&ppaClientConfig, &_ppaHandle) != ESP_OK) {
-        ESP_LOGW(kTag, "Failed to register PPA SRM client, using software rendering fallback");
-        _ppaHandle = nullptr;
-    }
-
-    memset(_canvasFrontBuffer, 0, canvasBufferBytes);
-    memset(_canvasBackBuffer, 0, canvasBufferBytes);
-    memset(_ppaSourceBuffer, 0, ppaSourceBytes);
-    memset(_emulatorBuffer, 0, std::max(kSmsFrameBufferSize, kGenesisFrameBufferSize));
-
-    return true;
+    return ensureRuntimeResources();
 }
 
 bool SegaEmulator::run()
@@ -488,12 +758,14 @@ bool SegaEmulator::run()
     }
 
     refreshRomList();
+    setBrowserChrome();
     lv_scr_load(_browserScreen);
     return true;
 }
 
 bool SegaEmulator::pause()
 {
+    restoreHomeChrome();
     stopEmulation();
     return true;
 }
@@ -507,12 +779,18 @@ bool SegaEmulator::resume()
 
     if (_running.load()) {
         if ((_playerScreen == nullptr) && (_canvasFrontBuffer != nullptr) && (_canvasBackBuffer != nullptr) && (_emulatorBuffer != nullptr)) {
+            if (!startRecordResource()) {
+                return false;
+            }
             createPlayerScreen();
+            if (!endRecordResource()) {
+                return false;
+            }
         }
         setPlayerFullscreen(true);
         lv_scr_load(_playerScreen);
     } else {
-        setPlayerFullscreen(false);
+        setBrowserChrome();
         lv_scr_load(_browserScreen);
     }
     return true;
@@ -520,13 +798,12 @@ bool SegaEmulator::resume()
 
 bool SegaEmulator::ensureUiReady()
 {
-    if (_browserScreen != nullptr) {
-        return true;
+    if (!ensureRuntimeResources()) {
+        return false;
     }
 
-    if ((_canvasFrontBuffer == nullptr) || (_canvasBackBuffer == nullptr) || (_emulatorBuffer == nullptr)) {
-        ESP_LOGE(kTag, "SEGA buffers are not initialized");
-        return false;
+    if (_browserScreen != nullptr) {
+        return true;
     }
 
     if (_browserScreen == nullptr) {
@@ -545,7 +822,7 @@ bool SegaEmulator::back()
     if (_running.load()) {
         _closingApp.store(false);
         stopEmulation();
-        setPlayerFullscreen(false);
+        setBrowserChrome();
         lv_scr_load(_browserScreen);
         return true;
     }
@@ -563,15 +840,34 @@ bool SegaEmulator::close()
     return true;
 }
 
+bool SegaEmulator::cleanResource()
+{
+    stopEmulation();
+    bsp_extra_codec_deinit();
+    releaseRuntimeResources();
+    return true;
+}
+
 void SegaEmulator::createBrowserScreen()
 {
+    lv_coord_t browserTopInset = 0;
+    if (ESP_Brookesia_Phone *phone = getPhone(); phone != nullptr) {
+        if (ESP_Brookesia_StatusBar *statusBar = phone->getHome().getStatusBar(); statusBar != nullptr) {
+            if (lv_obj_t *statusBarObj = statusBar->getMainObject(); statusBarObj != nullptr) {
+                browserTopInset = lv_obj_get_height(statusBarObj);
+            }
+        }
+    }
+
     _browserScreen = lv_obj_create(nullptr);
     lv_obj_add_event_cb(_browserScreen, onBrowserScreenDeleted, LV_EVENT_DELETE, this);
+    lv_obj_add_event_cb(_browserScreen, onBrowserScreenLoaded, LV_EVENT_SCREEN_LOADED, this);
     lv_obj_set_style_bg_color(_browserScreen, lv_color_hex(0x0d1020), 0);
     lv_obj_set_style_bg_grad_color(_browserScreen, lv_color_hex(0x151a33), 0);
     lv_obj_set_style_bg_grad_dir(_browserScreen, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_border_width(_browserScreen, 0, 0);
     lv_obj_set_style_pad_all(_browserScreen, 16, 0);
+    lv_obj_set_style_pad_top(_browserScreen, 16 + browserTopInset, 0);
 
     lv_obj_t *title = lv_label_create(_browserScreen);
     lv_label_set_text(title, "SEGA Emulator");
@@ -595,7 +891,6 @@ void SegaEmulator::createBrowserScreen()
     lv_obj_set_width(_browserStatus, 440);
     lv_label_set_long_mode(_browserStatus, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(_browserStatus, lv_color_hex(0xe0b96c), 0);
-    lv_obj_align(subtitle, LV_ALIGN_TOP_LEFT, 0, 0);
     lv_obj_align(_browserStatus, LV_ALIGN_TOP_LEFT, 8, 74);
 
     lv_obj_t *fpsPanel = lv_obj_create(_browserScreen);
@@ -635,6 +930,27 @@ void SegaEmulator::createBrowserScreen()
         }
     }, LV_EVENT_VALUE_CHANGED, this);
 
+    lv_obj_t *rotationPanel = lv_obj_create(_browserScreen);
+    lv_obj_set_size(rotationPanel, 448, 46);
+    lv_obj_align(rotationPanel, LV_ALIGN_TOP_LEFT, 8, kRotationRowY);
+    lv_obj_set_style_radius(rotationPanel, 14, 0);
+    lv_obj_set_style_bg_color(rotationPanel, lv_color_hex(0x10162a), 0);
+    lv_obj_set_style_border_color(rotationPanel, lv_color_hex(0x2f3554), 0);
+    lv_obj_set_style_border_width(rotationPanel, 1, 0);
+    lv_obj_clear_flag(rotationPanel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *rotationLabel = lv_label_create(rotationPanel);
+    lv_label_set_text(rotationLabel, "Screen Rotation");
+    lv_obj_set_style_text_color(rotationLabel, lv_color_white(), 0);
+    lv_obj_align(rotationLabel, LV_ALIGN_LEFT_MID, 12, 0);
+
+    _rotationDropdown = lv_dropdown_create(rotationPanel);
+    lv_dropdown_set_options(_rotationDropdown, "0 deg\n90 deg\n180 deg\n270 deg");
+    lv_dropdown_set_selected(_rotationDropdown, rotation_degrees_to_index(_playerRotationDegrees));
+    lv_obj_set_width(_rotationDropdown, kRotationDropdownWidth);
+    lv_obj_align(_rotationDropdown, LV_ALIGN_RIGHT_MID, -12, 0);
+    lv_obj_add_event_cb(_rotationDropdown, onRotationChanged, LV_EVENT_VALUE_CHANGED, this);
+
     _searchField = lv_textarea_create(_browserScreen);
     lv_obj_set_size(_searchField, kSearchFieldWidth, kSearchControlHeight);
     lv_obj_align(_searchField, LV_ALIGN_TOP_LEFT, 8, kSearchRowY);
@@ -651,6 +967,7 @@ void SegaEmulator::createBrowserScreen()
     lv_obj_add_event_cb(_searchField, onSearchChanged, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(_searchField, onSearchFieldEvent, LV_EVENT_FOCUSED, this);
     lv_obj_add_event_cb(_searchField, onSearchFieldEvent, LV_EVENT_CLICKED, this);
+    lv_obj_add_event_cb(_searchField, onSearchFieldEvent, LV_EVENT_DEFOCUSED, this);
 
     _clearButton = lv_btn_create(_browserScreen);
     style_action_button(_clearButton);
@@ -706,6 +1023,7 @@ void SegaEmulator::createBrowserScreen()
     lv_obj_set_size(_searchKeyboard, 480, 260);
     lv_obj_align(_searchKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_keyboard_set_textarea(_searchKeyboard, _searchField);
+    jc4880_keyboard_install_case_behavior(_searchKeyboard);
     lv_obj_add_event_cb(_searchKeyboard, onSearchKeyboardEvent, LV_EVENT_READY, this);
     lv_obj_add_event_cb(_searchKeyboard, onSearchKeyboardEvent, LV_EVENT_CANCEL, this);
     lv_obj_add_flag(_searchKeyboard, LV_OBJ_FLAG_HIDDEN);
@@ -750,17 +1068,52 @@ void SegaEmulator::createBrowserScreen()
 
 void SegaEmulator::createPlayerScreen()
 {
+    const uint16_t rotationDegrees = getPlayerRotationDegrees();
+    const lv_coord_t labelAngle = rotation_label_angle(rotationDegrees);
+    const bool zeroDegreeLayout = rotationDegrees == 0;
+    const bool oneEightyDegreeLayout = rotationDegrees == 180;
+    const bool ninetyLikeLayout = (rotationDegrees == 90) || (rotationDegrees == 270);
+    const bool upperHalfGameLayout = rotationDegrees == 0;
+    const bool lowerHalfGameLayout = rotationDegrees == 180;
+    const bool abcVertical = (rotationDegrees == 90) || (rotationDegrees == 270);
+    const bool systemVertical = !zeroDegreeLayout && !oneEightyDegreeLayout && !abcVertical;
+    const lv_coord_t controlAreaY = upperHalfGameLayout ? ((kCanvasHeight / 2) + 10) : 0;
+    const lv_coord_t controlAreaHeight = upperHalfGameLayout ? (kCanvasHeight - controlAreaY - 10) :
+                                       (lowerHalfGameLayout ? ((kCanvasHeight / 2) - 10) : 0);
+    const lv_coord_t dpadButtonWidth = zeroDegreeLayout ? 72 : 64;
+    const lv_coord_t dpadButtonHeight = zeroDegreeLayout ? 72 : 94;
+    const lv_coord_t dpadWidth = zeroDegreeLayout ? 216 : 188;
+    const lv_coord_t dpadHeight = zeroDegreeLayout ? 216 : 244;
+    const lv_coord_t abcPanelX = kCanvasWidth - 216 - 10;
+    const lv_coord_t abcPanelY = zeroDegreeLayout ? (controlAreaY + controlAreaHeight - 104 - 14)
+                                                 : (controlAreaY + ((controlAreaHeight - 104) / 2));
+    const lv_coord_t oneEightyAbcPanelX = 10;
+    const lv_coord_t oneEightyAbcPanelY = 14;
+    const lv_coord_t zeroDegreeSystemButtonWidth = 88;
+    const lv_coord_t zeroDegreeSystemButtonHeight = 54;
+    const lv_coord_t zeroDegreeSystemGap = 6;
+    const lv_coord_t systemPanelWidth = (zeroDegreeLayout || oneEightyDegreeLayout) ? ((zeroDegreeSystemButtonWidth * 4) + (zeroDegreeSystemGap * 3))
+                                                         : (systemVertical ? 70 : 306);
+    const lv_coord_t systemPanelHeight = (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonHeight
+                                                          : (systemVertical ? 512 : 160);
+    const lv_coord_t zeroDegreeSystemX = std::max<lv_coord_t>(10,
+                                                              ((kCanvasWidth - systemPanelWidth) / 2) - 18);
+    const lv_coord_t oneEightySystemX = zeroDegreeSystemX;
+    const lv_coord_t oneEightySystemY = (kCanvasHeight / 2) - zeroDegreeSystemButtonHeight - 8;
+
     _playerScreen = lv_obj_create(nullptr);
     lv_obj_add_event_cb(_playerScreen, onPlayerScreenDeleted, LV_EVENT_DELETE, this);
     lv_obj_set_style_bg_color(_playerScreen, lv_color_black(), 0);
     lv_obj_set_style_border_width(_playerScreen, 0, 0);
     lv_obj_set_style_pad_all(_playerScreen, 0, 0);
+    lv_obj_clear_flag(_playerScreen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(_playerScreen, LV_SCROLLBAR_MODE_OFF);
 
     _canvas = lv_canvas_create(_playerScreen);
     lv_canvas_set_buffer(_canvas, _canvasFrontBuffer, kCanvasWidth, kCanvasHeight, LV_IMG_CF_TRUE_COLOR);
     lv_canvas_fill_bg(_canvas, lv_color_black(), LV_OPA_COVER);
     lv_obj_set_size(_canvas, kCanvasWidth, kCanvasHeight);
-    lv_obj_center(_canvas);
+    lv_obj_align(_canvas, LV_ALIGN_TOP_LEFT, 0, 0);
 
     _playerFps = lv_label_create(_playerScreen);
     lv_obj_set_style_text_color(_playerFps, lv_color_white(), 0);
@@ -772,52 +1125,179 @@ void SegaEmulator::createPlayerScreen()
     lv_obj_set_style_pad_top(_playerFps, 4, 0);
     lv_obj_set_style_pad_bottom(_playerFps, 4, 0);
     lv_obj_set_style_radius(_playerFps, 10, 0);
-    lv_obj_set_style_transform_angle(_playerFps, 900, 0);
+    lv_obj_set_style_transform_angle(_playerFps, labelAngle, 0);
     lv_label_set_text(_playerFps, "EMU 0.0\nDRW 0.0");
-    lv_obj_align(_playerFps, LV_ALIGN_RIGHT_MID, -10, 0);
+    switch (rotationDegrees) {
+        case 0:
+            lv_obj_align(_playerFps, LV_ALIGN_TOP_RIGHT, -10, 10);
+            break;
+        case 90:
+            lv_obj_align(_playerFps, LV_ALIGN_LEFT_MID, 10, 0);
+            break;
+        case 180:
+            lv_obj_align(_playerFps, LV_ALIGN_BOTTOM_MID, 0, -10);
+            break;
+        case 270:
+        default:
+            lv_obj_align(_playerFps, LV_ALIGN_RIGHT_MID, -10, 0);
+            break;
+    }
     if (!_showFrameStats.load()) {
         lv_obj_add_flag(_playerFps, LV_OBJ_FLAG_HIDDEN);
     }
 
     lv_obj_t *dpad = lv_obj_create(_playerScreen);
-    lv_obj_set_size(dpad, 188, 244);
-    lv_obj_align(dpad, LV_ALIGN_TOP_LEFT, 10, 14);
+    lv_obj_set_size(dpad, dpadWidth, dpadHeight);
+    switch (rotationDegrees) {
+        case 0:
+            lv_obj_set_pos(dpad, 8, controlAreaY + zeroDegreeSystemButtonHeight + 24);
+            break;
+        case 90:
+            lv_obj_align(dpad, LV_ALIGN_BOTTOM_RIGHT, -10, -14);
+            break;
+        case 180:
+            lv_obj_set_pos(dpad, kCanvasWidth - dpadWidth - 8, oneEightySystemY - dpadHeight - 24);
+            break;
+        case 270:
+        default:
+            if (ninetyLikeLayout) {
+                lv_obj_align(dpad, LV_ALIGN_TOP_LEFT, 10, 14);
+            } else {
+                lv_obj_align(dpad, LV_ALIGN_TOP_LEFT, 10, 14);
+            }
+            break;
+    }
     lv_obj_set_style_bg_opa(dpad, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(dpad, 0, 0);
     lv_obj_set_style_pad_all(dpad, 0, 0);
     lv_obj_clear_flag(dpad, LV_OBJ_FLAG_SCROLLABLE);
 
+    uint32_t topMask = kInputLeft;
+    uint32_t leftMask = kInputDown;
+    uint32_t rightMask = kInputUp;
+    uint32_t bottomMask = kInputRight;
+    const char *topLabel = "Left";
+    const char *leftLabel = "Down";
+    const char *rightLabel = "Up";
+    const char *bottomLabel = "Right";
+    switch (rotationDegrees) {
+        case 0:
+            topMask = kInputUp;
+            leftMask = kInputLeft;
+            rightMask = kInputRight;
+            bottomMask = kInputDown;
+            topLabel = "Up";
+            leftLabel = "Left";
+            rightLabel = "Right";
+            bottomLabel = "Down";
+            break;
+        case 90:
+            topMask = kInputRight;
+            leftMask = kInputUp;
+            rightMask = kInputDown;
+            bottomMask = kInputLeft;
+            topLabel = "Right";
+            leftLabel = "Up";
+            rightLabel = "Down";
+            bottomLabel = "Left";
+            break;
+        case 180:
+            topMask = kInputDown;
+            leftMask = kInputRight;
+            rightMask = kInputLeft;
+            bottomMask = kInputUp;
+            topLabel = "Down";
+            leftLabel = "Right";
+            rightLabel = "Left";
+            bottomLabel = "Up";
+            break;
+        case 270:
+        default:
+            break;
+    }
+
     _upButton = lv_btn_create(dpad);
-    style_overlay_button(_upButton, 64, 94);
+    style_overlay_button(_upButton, dpadButtonWidth, dpadButtonHeight);
+    if (zeroDegreeLayout || oneEightyDegreeLayout) {
+        lv_obj_set_style_radius(_upButton, LV_RADIUS_CIRCLE, 0);
+    }
     lv_obj_align(_upButton, LV_ALIGN_TOP_MID, 0, 0);
-    set_rotated_button_label(_upButton, "Left");
+    set_rotated_button_label(_upButton, topLabel, labelAngle);
 
     _leftButton = lv_btn_create(dpad);
-    style_overlay_button(_leftButton, 64, 94);
+    style_overlay_button(_leftButton, dpadButtonWidth, dpadButtonHeight);
+    if (zeroDegreeLayout || oneEightyDegreeLayout) {
+        lv_obj_set_style_radius(_leftButton, LV_RADIUS_CIRCLE, 0);
+    }
     lv_obj_align(_leftButton, LV_ALIGN_LEFT_MID, 0, 0);
-    set_rotated_button_label(_leftButton, "Down");
+    set_rotated_button_label(_leftButton, leftLabel, labelAngle);
 
     _rightButton = lv_btn_create(dpad);
-    style_overlay_button(_rightButton, 64, 94);
+    style_overlay_button(_rightButton, dpadButtonWidth, dpadButtonHeight);
+    if (zeroDegreeLayout || oneEightyDegreeLayout) {
+        lv_obj_set_style_radius(_rightButton, LV_RADIUS_CIRCLE, 0);
+    }
     lv_obj_align(_rightButton, LV_ALIGN_RIGHT_MID, 0, 0);
-    set_rotated_button_label(_rightButton, "Up");
+    set_rotated_button_label(_rightButton, rightLabel, labelAngle);
 
     _downButton = lv_btn_create(dpad);
-    style_overlay_button(_downButton, 64, 94);
+    style_overlay_button(_downButton, dpadButtonWidth, dpadButtonHeight);
+    if (zeroDegreeLayout || oneEightyDegreeLayout) {
+        lv_obj_set_style_radius(_downButton, LV_RADIUS_CIRCLE, 0);
+    }
     lv_obj_align(_downButton, LV_ALIGN_BOTTOM_MID, 0, 0);
-    set_rotated_button_label(_downButton, "Right");
+    set_rotated_button_label(_downButton, bottomLabel, labelAngle);
 
     lv_obj_t *abcActions = lv_obj_create(_playerScreen);
-    lv_obj_set_size(abcActions, 104, 338);
-    lv_obj_align(abcActions, LV_ALIGN_BOTTOM_LEFT, 10, -14);
+    lv_obj_set_size(abcActions, abcVertical ? 104 : 216, abcVertical ? 338 : 104);
+    switch (rotationDegrees) {
+        case 0:
+            lv_obj_set_pos(abcActions, abcPanelX, abcPanelY);
+            break;
+        case 90:
+            lv_obj_align(abcActions, LV_ALIGN_TOP_RIGHT, -10, 14);
+            break;
+        case 180:
+            lv_obj_set_pos(abcActions, oneEightyAbcPanelX, oneEightyAbcPanelY);
+            break;
+        case 270:
+        default:
+            if (ninetyLikeLayout) {
+                lv_obj_align(abcActions, LV_ALIGN_BOTTOM_LEFT, 10, -14);
+            } else {
+                lv_obj_align(abcActions, LV_ALIGN_BOTTOM_LEFT, 10, -14);
+            }
+            break;
+    }
     lv_obj_set_style_bg_opa(abcActions, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(abcActions, 0, 0);
     lv_obj_set_style_pad_all(abcActions, 0, 0);
     lv_obj_clear_flag(abcActions, LV_OBJ_FLAG_SCROLLABLE);
+    if (zeroDegreeLayout || oneEightyDegreeLayout) {
+        lv_obj_move_foreground(abcActions);
+    }
 
     lv_obj_t *systemActions = lv_obj_create(_playerScreen);
-    lv_obj_set_size(systemActions, 306, 160);
-    lv_obj_align(systemActions, LV_ALIGN_BOTTOM_RIGHT, -10, -14);
+    lv_obj_set_size(systemActions, systemPanelWidth, systemPanelHeight);
+    switch (rotationDegrees) {
+        case 0:
+            lv_obj_set_pos(systemActions, zeroDegreeSystemX, controlAreaY + 8);
+            break;
+        case 90:
+            lv_obj_align(systemActions, LV_ALIGN_TOP_LEFT, 10, 14);
+            break;
+        case 180:
+            lv_obj_set_pos(systemActions, oneEightySystemX, oneEightySystemY);
+            break;
+        case 270:
+        default:
+            if (ninetyLikeLayout) {
+                lv_obj_align(systemActions, LV_ALIGN_BOTTOM_RIGHT, -10, -14);
+            } else {
+                lv_obj_align(systemActions, LV_ALIGN_BOTTOM_RIGHT, -10, -14);
+            }
+            break;
+    }
     lv_obj_set_style_bg_opa(systemActions, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(systemActions, 0, 0);
     lv_obj_set_style_pad_all(systemActions, 0, 0);
@@ -825,40 +1305,70 @@ void SegaEmulator::createPlayerScreen()
 
     _buttonA = lv_btn_create(abcActions);
     style_overlay_button(_buttonA, kSmallOverlayButtonWidth, kSmallOverlayButtonHeight);
-    lv_obj_align(_buttonA, LV_ALIGN_TOP_MID, 0, 0);
-    set_rotated_button_label(_buttonA, "A");
+    lv_obj_align(_buttonA, abcVertical ? LV_ALIGN_TOP_MID : LV_ALIGN_LEFT_MID, 0, 0);
+    set_rotated_button_label(_buttonA, "A", labelAngle);
 
     _buttonB = lv_btn_create(abcActions);
     style_overlay_button(_buttonB, kSmallOverlayButtonWidth, kSmallOverlayButtonHeight);
-    lv_obj_align_to(_buttonB, _buttonA, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
-    set_rotated_button_label(_buttonB, "B");
+    lv_obj_align_to(_buttonB,
+                    _buttonA,
+                    abcVertical ? LV_ALIGN_OUT_BOTTOM_MID : LV_ALIGN_OUT_RIGHT_MID,
+                    abcVertical ? 0 : 12,
+                    abcVertical ? 12 : 0);
+    set_rotated_button_label(_buttonB, "B", labelAngle);
 
     _buttonC = lv_btn_create(abcActions);
     style_overlay_button(_buttonC, kSmallOverlayButtonWidth, kSmallOverlayButtonHeight);
-    lv_obj_align_to(_buttonC, _buttonB, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
-    set_rotated_button_label(_buttonC, "C");
+    lv_obj_align_to(_buttonC,
+                    _buttonB,
+                    abcVertical ? LV_ALIGN_OUT_BOTTOM_MID : LV_ALIGN_OUT_RIGHT_MID,
+                    abcVertical ? 0 : 12,
+                    abcVertical ? 12 : 0);
+    set_rotated_button_label(_buttonC, "C", labelAngle);
 
     _startButton = lv_btn_create(systemActions);
-    style_overlay_button(_startButton, kSideButtonWidth, kSideButtonHeight);
-    lv_obj_align(_startButton, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    set_rotated_button_label(_startButton, "Start");
+    style_overlay_button(_startButton,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonWidth : kSideButtonWidth,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonHeight : kSideButtonHeight);
+        lv_obj_align(_startButton, (zeroDegreeLayout || oneEightyDegreeLayout) ? LV_ALIGN_LEFT_MID : (systemVertical ? LV_ALIGN_TOP_MID : LV_ALIGN_BOTTOM_LEFT), 0, 0);
+    set_rotated_button_label(_startButton, "Start", labelAngle);
 
     _loadButton = lv_btn_create(systemActions);
-    style_overlay_button(_loadButton, kSideButtonWidth, kSideButtonHeight);
-    lv_obj_align_to(_loadButton, _startButton, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
-    set_rotated_button_label(_loadButton, "Load");
+    style_overlay_button(_loadButton,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonWidth : kSideButtonWidth,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonHeight : kSideButtonHeight);
+    lv_obj_align_to(_loadButton,
+                    _startButton,
+                    (zeroDegreeLayout || oneEightyDegreeLayout) ? LV_ALIGN_OUT_RIGHT_MID : (systemVertical ? LV_ALIGN_OUT_BOTTOM_MID : LV_ALIGN_OUT_RIGHT_MID),
+                    (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemGap : (systemVertical ? 0 : 8),
+                    (zeroDegreeLayout || oneEightyDegreeLayout) ? 0 : (systemVertical ? 8 : 0));
+    set_rotated_button_label(_loadButton, "Load", labelAngle);
 
     _saveButton = lv_btn_create(systemActions);
-    style_overlay_button(_saveButton, kSideButtonWidth, kSideButtonHeight);
-    lv_obj_align_to(_saveButton, _loadButton, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
-    set_rotated_button_label(_saveButton, "Save");
+    style_overlay_button(_saveButton,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonWidth : kSideButtonWidth,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonHeight : kSideButtonHeight);
+    lv_obj_align_to(_saveButton,
+                    _loadButton,
+                    (zeroDegreeLayout || oneEightyDegreeLayout) ? LV_ALIGN_OUT_RIGHT_MID : (systemVertical ? LV_ALIGN_OUT_BOTTOM_MID : LV_ALIGN_OUT_RIGHT_MID),
+                    (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemGap : (systemVertical ? 0 : 8),
+                    (zeroDegreeLayout || oneEightyDegreeLayout) ? 0 : (systemVertical ? 8 : 0));
+    set_rotated_button_label(_saveButton, "Save", labelAngle);
 
     _exitButton = lv_btn_create(systemActions);
-    style_overlay_button(_exitButton, kSideButtonWidth, kSideButtonHeight);
-    lv_obj_align(_exitButton, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    style_overlay_button(_exitButton,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonWidth : kSideButtonWidth,
+                        (zeroDegreeLayout || oneEightyDegreeLayout) ? zeroDegreeSystemButtonHeight : kSideButtonHeight);
+        if (zeroDegreeLayout || oneEightyDegreeLayout) {
+        lv_obj_align_to(_exitButton, _saveButton, LV_ALIGN_OUT_RIGHT_MID, zeroDegreeSystemGap, 0);
+    } else if (systemVertical) {
+        lv_obj_align_to(_exitButton, _saveButton, LV_ALIGN_OUT_BOTTOM_MID, 0, 8);
+    } else {
+        lv_obj_align(_exitButton, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    }
     lv_obj_set_style_bg_color(_exitButton, lv_color_hex(0x3a0f18), 0);
     lv_obj_set_style_bg_color(_exitButton, lv_color_hex(0x6b1a28), LV_STATE_PRESSED);
-    set_rotated_button_label(_exitButton, "Exit");
+    set_rotated_button_label(_exitButton, "Exit", labelAngle);
 
     lv_obj_add_event_cb(_loadButton, onPlayerActionEvent, LV_EVENT_CLICKED, this);
     lv_obj_add_event_cb(_saveButton, onPlayerActionEvent, LV_EVENT_CLICKED, this);
@@ -868,10 +1378,10 @@ void SegaEmulator::createPlayerScreen()
         lv_obj_t *button;
         uint32_t mask;
     } controls[] = {
-        {_upButton, kInputLeft},
-        {_downButton, kInputRight},
-        {_leftButton, kInputDown},
-        {_rightButton, kInputUp},
+        {_upButton, topMask},
+        {_downButton, bottomMask},
+        {_leftButton, leftMask},
+        {_rightButton, rightMask},
         {_buttonA, kInputButton1},
         {_buttonB, kInputButton2},
         {_buttonC, kInputButton3},
@@ -891,6 +1401,45 @@ void SegaEmulator::createPlayerScreen()
     cachePlayerControlRegions();
 }
 
+void SegaEmulator::recreatePlayerScreen()
+{
+    const bool wasActive = (_playerScreen != nullptr) && (lv_scr_act() == _playerScreen);
+
+    if ((_playerScreen != nullptr) && lv_obj_is_valid(_playerScreen)) {
+        lv_obj_del(_playerScreen);
+    } else {
+        resetPlayerUiPointers();
+    }
+
+    if ((_canvasFrontBuffer == nullptr) || (_canvasBackBuffer == nullptr) || (_emulatorBuffer == nullptr)) {
+        return;
+    }
+
+    if (!startRecordResource()) {
+        return;
+    }
+    createPlayerScreen();
+    if (!endRecordResource()) {
+        return;
+    }
+    if (wasActive && (_playerScreen != nullptr)) {
+        lv_scr_load(_playerScreen);
+    }
+}
+
+uint16_t SegaEmulator::getPlayerRotationDegrees() const
+{
+    switch (_playerRotationDegrees) {
+        case 0:
+        case 90:
+        case 180:
+        case 270:
+            return _playerRotationDegrees;
+        default:
+            return 270;
+    }
+}
+
 void SegaEmulator::resetBrowserUiPointers()
 {
     _browserScreen = nullptr;
@@ -898,6 +1447,7 @@ void SegaEmulator::resetBrowserUiPointers()
     _browserStatus = nullptr;
     _searchField = nullptr;
     _searchKeyboard = nullptr;
+    _rotationDropdown = nullptr;
     _refreshButton = nullptr;
     _clearButton = nullptr;
     _prevPageButton = nullptr;
@@ -1163,7 +1713,7 @@ void SegaEmulator::indexingTask(bool forceReindex)
             std::lock_guard<std::mutex> guard(_indexStateMutex);
             _pendingIndexProgress = message;
         }
-        lv_async_call(indexingProgressAsync, this);
+        queue_lvgl_async_locked(indexingProgressAsync, this);
     };
 
     auto scan_root = [this, &entries, &scannedFiles, &matchedFiles, &publish_progress](const char *rootLabel,
@@ -1259,7 +1809,7 @@ void SegaEmulator::indexingTask(bool forceReindex)
         _pendingIndexProgress = finalStatus;
         _pendingIndexStatus = finalStatus;
     }
-    lv_async_call(indexingFinishedAsync, this);
+    queue_lvgl_async_locked(indexingFinishedAsync, this);
     _indexTask = nullptr;
     vTaskDelete(nullptr);
 }
@@ -1306,7 +1856,15 @@ void SegaEmulator::startRom(const SegaString &path, const SegaString &name)
     _closingApp.store(false);
 
     if ((_playerScreen == nullptr) || (_canvas == nullptr)) {
+        if (!startRecordResource()) {
+            setBrowserStatus("Failed to track player interface resources.");
+            return;
+        }
         createPlayerScreen();
+        if (!endRecordResource()) {
+            setBrowserStatus("Failed to finalize player interface resources.");
+            return;
+        }
     }
 
     if ((_playerScreen == nullptr) || (_canvas == nullptr)) {
@@ -1350,6 +1908,7 @@ void SegaEmulator::stopEmulation()
         _running.store(false);
         _stopRequested.store(false);
         _inputMask.store(0);
+        release_loaded_cartridge_memory();
         return;
     }
 
@@ -1358,6 +1917,9 @@ void SegaEmulator::stopEmulation()
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     _inputMask.store(0);
+    if (_emulatorTask == nullptr) {
+        release_loaded_cartridge_memory();
+    }
 }
 
 void SegaEmulator::emulatorTaskEntry(void *context)
@@ -1378,23 +1940,17 @@ void SegaEmulator::emulatorTask()
             system_shutdown();
         }
 
-        if (cart.rom != nullptr) {
-            sega_psram_free(cart.rom);
-            cart.rom = nullptr;
-        }
-        if (cart.sram != nullptr) {
-            sega_psram_free(cart.sram);
-            cart.sram = nullptr;
-        }
+        release_loaded_cartridge_memory();
         sega_gwenesis_shutdown();
 
-        cart.loaded = 0;
         _running.store(false);
         _stopRequested.store(false);
         _emulatorTask = nullptr;
         _pendingBrowserStatus = browserStatus;
         if (!_finishUiQueued.exchange(true)) {
-            lv_async_call(finishEmulationAsync, this);
+            if (!queue_lvgl_async_locked(finishEmulationAsync, this)) {
+                _finishUiQueued.store(false);
+            }
         }
         vTaskDelete(nullptr);
     };
@@ -1911,6 +2467,9 @@ void SegaEmulator::showLoadStatePicker()
 {
     closeLoadStatePicker();
 
+    const uint16_t rotationDegrees = getPlayerRotationDegrees();
+    const lv_coord_t labelAngle = rotation_label_angle(rotationDegrees);
+
     SegaVector<SaveSlotEntry> entries;
     if (!collectSavedStates(entries, true) || entries.empty()) {
         setPlayerLoadButtonEnabled(false);
@@ -1972,7 +2531,7 @@ void SegaEmulator::showLoadStatePicker()
     lv_obj_set_style_bg_color(panel, lv_color_hex(0x12182d), 0);
     lv_obj_set_style_border_color(panel, lv_color_hex(0x2f3554), 0);
     lv_obj_set_style_border_width(panel, 1, 0);
-    lv_obj_set_style_transform_angle(panel, 900, 0);
+    lv_obj_set_style_transform_angle(panel, labelAngle, 0);
     lv_obj_set_style_transform_pivot_x(panel, panelWidth / 2, 0);
     lv_obj_set_style_transform_pivot_y(panel, panelHeight / 2, 0);
     lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
@@ -1997,9 +2556,11 @@ void SegaEmulator::showLoadStatePicker()
     lv_obj_set_style_border_width(list, 1, 0);
     lv_obj_set_style_pad_column(list, cardGap, 0);
     lv_obj_set_style_pad_all(list, 10, 0);
+    lv_obj_set_scroll_dir(list, LV_DIR_HOR);
+    lv_obj_set_scroll_snap_x(list, LV_SCROLL_SNAP_NONE);
     lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     for (size_t index = 0; index < _saveSlotEntries.size(); ++index) {
         SaveSlotEntry &entry = _saveSlotEntries[index];
@@ -2103,8 +2664,52 @@ void SegaEmulator::setPlayerFullscreen(bool fullscreen)
         return;
     }
 
-    statusBar->setVisualMode(fullscreen ? ESP_BROOKESIA_STATUS_BAR_VISUAL_MODE_HIDE :
-                                          ESP_BROOKESIA_STATUS_BAR_VISUAL_MODE_SHOW_FIXED);
+    (void)fullscreen;
+    statusBar->setVisualMode(ESP_BROOKESIA_STATUS_BAR_VISUAL_MODE_HIDE);
+
+    if (ESP_Brookesia_NavigationBar *navigationBar = phone->getHome().getNavigationBar(); navigationBar != nullptr) {
+        navigationBar->setVisualMode(ESP_BROOKESIA_NAVIGATION_BAR_VISUAL_MODE_HIDE);
+    }
+
+    if (ESP_Brookesia_Gesture *gesture = phone->getManager().getGesture(); gesture != nullptr) {
+        gesture->setIndicatorBarVisible(ESP_BROOKESIA_GESTURE_INDICATOR_BAR_TYPE_BOTTOM, false);
+    }
+}
+
+void SegaEmulator::setBrowserChrome()
+{
+    ESP_Brookesia_Phone *phone = getPhone();
+    if (phone == nullptr) {
+        return;
+    }
+
+    if (ESP_Brookesia_StatusBar *statusBar = phone->getHome().getStatusBar(); statusBar != nullptr) {
+        statusBar->setVisualMode(ESP_BROOKESIA_STATUS_BAR_VISUAL_MODE_SHOW_FIXED);
+    }
+
+    if (ESP_Brookesia_NavigationBar *navigationBar = phone->getHome().getNavigationBar(); navigationBar != nullptr) {
+        navigationBar->setVisualMode(ESP_BROOKESIA_NAVIGATION_BAR_VISUAL_MODE_HIDE);
+    }
+
+    if (ESP_Brookesia_Gesture *gesture = phone->getManager().getGesture(); gesture != nullptr) {
+        gesture->setIndicatorBarVisible(ESP_BROOKESIA_GESTURE_INDICATOR_BAR_TYPE_BOTTOM, false);
+    }
+}
+
+void SegaEmulator::restoreHomeChrome()
+{
+    ESP_Brookesia_Phone *phone = getPhone();
+    if (phone == nullptr) {
+        return;
+    }
+
+    if (ESP_Brookesia_StatusBar *statusBar = phone->getHome().getStatusBar(); statusBar != nullptr) {
+        statusBar->setVisualMode(ESP_BROOKESIA_STATUS_BAR_VISUAL_MODE_SHOW_FIXED);
+    }
+
+    if (ESP_Brookesia_Gesture *gesture = phone->getManager().getGesture(); gesture != nullptr) {
+        gesture->setIndicatorBarVisible(ESP_BROOKESIA_GESTURE_INDICATOR_BAR_TYPE_BOTTOM, true);
+    }
 }
 
 void SegaEmulator::setIndexingOverlayVisible(bool visible)
@@ -2133,8 +2738,12 @@ void SegaEmulator::resetPerformanceStats()
 bool SegaEmulator::queueFramePresentation()
 {
     if (!_framePresentationQueued.exchange(true)) {
-        lv_async_call(presentFrameAsync, this);
-        return true;
+        if (queue_lvgl_async_locked(presentFrameAsync, this)) {
+            return true;
+        }
+
+        _framePresentationQueued.store(false);
+        return false;
     }
 
     _presentQueueBusyCount.fetch_add(1, std::memory_order_relaxed);
@@ -2149,15 +2758,19 @@ void SegaEmulator::renderCurrentFrame()
         return;
     }
 
+    memset(targetBuffer, 0, sizeof(lv_color_t) * kCanvasWidth * kCanvasHeight);
+
     if (_currentCore == EmulatorCore::Gwenesis) {
         const int srcWidth = std::max(1, sega_gwenesis_get_screen_width());
         const int srcHeight = std::max(1, sega_gwenesis_get_screen_height());
         const lv_color_t *src = reinterpret_cast<const lv_color_t *>(_emulatorBuffer + SEGA_GWENESIS_FRAME_OFFSET);
+        const FrameRect gameBounds = get_player_game_bounds(getPlayerRotationDegrees());
+        const FrameRect drawRect = fit_rotated_frame_into_bounds(getPlayerRotationDegrees(), srcWidth, srcHeight, gameBounds);
 
-        const int dstWidth = kCanvasWidth;
-        const int dstHeight = kCanvasHeight;
-        const int dstOffsetX = 0;
-        const int dstOffsetY = 0;
+        const int dstWidth = drawRect.width;
+        const int dstHeight = drawRect.height;
+        const int dstOffsetX = drawRect.x;
+        const int dstOffsetY = drawRect.y;
 
         for (int y = 0; y < srcHeight; ++y) {
             lv_color_t *dstRow = _ppaSourceBuffer + (y * srcWidth);
@@ -2178,9 +2791,18 @@ void SegaEmulator::renderCurrentFrame()
         }
 
         for (int y = 0; y < dstHeight; ++y) {
-            const int srcX = (y * srcWidth) / dstHeight;
             for (int x = 0; x < dstWidth; ++x) {
-                const int srcY = srcHeight - 1 - ((x * srcHeight) / dstWidth);
+                int srcX = 0;
+                int srcY = 0;
+                map_rotated_source_coordinate(getPlayerRotationDegrees(),
+                                              x,
+                                              y,
+                                              dstWidth,
+                                              dstHeight,
+                                              srcWidth,
+                                              srcHeight,
+                                              srcX,
+                                              srcY);
                 targetBuffer[(dstOffsetY + y) * kCanvasWidth + dstOffsetX + x] =
                     src[srcY * SEGA_GWENESIS_FRAME_STRIDE + srcX];
             }
@@ -2198,11 +2820,13 @@ void SegaEmulator::renderCurrentFrame()
     const int srcOffsetX = bitmap.viewport.x;
     const int srcOffsetY = bitmap.viewport.y;
     const uint8_t *src = _emulatorBuffer + (srcOffsetY * bitmap.pitch) + srcOffsetX;
+    const FrameRect gameBounds = get_player_game_bounds(getPlayerRotationDegrees());
+    const FrameRect drawRect = fit_rotated_frame_into_bounds(getPlayerRotationDegrees(), srcWidth, srcHeight, gameBounds);
 
-    const int dstWidth = kCanvasWidth;
-    const int dstHeight = kCanvasHeight;
-    const int dstOffsetX = 0;
-    const int dstOffsetY = 0;
+    const int dstWidth = drawRect.width;
+    const int dstHeight = drawRect.height;
+    const int dstOffsetX = drawRect.x;
+    const int dstOffsetY = drawRect.y;
 
     for (int y = 0; y < srcHeight; ++y) {
         lv_color_t *dstRow = _ppaSourceBuffer + (y * srcWidth);
@@ -2225,9 +2849,18 @@ void SegaEmulator::renderCurrentFrame()
     }
 
     for (int y = 0; y < dstHeight; ++y) {
-        const int srcX = (y * srcWidth) / dstHeight;
         for (int x = 0; x < dstWidth; ++x) {
-            const int srcY = srcHeight - 1 - ((x * srcHeight) / dstWidth);
+            int srcX = 0;
+            int srcY = 0;
+            map_rotated_source_coordinate(getPlayerRotationDegrees(),
+                                          x,
+                                          y,
+                                          dstWidth,
+                                          dstHeight,
+                                          srcWidth,
+                                          srcHeight,
+                                          srcX,
+                                          srcY);
             const uint8_t index = src[srcY * bitmap.pitch + srcX];
             targetBuffer[(dstOffsetY + y) * kCanvasWidth + dstOffsetX + x].full = palette[index & PIXEL_MASK];
         }
@@ -2274,9 +2907,14 @@ bool SegaEmulator::rotateFrameWithPpa(const lv_color_t *sourceBuffer,
         outputConfig,
     };
 
-    operConfig.rotation_angle = PPA_SRM_ROTATION_ANGLE_270;
-    operConfig.scale_x = static_cast<float>(dstHeight) / static_cast<float>(sourceWidth);
-    operConfig.scale_y = static_cast<float>(dstWidth) / static_cast<float>(sourceHeight);
+    operConfig.rotation_angle = ppa_rotation_angle_for_degrees(getPlayerRotationDegrees());
+    if (rotation_swaps_axes(getPlayerRotationDegrees())) {
+        operConfig.scale_x = static_cast<float>(dstHeight) / static_cast<float>(sourceWidth);
+        operConfig.scale_y = static_cast<float>(dstWidth) / static_cast<float>(sourceHeight);
+    } else {
+        operConfig.scale_x = static_cast<float>(dstWidth) / static_cast<float>(sourceWidth);
+        operConfig.scale_y = static_cast<float>(dstHeight) / static_cast<float>(sourceHeight);
+    }
     operConfig.rgb_swap = 0;
     operConfig.byte_swap = 0;
     operConfig.mode = PPA_TRANS_MODE_BLOCKING;
@@ -2332,7 +2970,7 @@ void SegaEmulator::finishEmulationOnUiThread()
     if (!_pendingBrowserStatus.empty()) {
         setBrowserStatus(_pendingBrowserStatus.c_str());
     }
-    setPlayerFullscreen(false);
+    setBrowserChrome();
     if (!_closingApp.load() && (lv_scr_act() == _playerScreen)) {
         lv_scr_load(_browserScreen);
     }
@@ -2378,30 +3016,28 @@ void SegaEmulator::cachePlayerControlRegions()
 {
     _controlRegions.clear();
 
-    const struct {
-        lv_obj_t *button;
-        uint32_t mask;
-    } controls[] = {
-        {_upButton, kInputLeft},
-        {_downButton, kInputRight},
-        {_leftButton, kInputDown},
-        {_rightButton, kInputUp},
-        {_buttonA, kInputButton1},
-        {_buttonB, kInputButton2},
-        {_buttonC, kInputButton3},
-        {_startButton, kInputStart},
+    lv_obj_t *buttons[] = {
+        _upButton,
+        _downButton,
+        _leftButton,
+        _rightButton,
+        _buttonA,
+        _buttonB,
+        _buttonC,
+        _startButton,
     };
 
     lv_obj_update_layout(_playerScreen);
-    _controlRegions.reserve(sizeof(controls) / sizeof(controls[0]));
-    for (const auto &control : controls) {
-        if (control.button == nullptr) {
+    _controlRegions.reserve(sizeof(buttons) / sizeof(buttons[0]));
+    const size_t controlCount = std::min(_controlBindings.size(), sizeof(buttons) / sizeof(buttons[0]));
+    for (size_t index = 0; index < controlCount; ++index) {
+        if (buttons[index] == nullptr) {
             continue;
         }
 
         lv_area_t area = {};
-        lv_obj_get_coords(control.button, &area);
-        _controlRegions.push_back(ControlRegion{.mask = control.mask, .area = area});
+        lv_obj_get_coords(buttons[index], &area);
+        _controlRegions.push_back(ControlRegion{.mask = _controlBindings[index].mask, .area = area});
     }
 }
 
@@ -2835,6 +3471,7 @@ void SegaEmulator::setSearchKeyboardVisible(bool visible)
 
     if (visible) {
         lv_keyboard_set_textarea(_searchKeyboard, _searchField);
+        lv_keyboard_set_mode(_searchKeyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
         lv_obj_clear_flag(_searchKeyboard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(_romList, kBrowserListHeightWithKeyboard);
         if (_prevPageButton != nullptr) {
@@ -2847,6 +3484,8 @@ void SegaEmulator::setSearchKeyboardVisible(bool visible)
             lv_obj_add_flag(_pageLabel, LV_OBJ_FLAG_HIDDEN);
         }
     } else {
+        lv_keyboard_set_textarea(_searchKeyboard, nullptr);
+        lv_keyboard_set_mode(_searchKeyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
         lv_obj_add_flag(_searchKeyboard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(_romList, kBrowserListHeight);
         if (_prevPageButton != nullptr) {
@@ -2912,6 +3551,26 @@ void SegaEmulator::onRefreshClicked(lv_event_t *event)
     }
 }
 
+void SegaEmulator::onRotationChanged(lv_event_t *event)
+{
+    SegaEmulator *app = static_cast<SegaEmulator *>(lv_event_get_user_data(event));
+    lv_obj_t *dropdown = lv_event_get_target(event);
+    if ((app == nullptr) || (dropdown == nullptr) || (lv_event_get_code(event) != LV_EVENT_VALUE_CHANGED)) {
+        return;
+    }
+
+    const uint16_t selectedDegrees = rotation_index_to_degrees(lv_dropdown_get_selected(dropdown));
+    if (selectedDegrees == app->getPlayerRotationDegrees()) {
+        return;
+    }
+
+    app->_playerRotationDegrees = selectedDegrees;
+    save_rotation_degrees(selectedDegrees);
+    if (!app->_running.load()) {
+        app->recreatePlayerScreen();
+    }
+}
+
 void SegaEmulator::onSearchChanged(lv_event_t *event)
 {
     SegaEmulator *app = static_cast<SegaEmulator *>(lv_event_get_user_data(event));
@@ -2931,7 +3590,12 @@ void SegaEmulator::onSearchFieldEvent(lv_event_t *event)
         return;
     }
 
-    app->setSearchKeyboardVisible(true);
+    const lv_event_code_t code = lv_event_get_code(event);
+    if ((code == LV_EVENT_FOCUSED) || (code == LV_EVENT_CLICKED)) {
+        app->setSearchKeyboardVisible(true);
+    } else if (code == LV_EVENT_DEFOCUSED) {
+        app->setSearchKeyboardVisible(false);
+    }
 }
 
 void SegaEmulator::onSearchKeyboardEvent(lv_event_t *event)
@@ -3082,6 +3746,16 @@ void SegaEmulator::onBrowserScreenDeleted(lv_event_t *event)
     }
 
     app->resetBrowserUiPointers();
+}
+
+void SegaEmulator::onBrowserScreenLoaded(lv_event_t *event)
+{
+    auto *app = static_cast<SegaEmulator *>(lv_event_get_user_data(event));
+    if ((app == nullptr) || (lv_event_get_target(event) != app->_browserScreen)) {
+        return;
+    }
+
+    app->setBrowserChrome();
 }
 
 void SegaEmulator::onPlayerScreenDeleted(lv_event_t *event)

@@ -59,6 +59,31 @@ static void update_button_state(uint32_t mask, int button)
     }
 }
 
+static bool savestate_has_tag(FILE *file, const char *tag_name)
+{
+    if ((file == NULL) || (tag_name == NULL)) {
+        return false;
+    }
+
+    const long initial_pos = ftell(file);
+    if (initial_pos < 0) {
+        return false;
+    }
+
+    rewind(file);
+    gwenesis_save_var_t var = {0};
+    while (fread(&var, sizeof(var), 1, file) == 1) {
+        if (strncmp(var.key, tag_name, sizeof(var.key)) == 0) {
+            fseek(file, initial_pos, SEEK_SET);
+            return true;
+        }
+        fseek(file, (long)var.length, SEEK_CUR);
+    }
+
+    fseek(file, initial_pos, SEEK_SET);
+    return false;
+}
+
 SaveState *saveGwenesisStateOpenForRead(const char *fileName)
 {
     (void)fileName;
@@ -215,6 +240,11 @@ bool sega_gwenesis_load_state_file(const char *path)
 
     file = fopen(path, "rb");
     if (file == NULL) {
+        return false;
+    }
+
+    if (!savestate_has_tag(file, "REG_A")) {
+        fclose(file);
         return false;
     }
 

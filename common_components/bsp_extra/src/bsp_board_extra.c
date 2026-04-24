@@ -818,6 +818,26 @@ esp_err_t bsp_extra_codec_init()
     return ESP_OK;
 }
 
+esp_err_t bsp_extra_codec_deinit()
+{
+    esp_err_t ret = bsp_extra_codec_dev_stop();
+
+    if (play_dev_handle != NULL) {
+        esp_codec_dev_delete(play_dev_handle);
+        play_dev_handle = NULL;
+    }
+    if (record_dev_handle != NULL) {
+        esp_codec_dev_delete(record_dev_handle);
+        record_dev_handle = NULL;
+    }
+
+    bsp_audio_deinit();
+    _is_audio_init = false;
+    s_codec_devices_open = false;
+
+    return ret;
+}
+
 esp_err_t bsp_extra_player_init(void)
 {
     if (_is_player_init) {

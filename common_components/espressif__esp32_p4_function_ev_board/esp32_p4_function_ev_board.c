@@ -52,6 +52,12 @@ static i2c_master_bus_handle_t i2c_handle = NULL;  // I2C Handle
 static i2s_chan_handle_t i2s_tx_chan = NULL;
 static i2s_chan_handle_t i2s_rx_chan = NULL;
 static const audio_codec_data_if_t *i2s_data_if = NULL;  /* Codec data interface */
+static const audio_codec_gpio_if_t *speaker_gpio_if = NULL;
+static const audio_codec_ctrl_if_t *speaker_ctrl_if = NULL;
+static const audio_codec_if_t *speaker_codec_if = NULL;
+static const audio_codec_gpio_if_t *microphone_gpio_if = NULL;
+static const audio_codec_ctrl_if_t *microphone_ctrl_if = NULL;
+static const audio_codec_if_t *microphone_codec_if = NULL;
 
 static void bsp_audio_release_channels(void)
 {
@@ -297,6 +303,42 @@ esp_err_t bsp_audio_init(const i2s_std_config_t *i2s_config)
     return ESP_OK;
 }
 
+esp_err_t bsp_audio_deinit(void)
+{
+    if (speaker_codec_if != NULL) {
+        audio_codec_delete_codec_if(speaker_codec_if);
+        speaker_codec_if = NULL;
+    }
+    if (microphone_codec_if != NULL) {
+        audio_codec_delete_codec_if(microphone_codec_if);
+        microphone_codec_if = NULL;
+    }
+    if (speaker_ctrl_if != NULL) {
+        audio_codec_delete_ctrl_if(speaker_ctrl_if);
+        speaker_ctrl_if = NULL;
+    }
+    if (microphone_ctrl_if != NULL) {
+        audio_codec_delete_ctrl_if(microphone_ctrl_if);
+        microphone_ctrl_if = NULL;
+    }
+    if (speaker_gpio_if != NULL) {
+        audio_codec_delete_gpio_if(speaker_gpio_if);
+        speaker_gpio_if = NULL;
+    }
+    if (microphone_gpio_if != NULL) {
+        audio_codec_delete_gpio_if(microphone_gpio_if);
+        microphone_gpio_if = NULL;
+    }
+    if (i2s_data_if != NULL) {
+        audio_codec_delete_data_if(i2s_data_if);
+        i2s_data_if = NULL;
+    }
+
+    bsp_audio_release_channels();
+
+    return ESP_OK;
+}
+
 esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
 {
     if (i2s_data_if == NULL) {
@@ -316,8 +358,10 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
         return NULL;
     }
 
-    const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
-    if (gpio_if == NULL) {
+    if (speaker_gpio_if == NULL) {
+        speaker_gpio_if = audio_codec_new_gpio();
+    }
+    if (speaker_gpio_if == NULL) {
         ESP_LOGE(TAG, "Failed to create speaker codec GPIO interface");
         return NULL;
     }
@@ -327,8 +371,10 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
         .addr = ES8311_CODEC_DEFAULT_ADDR,
         .bus_handle = i2c_handle,
     };
-    const audio_codec_ctrl_if_t *i2c_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
-    if (i2c_ctrl_if == NULL) {
+    if (speaker_ctrl_if == NULL) {
+        speaker_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
+    }
+    if (speaker_ctrl_if == NULL) {
         ESP_LOGE(TAG, "Failed to create speaker codec I2C control interface");
         return NULL;
     }
@@ -339,8 +385,8 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
     };
 
     es8311_codec_cfg_t es8311_cfg = {
-        .ctrl_if = i2c_ctrl_if,
-        .gpio_if = gpio_if,
+        .ctrl_if = speaker_ctrl_if,
+        .gpio_if = speaker_gpio_if,
         .codec_mode = ESP_CODEC_DEV_TYPE_OUT,
         .pa_pin = BSP_POWER_AMP_IO,
         .pa_reverted = false,
@@ -351,15 +397,17 @@ esp_codec_dev_handle_t bsp_audio_codec_speaker_init(void)
         .invert_sclk = false,
         .hw_gain = gain,
     };
-    const audio_codec_if_t *es8311_dev = es8311_codec_new(&es8311_cfg);
-    if (es8311_dev == NULL) {
+    if (speaker_codec_if == NULL) {
+        speaker_codec_if = es8311_codec_new(&es8311_cfg);
+    }
+    if (speaker_codec_if == NULL) {
         ESP_LOGE(TAG, "Failed to create ES8311 speaker codec device");
         return NULL;
     }
 
     esp_codec_dev_cfg_t codec_dev_cfg = {
         .dev_type = ESP_CODEC_DEV_TYPE_IN_OUT,
-        .codec_if = es8311_dev,
+        .codec_if = speaker_codec_if,
         .data_if = i2s_data_if,
     };
     esp_codec_dev_handle_t codec_dev = esp_codec_dev_new(&codec_dev_cfg);
@@ -389,8 +437,10 @@ esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void)
         return NULL;
     }
 
-    const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
-    if (gpio_if == NULL) {
+    if (microphone_gpio_if == NULL) {
+        microphone_gpio_if = audio_codec_new_gpio();
+    }
+    if (microphone_gpio_if == NULL) {
         ESP_LOGE(TAG, "Failed to create microphone codec GPIO interface");
         return NULL;
     }
@@ -400,8 +450,10 @@ esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void)
         .addr = ES8311_CODEC_DEFAULT_ADDR,
         .bus_handle = i2c_handle,
     };
-    const audio_codec_ctrl_if_t *i2c_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
-    if (i2c_ctrl_if == NULL) {
+    if (microphone_ctrl_if == NULL) {
+        microphone_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);
+    }
+    if (microphone_ctrl_if == NULL) {
         ESP_LOGE(TAG, "Failed to create microphone codec I2C control interface");
         return NULL;
     }
@@ -412,8 +464,8 @@ esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void)
     };
 
     es8311_codec_cfg_t es8311_cfg = {
-        .ctrl_if = i2c_ctrl_if,
-        .gpio_if = gpio_if,
+        .ctrl_if = microphone_ctrl_if,
+        .gpio_if = microphone_gpio_if,
         .codec_mode = ESP_CODEC_DEV_WORK_MODE_BOTH,
         .pa_pin = BSP_POWER_AMP_IO,
         .pa_reverted = false,
@@ -425,15 +477,17 @@ esp_codec_dev_handle_t bsp_audio_codec_microphone_init(void)
         .hw_gain = gain,
     };
 
-    const audio_codec_if_t *es8311_dev = es8311_codec_new(&es8311_cfg);
-    if (es8311_dev == NULL) {
+    if (microphone_codec_if == NULL) {
+        microphone_codec_if = es8311_codec_new(&es8311_cfg);
+    }
+    if (microphone_codec_if == NULL) {
         ESP_LOGE(TAG, "Failed to create ES8311 microphone codec device");
         return NULL;
     }
 
     esp_codec_dev_cfg_t codec_es8311_dev_cfg = {
         .dev_type = ESP_CODEC_DEV_TYPE_IN,
-        .codec_if = es8311_dev,
+        .codec_if = microphone_codec_if,
         .data_if = i2s_data_if,
     };
     esp_codec_dev_handle_t codec_dev = esp_codec_dev_new(&codec_es8311_dev_cfg);

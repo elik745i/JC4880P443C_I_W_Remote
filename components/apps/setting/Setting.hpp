@@ -27,6 +27,7 @@ public:
     bool run(void);
     bool back(void);
     bool close(void);
+    bool handleQuickAccessAction(int action_id) override;
 
     bool init(void) override;
     bool pause(void) override;
@@ -285,6 +286,8 @@ private:
     // Audio
     static void onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e);
     static void onSliderPanelSystemVolumeValueChangeEventCallback(lv_event_t * e);
+    static void onSwitchPanelScreenSettingTapSoundValueChangeEventCallback(lv_event_t *e);
+    static void onSwitchPanelScreenSettingHapticFeedbackValueChangeEventCallback(lv_event_t *e);
     // Brightness
     static void onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t * e);
     static void onSwitchPanelScreenSettingAdaptiveBrightnessValueChangeEventCallback(lv_event_t *e);
@@ -330,6 +333,8 @@ private:
     lv_obj_t *_displayTimezoneInfoLabel;
     lv_obj_t *_audioMediaVolumeSlider;
     lv_obj_t *_audioSystemVolumeSlider;
+    lv_obj_t *_audioTapSoundSwitch;
+    lv_obj_t *_audioHapticFeedbackSwitch;
     lv_obj_t *_bluetoothMenuItem;
     lv_obj_t *_zigbeeMenuItem;
     lv_obj_t *_wifiMenuItem;

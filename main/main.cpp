@@ -8,6 +8,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <dirent.h>
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -18,11 +19,13 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "esp_http_client.h"
 #include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_memory_utils.h"
 #include "esp_heap_caps.h"
+#include "driver/gpio.h"
 #include "lvgl.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/display.h"
@@ -48,10 +51,17 @@ static constexpr const char *kNvsStorageNamespace = "storage";
 static constexpr const char *kNvsKeyOtaPendingVersion = "ota_ver";
 static constexpr const char *kNvsKeyOtaPendingNotes = "ota_notes";
 static constexpr const char *kNvsKeyOtaPendingShow = "ota_show";
+static constexpr const char *kNvsKeyAudioVolume = "volume";
+static constexpr const char *kNvsKeySystemAudioVolume = "sys_volume";
+static constexpr const char *kNvsKeyTapSound = "tap_sound";
 static constexpr const char *kCrashReportLocalPath = BSP_SPIFFS_MOUNT_POINT "/last_crash_report.txt";
 static constexpr const char *kCrashReportPendingPath = BSP_SPIFFS_MOUNT_POINT "/pending_crash_report.txt";
 static constexpr const char *kCrashReportUploadUrl = "";
 static constexpr TickType_t kCrashReportUploadDelay = pdMS_TO_TICKS(15000);
+static constexpr const char *kSegaEmulatorAppName = "SEGA Emulator";
+static constexpr uint32_t kTapSoundDebounceMs = 80;
+static constexpr gpio_num_t kHapticFeedbackGpio = GPIO_NUM_34;
+static constexpr uint32_t kHapticPulseUs = 20000;
 
 struct PendingReleaseNotesContext {
     std::string version;
@@ -83,6 +93,12 @@ static InternetRadio *s_internetRadioApp = nullptr;
 #endif
 
 static bool s_crashReportUploadInFlight = false;
+static bool s_tapSoundEnabled = true;
+static bool s_hapticFeedbackEnabled = true;
+static uint32_t s_lastTapSoundTick = 0;
+static ESP_Brookesia_Phone *s_phone = nullptr;
+static std::vector<std::unique_ptr<lv_indev_drv_t>> s_tapSoundDriverCopies;
+static esp_timer_handle_t s_hapticPulseTimer = nullptr;
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
@@ -90,6 +106,121 @@ static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       void *arg,
                                                       UBaseType_t priority,
                                                       BaseType_t core_id);
+
+extern "C" bool jc_ui_tap_sound_is_enabled(void)
+{
+    return s_tapSoundEnabled;
+}
+
+extern "C" void jc_ui_tap_sound_set_enabled(bool enabled)
+{
+    s_tapSoundEnabled = enabled;
+}
+
+extern "C" bool jc_ui_haptic_feedback_is_enabled(void)
+{
+    return s_hapticFeedbackEnabled;
+}
+
+extern "C" void jc_ui_haptic_feedback_set_enabled(bool enabled)
+{
+    s_hapticFeedbackEnabled = enabled;
+    if (!enabled) {
+        gpio_set_level(kHapticFeedbackGpio, 0);
+    }
+}
+
+static void on_haptic_pulse_timer(void *arg)
+{
+    (void)arg;
+    gpio_set_level(kHapticFeedbackGpio, 0);
+}
+
+static bool init_ui_haptic_feedback_output(void)
+{
+    static bool initialized = false;
+    if (initialized) {
+        return true;
+    }
+
+    gpio_config_t config = {};
+    config.pin_bit_mask = 1ULL << kHapticFeedbackGpio;
+    config.mode = GPIO_MODE_OUTPUT;
+    config.pull_up_en = GPIO_PULLUP_DISABLE;
+    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    config.intr_type = GPIO_INTR_DISABLE;
+    if (gpio_config(&config) != ESP_OK) {
+        return false;
+    }
+    gpio_set_level(kHapticFeedbackGpio, 0);
+
+    esp_timer_create_args_t timer_args = {};
+    timer_args.callback = on_haptic_pulse_timer;
+    timer_args.name = "ui_haptic";
+    if (esp_timer_create(&timer_args, &s_hapticPulseTimer) != ESP_OK) {
+        return false;
+    }
+
+    initialized = true;
+    return true;
+}
+
+static void trigger_ui_haptic_feedback(void)
+{
+    if (!s_hapticFeedbackEnabled || (s_hapticPulseTimer == nullptr)) {
+        return;
+    }
+
+    esp_timer_stop(s_hapticPulseTimer);
+    gpio_set_level(kHapticFeedbackGpio, 1);
+    if (esp_timer_start_once(s_hapticPulseTimer, kHapticPulseUs) != ESP_OK) {
+        gpio_set_level(kHapticFeedbackGpio, 0);
+    }
+}
+
+static void on_lvgl_input_feedback(lv_indev_drv_t *indev_drv, uint8_t event_code)
+{
+    if ((indev_drv == nullptr) || (indev_drv->type != LV_INDEV_TYPE_POINTER) || !s_tapSoundEnabled ||
+        (event_code != LV_EVENT_CLICKED)) {
+        return;
+    }
+
+    if (s_phone != nullptr) {
+        ESP_Brookesia_CoreApp *active_app = s_phone->getManager().getActiveApp();
+        if ((active_app != nullptr) && (std::strcmp(active_app->getName(), kSegaEmulatorAppName) == 0)) {
+            return;
+        }
+    }
+
+    if ((s_lastTapSoundTick != 0) && (lv_tick_elaps(s_lastTapSoundTick) < kTapSoundDebounceMs)) {
+        return;
+    }
+
+    s_lastTapSoundTick = lv_tick_get();
+    trigger_ui_haptic_feedback();
+    bsp_extra_audio_play_system_notification();
+}
+
+static bool install_ui_tap_sound_feedback(ESP_Brookesia_Phone &phone)
+{
+    bool installed = false;
+
+    s_phone = &phone;
+    s_tapSoundDriverCopies.clear();
+    for (lv_indev_t *indev = lv_indev_get_next(nullptr); indev != nullptr; indev = lv_indev_get_next(indev)) {
+        if ((indev->driver == nullptr) || (indev->driver->type != LV_INDEV_TYPE_POINTER)) {
+            continue;
+        }
+
+        std::unique_ptr<lv_indev_drv_t> driver = std::make_unique<lv_indev_drv_t>(*indev->driver);
+        driver->feedback_cb = on_lvgl_input_feedback;
+        lv_indev_drv_update(indev, driver.get());
+        s_tapSoundDriverCopies.push_back(std::move(driver));
+        installed = true;
+    }
+
+    return installed;
+}
 
 static std::string json_escape_copy(const std::string &value)
 {
@@ -156,6 +287,28 @@ static bool write_text_file(const char *path, const std::string &contents)
     const bool ok = std::fwrite(contents.data(), 1, contents.size(), file) == contents.size();
     std::fclose(file);
     return ok;
+}
+
+static void restore_audio_preferences_from_nvs(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READONLY, &handle) != ESP_OK) {
+        ESP_LOGW(TAG, "Unable to open NVS for audio preference restore");
+        return;
+    }
+
+    int32_t media_volume = bsp_extra_audio_media_volume_get();
+    int32_t system_volume = bsp_extra_audio_system_volume_get();
+
+    if (nvs_get_i32(handle, kNvsKeyAudioVolume, &media_volume) == ESP_OK) {
+        bsp_extra_audio_media_volume_set(media_volume);
+    }
+
+    if (nvs_get_i32(handle, kNvsKeySystemAudioVolume, &system_volume) == ESP_OK) {
+        bsp_extra_audio_system_volume_set(system_volume);
+    }
+
+    nvs_close(handle);
 }
 
 static bool load_crash_report_for_upload(std::string &report)
@@ -968,6 +1121,8 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    restore_audio_preferences_from_nvs();
+
     s_sdcardMutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_sdcardMutex != nullptr ? ESP_OK : ESP_ERR_NO_MEM);
 
@@ -1005,6 +1160,12 @@ extern "C" void app_main(void)
     if (!system_ui_service::initialize(*phone)) {
         ESP_LOGW(TAG, "System UI service initialization failed");
     }
+    if (!init_ui_haptic_feedback_output()) {
+        ESP_LOGW(TAG, "Haptic feedback GPIO34 init failed");
+    }
+    if (!install_ui_tap_sound_feedback(*phone)) {
+        ESP_LOGW(TAG, "Tap sound feedback hook was not installed");
+    }
     install_app_or_delete(*phone, new PhoneAppSquareline(), "phone app squareline");
 
 #if CONFIG_JC4880_APP_CALCULATOR
@@ -1012,7 +1173,9 @@ extern "C" void app_main(void)
 #endif
 
 #if CONFIG_JC4880_APP_SETTINGS
-    install_app_or_delete(*phone, new AppSettings(), "settings");
+    if (AppSettings *settings = install_app_or_delete(*phone, new AppSettings(), "settings"); settings != nullptr) {
+        ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->hideLauncherIcon(settings->getId()), "Hide Settings launcher icon failed");
+    }
 #endif
 
 #if CONFIG_JC4880_APP_SEGA_EMULATOR

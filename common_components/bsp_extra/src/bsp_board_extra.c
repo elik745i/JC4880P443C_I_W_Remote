@@ -179,7 +179,11 @@ static int audio_get_output_target_volume_locked(void)
 {
     int target = _vloume_intensity;
     if (s_audio_mix_state.notification_active) {
-        target = (target > s_system_volume_intensity) ? target : s_system_volume_intensity;
+        if (s_audio_mix_state.notification_direct_task_running) {
+            target = s_system_volume_intensity;
+        } else {
+            target = (target > s_system_volume_intensity) ? target : s_system_volume_intensity;
+        }
     }
     return audio_clamp_volume(target);
 }
@@ -719,14 +723,15 @@ esp_err_t bsp_extra_audio_play_system_notification(void)
     s_audio_mix_state.notification_phase_step = (2.0f * (float)M_PI * (float)AUDIO_NOTIFICATION_FREQUENCY_HZ) /
                                                (float)CODEC_DEFAULT_SAMPLE_RATE;
     s_audio_mix_state.notification_active = s_audio_mix_state.notification_remaining_frames > 0;
-    s_audio_mix_state.applied_output_volume = -1;
-    audio_apply_output_volume_locked();
 
     const bool start_direct_task = !media_playing &&
                                    !s_audio_mix_state.notification_direct_task_running;
     if (start_direct_task) {
         s_audio_mix_state.notification_direct_task_running = true;
     }
+
+    s_audio_mix_state.applied_output_volume = -1;
+    audio_apply_output_volume_locked();
     audio_mix_unlock();
 
     if (start_direct_task) {

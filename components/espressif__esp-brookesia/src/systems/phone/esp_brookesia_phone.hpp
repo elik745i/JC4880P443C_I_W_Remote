@@ -26,6 +26,7 @@ public:
     int uninstallApp(ESP_Brookesia_PhoneApp &app)  { return _core_manager.uninstallApp(app); }
     int uninstallApp(ESP_Brookesia_PhoneApp *app)  { return _core_manager.uninstallApp(app); }
     bool uninstallApp(int id)               { return _core_manager.uninstallApp(id); }
+    bool hideLauncherIcon(int app_id)       { return _home.hideLauncherIcon(app_id); }
 
     bool begin(void);
     bool del(void);

@@ -28,6 +28,7 @@ public:
     ESP_Brookesia_NavigationBar *getNavigationBar(void)        { return _navigation_bar.get(); }
     ESP_Brookesia_RecentsScreen *getRecentsScreen(void)        { return _recents_screen.get(); }
     ESP_Brookesia_AppLauncher *getAppLauncher(void)            { return &_app_launcher; }
+    bool hideLauncherIcon(int app_id);
 
     bool calibrateData(const ESP_Brookesia_StyleSize_t &screen_size, ESP_Brookesia_PhoneHomeData_t &data);
 

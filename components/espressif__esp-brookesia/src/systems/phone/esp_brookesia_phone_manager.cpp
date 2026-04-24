@@ -5,12 +5,26 @@
  */
 #include <cmath>
 #include <vector>
-#include "esp_system.h"
-#include "esp_heap_caps.h"
+#include "bsp/esp32_p4_function_ev_board.h"
 #include "esp_brookesia_phone_manager.hpp"
 #include "esp_brookesia_phone.hpp"
 
+LV_IMG_DECLARE(airplane_png);
+LV_IMG_DECLARE(sleep_png);
+LV_IMG_DECLARE(unmuted_png);
+LV_IMG_DECLARE(muted_png);
+LV_IMG_DECLARE(mutedall_png);
+
+extern "C" bool __attribute__((weak)) jc_security_handle_app_launch_request(int app_id, const char *app_name);
+
 extern "C" {
+#include "esp_heap_caps.h"
+#include "esp_hosted_power_save.h"
+#include "nvs.h"
+#include "esp_sleep.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+
 typedef enum {
     AUDIO_PLAYER_STATE_IDLE = 0,
     AUDIO_PLAYER_STATE_PLAYING,
@@ -56,11 +70,15 @@ static constexpr int kQuickAccessMusicButtonGap = 8;
 static constexpr uint32_t kQuickAccessRefreshMs = 250;
 static constexpr int kQuickAccessPowerButtonSize = 88;
 static constexpr int kQuickAccessPowerButtonGap = 12;
-
-static const lv_point_t kQuickAccessPlaneBodyPoints[] = {{20, 2}, {20, 38}};
-static const lv_point_t kQuickAccessPlaneWingPoints[] = {{4, 18}, {20, 22}, {36, 18}};
-static const lv_point_t kQuickAccessPlaneTailLeftPoints[] = {{20, 30}, {10, 38}};
-static const lv_point_t kQuickAccessPlaneTailRightPoints[] = {{20, 30}, {30, 38}};
+static constexpr const char *kQuickAccessSettingsAppName = "Settings";
+static constexpr const char *kSettingsStorageNamespace = "storage";
+static constexpr const char *kSettingsWifiEnableKey = "wifi_en";
+static constexpr const char *kSettingsWifiApEnableKey = "wifi_ap_en";
+static constexpr const char *kSettingsBleEnableKey = "ble_en";
+static constexpr const char *kSettingsZigbeeEnableKey = "zb_en";
+static constexpr const char *kSettingsAudioVolumeKey = "volume";
+static constexpr const char *kSettingsSystemAudioVolumeKey = "sys_volume";
+static constexpr int kQuickAccessActionApplyAirplaneRadioPreferences = 0x41525031;
 
 static lv_obj_t *create_quick_access_symbol_button(lv_obj_t *parent, const char *symbol)
 {
@@ -129,39 +147,36 @@ static lv_obj_t *create_quick_access_power_button(lv_obj_t *parent, uint32_t bg_
     return button;
 }
 
-static void create_quick_access_plane_icon(lv_obj_t *button, uint32_t color)
+static void create_quick_access_image_icon(lv_obj_t *button, const void *icon_resource, uint16_t zoom = 128)
 {
-    lv_obj_t *icon = lv_obj_create(button);
+    if (icon_resource == nullptr) {
+        return;
+    }
+
+    lv_obj_t *icon = lv_img_create(button);
     if (icon == nullptr) {
         return;
     }
 
-    lv_obj_remove_style_all(icon);
-    lv_obj_set_size(icon, 40, 40);
+    lv_img_set_src(icon, icon_resource);
+    lv_img_set_zoom(icon, zoom);
     lv_obj_center(icon);
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+}
 
-    const lv_point_t *plane_segments[] = {
-        kQuickAccessPlaneBodyPoints,
-        kQuickAccessPlaneWingPoints,
-        kQuickAccessPlaneTailLeftPoints,
-        kQuickAccessPlaneTailRightPoints,
-    };
-    const uint16_t plane_segment_lengths[] = {2, 3, 2, 2};
+static void enter_quick_access_deep_sleep(void)
+{
+    bsp_display_backlight_off();
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
-    for (size_t index = 0; index < (sizeof(plane_segments) / sizeof(plane_segments[0])); ++index) {
-        lv_obj_t *line = lv_line_create(icon);
-        if (line == nullptr) {
-            continue;
+    if (esp_hosted_power_save_enabled()) {
+        if (esp_hosted_power_save_start(HOSTED_POWER_SAVE_TYPE_DEEP_SLEEP) == 0) {
+            return;
         }
-
-        lv_line_set_points(line, plane_segments[index], plane_segment_lengths[index]);
-        lv_obj_set_style_line_width(line, 3, 0);
-        lv_obj_set_style_line_rounded(line, true, 0);
-        lv_obj_set_style_line_color(line, lv_color_hex(color), 0);
-        lv_obj_center(line);
     }
+
+    esp_deep_sleep_start();
 }
 
 static int get_internal_heap_used_percent()
@@ -200,9 +215,20 @@ ESP_Brookesia_PhoneManager::ESP_Brookesia_PhoneManager(ESP_Brookesia_Core &core_
     _quick_access_restart_button(nullptr),
     _quick_access_shutdown_button(nullptr),
     _quick_access_sleep_button(nullptr),
+    _quick_access_settings_button(nullptr),
+    _quick_access_notification_button(nullptr),
+    _quick_access_notification_icon(nullptr),
     _quick_access_airplane_button(nullptr),
     _quick_access_shutdown_confirm(nullptr),
     _quick_access_airplane_mode_enabled(false),
+    _quick_access_airplane_saved_wifi_enabled(false),
+    _quick_access_airplane_saved_wifi_ap_enabled(false),
+    _quick_access_airplane_saved_ble_enabled(false),
+    _quick_access_airplane_saved_zigbee_enabled(false),
+    _quick_access_notification_mode(QuickAccessNotificationMode::SOUND_AND_VIBRATION),
+    _quick_access_saved_media_volume(50),
+    _quick_access_saved_system_volume(50),
+    _quick_access_saved_vibration_enabled(true),
     _quick_access_panel_type(QuickAccessPanelType::NONE),
     _quick_access_close_button_app_id_map(),
     _quick_access_row_app_id_map(),
@@ -371,9 +397,20 @@ bool ESP_Brookesia_PhoneManager::del(void)
     _quick_access_restart_button = nullptr;
     _quick_access_shutdown_button = nullptr;
     _quick_access_sleep_button = nullptr;
+    _quick_access_settings_button = nullptr;
+    _quick_access_notification_button = nullptr;
+    _quick_access_notification_icon = nullptr;
     _quick_access_airplane_button = nullptr;
     _quick_access_shutdown_confirm = nullptr;
     _quick_access_airplane_mode_enabled = false;
+    _quick_access_airplane_saved_wifi_enabled = false;
+    _quick_access_airplane_saved_wifi_ap_enabled = false;
+    _quick_access_airplane_saved_ble_enabled = false;
+    _quick_access_airplane_saved_zigbee_enabled = false;
+    _quick_access_notification_mode = QuickAccessNotificationMode::SOUND_AND_VIBRATION;
+    _quick_access_saved_media_volume = 50;
+    _quick_access_saved_system_volume = 50;
+    _quick_access_saved_vibration_enabled = true;
     _quick_access_panel_type = QuickAccessPanelType::NONE;
     if (_quick_access_refresh_timer != nullptr) {
         lv_timer_del(_quick_access_refresh_timer);
@@ -604,7 +641,7 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
     lv_obj_remove_style_all(power_grid);
     lv_obj_set_size(power_grid,
                     (kQuickAccessPowerButtonSize * 2) + kQuickAccessPowerButtonGap,
-                    (kQuickAccessPowerButtonSize * 2) + kQuickAccessPowerButtonGap);
+                    (kQuickAccessPowerButtonSize * 3) + (kQuickAccessPowerButtonGap * 2));
     lv_obj_align(power_grid, LV_ALIGN_TOP_LEFT, 0, 64);
     lv_obj_set_flex_flow(power_grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(power_grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -624,15 +661,31 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
     lv_obj_add_event_cb(_quick_access_shutdown_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_CLICKED, this);
 
     _quick_access_sleep_button = create_quick_access_power_button(power_grid, 0xFACC15, 0xEAB308, 0xFACC15,
-                                                                  0x1F2937, LV_SYMBOL_EYE_CLOSE, false);
+                                                                  0x1F2937, nullptr, false);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_sleep_button, false, "Create sleep button failed");
+    create_quick_access_image_icon(_quick_access_sleep_button, &sleep_png);
     lv_obj_add_event_cb(_quick_access_sleep_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_CLICKED, this);
 
     _quick_access_airplane_button = create_quick_access_power_button(power_grid, 0x3B82F6, 0x2563EB, 0x1D4ED8,
                                                                      kQuickAccessText, nullptr, true);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_airplane_button, false, "Create airplane button failed");
-    create_quick_access_plane_icon(_quick_access_airplane_button, kQuickAccessText);
+    create_quick_access_image_icon(_quick_access_airplane_button, &airplane_png);
     lv_obj_add_event_cb(_quick_access_airplane_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    _quick_access_settings_button = create_quick_access_power_button(power_grid, 0x64748B, 0x475569, 0x64748B,
+                                                                     kQuickAccessText, LV_SYMBOL_SETTINGS, false);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_settings_button, false, "Create settings button failed");
+    lv_obj_add_event_cb(_quick_access_settings_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_CLICKED, this);
+
+    _quick_access_notification_button = create_quick_access_power_button(power_grid, 0x8B5CF6, 0x7C3AED, 0x8B5CF6,
+                                                                         kQuickAccessText, nullptr, false);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_notification_button, false, "Create notification button failed");
+    _quick_access_notification_icon = lv_img_create(_quick_access_notification_button);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_notification_icon, false, "Create notification icon failed");
+    lv_obj_center(_quick_access_notification_icon);
+    lv_obj_clear_flag(_quick_access_notification_icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_quick_access_notification_icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(_quick_access_notification_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_CLICKED, this);
 
     lv_obj_t *audio_panel = lv_obj_create(_quick_access_volume_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(audio_panel, false, "Create quick access audio panel failed");
@@ -984,6 +1037,21 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessVolumePanel(void)
     lv_label_set_text_fmt(_quick_access_media_volume_value_label, "%d%%", media_volume);
     lv_label_set_text_fmt(_quick_access_system_volume_value_label, "%d%%", system_volume);
 
+    if ((_quick_access_notification_mode == QuickAccessNotificationMode::VIBRATION_ONLY) &&
+        ((media_volume != 0) || (system_volume != 0))) {
+        _quick_access_saved_media_volume = media_volume;
+        _quick_access_saved_system_volume = system_volume;
+        _quick_access_notification_mode = QuickAccessNotificationMode::SOUND_AND_VIBRATION;
+    } else if ((_quick_access_notification_mode == QuickAccessNotificationMode::MUTED_ALL) &&
+               ((media_volume != 0) || (system_volume != 0))) {
+        _quick_access_saved_media_volume = media_volume;
+        _quick_access_saved_system_volume = system_volume;
+        _quick_access_saved_vibration_enabled = true;
+        _quick_access_notification_mode = QuickAccessNotificationMode::SOUND_AND_VIBRATION;
+    }
+
+    refreshQuickAccessNotificationButton();
+
     if ((_quick_access_airplane_button != nullptr) && lv_obj_is_valid(_quick_access_airplane_button)) {
         if (_quick_access_airplane_mode_enabled) {
             lv_obj_add_state(_quick_access_airplane_button, LV_STATE_CHECKED);
@@ -991,6 +1059,62 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessVolumePanel(void)
             lv_obj_clear_state(_quick_access_airplane_button, LV_STATE_CHECKED);
         }
     }
+}
+
+void ESP_Brookesia_PhoneManager::refreshQuickAccessNotificationButton(void)
+{
+    if ((_quick_access_notification_button == nullptr) || !lv_obj_is_valid(_quick_access_notification_button) ||
+        (_quick_access_notification_icon == nullptr) || !lv_obj_is_valid(_quick_access_notification_icon)) {
+        return;
+    }
+
+    const void *icon_resource = &unmuted_png;
+    switch (_quick_access_notification_mode) {
+    case QuickAccessNotificationMode::VIBRATION_ONLY:
+        icon_resource = &muted_png;
+        break;
+    case QuickAccessNotificationMode::MUTED_ALL:
+        icon_resource = &mutedall_png;
+        break;
+    case QuickAccessNotificationMode::SOUND_AND_VIBRATION:
+    default:
+        icon_resource = &unmuted_png;
+        break;
+    }
+
+    lv_img_set_src(_quick_access_notification_icon, icon_resource);
+    lv_img_set_zoom(_quick_access_notification_icon, kQuickAccessIconZoom);
+    lv_obj_center(_quick_access_notification_icon);
+}
+
+void ESP_Brookesia_PhoneManager::cycleQuickAccessNotificationMode(void)
+{
+    const int media_volume = bsp_extra_audio_media_volume_get();
+    const int system_volume = bsp_extra_audio_system_volume_get();
+
+    switch (_quick_access_notification_mode) {
+    case QuickAccessNotificationMode::SOUND_AND_VIBRATION:
+        _quick_access_saved_media_volume = media_volume;
+        _quick_access_saved_system_volume = system_volume;
+        _quick_access_saved_vibration_enabled = true;
+        bsp_extra_audio_media_volume_set(0);
+        bsp_extra_audio_system_volume_set(0);
+        _quick_access_notification_mode = QuickAccessNotificationMode::VIBRATION_ONLY;
+        break;
+    case QuickAccessNotificationMode::VIBRATION_ONLY:
+        _quick_access_saved_vibration_enabled = false;
+        _quick_access_notification_mode = QuickAccessNotificationMode::MUTED_ALL;
+        break;
+    case QuickAccessNotificationMode::MUTED_ALL:
+    default:
+        bsp_extra_audio_media_volume_set(_quick_access_saved_media_volume);
+        bsp_extra_audio_system_volume_set(_quick_access_saved_system_volume);
+        _quick_access_saved_vibration_enabled = true;
+        _quick_access_notification_mode = QuickAccessNotificationMode::SOUND_AND_VIBRATION;
+        break;
+    }
+
+    refreshQuickAccessVolumePanel();
 }
 
 void ESP_Brookesia_PhoneManager::showQuickAccessAppList(void)
@@ -1260,17 +1384,24 @@ void ESP_Brookesia_PhoneManager::onQuickAccessVolumeSliderEventCallback(lv_event
 
     lv_obj_t *slider = lv_event_get_target(event);
     const int volume = lv_slider_get_value(slider);
+    const lv_event_code_t event_code = lv_event_get_code(event);
     if (slider == manager->_quick_access_media_volume_slider) {
         bsp_extra_audio_media_volume_set(volume);
+        if (event_code == LV_EVENT_RELEASED) {
+            manager->setQuickAccessAirplaneNvsFlag(kSettingsAudioVolumeKey, volume);
+        }
     } else if (slider == manager->_quick_access_system_volume_slider) {
         bsp_extra_audio_system_volume_set(volume);
+        if (event_code == LV_EVENT_RELEASED) {
+            manager->setQuickAccessAirplaneNvsFlag(kSettingsSystemAudioVolumeKey, volume);
+        }
     } else {
         ESP_BROOKESIA_CHECK_FALSE_EXIT(false, "Unknown quick access volume slider");
     }
 
     manager->refreshQuickAccessVolumePanel();
 
-    if (lv_event_get_code(event) == LV_EVENT_RELEASED) {
+    if (event_code == LV_EVENT_RELEASED) {
         bsp_extra_audio_play_system_notification();
     }
 }
@@ -1305,18 +1436,162 @@ void ESP_Brookesia_PhoneManager::onQuickAccessPowerButtonEventCallback(lv_event_
     }
 
     if (button == manager->_quick_access_sleep_button) {
-        bsp_extra_audio_play_system_notification();
+        manager->hideQuickAccessOverlay(false);
+        enter_quick_access_deep_sleep();
+        return;
+    }
+
+    if (button == manager->_quick_access_settings_button) {
+        ESP_BROOKESIA_CHECK_FALSE_EXIT(manager->openQuickAccessSettingsApp(), "Open quick access settings app failed");
+        return;
+    }
+
+    if (button == manager->_quick_access_notification_button) {
+        manager->cycleQuickAccessNotificationMode();
         return;
     }
 
     if (button == manager->_quick_access_airplane_button) {
-        manager->_quick_access_airplane_mode_enabled = lv_obj_has_state(button, LV_STATE_CHECKED);
+        const bool airplane_mode_enabled = lv_obj_has_state(button, LV_STATE_CHECKED);
+        const int err = manager->setQuickAccessAirplaneMode(airplane_mode_enabled);
+        if (err != ESP_OK) {
+            if (manager->_quick_access_airplane_mode_enabled) {
+                lv_obj_add_state(button, LV_STATE_CHECKED);
+            } else {
+                lv_obj_clear_state(button, LV_STATE_CHECKED);
+            }
+            ESP_BROOKESIA_LOGE("Quick access airplane mode transition failed: %s", esp_err_to_name(err));
+            return;
+        }
+
+        manager->_quick_access_airplane_mode_enabled = airplane_mode_enabled;
         manager->refreshQuickAccessVolumePanel();
-        bsp_extra_audio_play_system_notification();
         return;
     }
 
     ESP_BROOKESIA_CHECK_FALSE_EXIT(false, "Unknown quick access power button");
+}
+
+int ESP_Brookesia_PhoneManager::setQuickAccessAirplaneMode(bool enabled)
+{
+    if (enabled) {
+        _quick_access_airplane_saved_wifi_enabled = getQuickAccessAirplaneNvsFlag(kSettingsWifiEnableKey, false);
+        _quick_access_airplane_saved_wifi_ap_enabled = getQuickAccessAirplaneNvsFlag(kSettingsWifiApEnableKey, false);
+        _quick_access_airplane_saved_ble_enabled = getQuickAccessAirplaneNvsFlag(kSettingsBleEnableKey, false);
+        _quick_access_airplane_saved_zigbee_enabled = getQuickAccessAirplaneNvsFlag(kSettingsZigbeeEnableKey, false);
+
+        if (!setQuickAccessAirplaneNvsFlag(kSettingsWifiEnableKey, 0) ||
+                !setQuickAccessAirplaneNvsFlag(kSettingsWifiApEnableKey, 0) ||
+                !setQuickAccessAirplaneNvsFlag(kSettingsBleEnableKey, 0) ||
+                !setQuickAccessAirplaneNvsFlag(kSettingsZigbeeEnableKey, 0)) {
+            return ESP_FAIL;
+        }
+
+        return syncQuickAccessAirplaneSettingsRadios() ? ESP_OK : ESP_FAIL;
+    }
+
+    if (!setQuickAccessAirplaneNvsFlag(kSettingsWifiEnableKey, _quick_access_airplane_saved_wifi_enabled ? 1 : 0) ||
+            !setQuickAccessAirplaneNvsFlag(kSettingsWifiApEnableKey, _quick_access_airplane_saved_wifi_ap_enabled ? 1 : 0) ||
+            !setQuickAccessAirplaneNvsFlag(kSettingsBleEnableKey, _quick_access_airplane_saved_ble_enabled ? 1 : 0) ||
+            !setQuickAccessAirplaneNvsFlag(kSettingsZigbeeEnableKey, _quick_access_airplane_saved_zigbee_enabled ? 1 : 0)) {
+        return ESP_FAIL;
+    }
+
+    return syncQuickAccessAirplaneSettingsRadios() ? ESP_OK : ESP_FAIL;
+}
+
+bool ESP_Brookesia_PhoneManager::openQuickAccessSettingsApp(void)
+{
+    ESP_Brookesia_CoreAppEventData_t app_event_data = {
+        .type = ESP_BROOKESIA_CORE_APP_EVENT_TYPE_START,
+    };
+
+    for (int app_id = 0; app_id < 64; ++app_id) {
+        ESP_Brookesia_CoreApp *app = getInstalledApp(app_id);
+        if ((app == nullptr) || (app->getName() == nullptr) || (strcmp(app->getName(), kQuickAccessSettingsAppName) != 0)) {
+            continue;
+        }
+
+        hideQuickAccessOverlay(false);
+        if ((jc_security_handle_app_launch_request != nullptr) &&
+            jc_security_handle_app_launch_request(app->getId(), app->getName())) {
+            return true;
+        }
+
+        app_event_data.id = app->getId();
+        return _core.sendAppEvent(&app_event_data);
+    }
+
+    ESP_BROOKESIA_LOGW("Quick access settings app not found");
+    return false;
+}
+
+bool ESP_Brookesia_PhoneManager::syncQuickAccessAirplaneSettingsRadios(void)
+{
+    for (int app_id = 1; app_id <= 32; ++app_id) {
+        ESP_Brookesia_CoreApp *core_app = getInstalledApp(app_id);
+        ESP_Brookesia_PhoneApp *app = (core_app != nullptr) ? static_cast<ESP_Brookesia_PhoneApp *>(core_app) : nullptr;
+        if ((app == nullptr) || (app->getName() == nullptr)) {
+            continue;
+        }
+
+        if (strcmp(app->getName(), "Settings") == 0) {
+            return app->handleQuickAccessAction(kQuickAccessActionApplyAirplaneRadioPreferences);
+        }
+    }
+
+    ESP_BROOKESIA_LOGW("Settings app not found while syncing airplane mode radios");
+    return false;
+}
+
+bool ESP_Brookesia_PhoneManager::setQuickAccessAirplaneNvsFlag(const char *key, int value)
+{
+    if (key == nullptr) {
+        return false;
+    }
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(kSettingsStorageNamespace, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        ESP_BROOKESIA_LOGE("Open NVS for airplane mode failed: %s", esp_err_to_name(err));
+        return false;
+    }
+
+    err = nvs_set_i32(nvs_handle, key, value);
+    if (err == ESP_OK) {
+        err = nvs_commit(nvs_handle);
+    }
+    nvs_close(nvs_handle);
+
+    if (err != ESP_OK) {
+        ESP_BROOKESIA_LOGE("Write airplane mode NVS key %s failed: %s", key, esp_err_to_name(err));
+        return false;
+    }
+
+    return true;
+}
+
+bool ESP_Brookesia_PhoneManager::getQuickAccessAirplaneNvsFlag(const char *key, bool default_value) const
+{
+    if (key == nullptr) {
+        return default_value;
+    }
+
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(kSettingsStorageNamespace, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        return default_value;
+    }
+
+    int32_t value = default_value ? 1 : 0;
+    err = nvs_get_i32(nvs_handle, key, &value);
+    nvs_close(nvs_handle);
+
+    if (err != ESP_OK) {
+        return default_value;
+    }
+
+    return value != 0;
 }
 
 void ESP_Brookesia_PhoneManager::onQuickAccessShutdownConfirmEventCallback(lv_event_t *event)

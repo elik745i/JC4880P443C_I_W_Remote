@@ -105,6 +105,8 @@
 #define NVS_KEY_ZIGBEE_DEVICE_NAME      "zb_name"
 #define NVS_KEY_AUDIO_VOLUME            "volume"
 #define NVS_KEY_SYSTEM_AUDIO_VOLUME     "sys_volume"
+#define NVS_KEY_AUDIO_TAP_SOUND         "tap_sound"
+#define NVS_KEY_AUDIO_HAPTIC_FEEDBACK   "haptic_fb"
 #define NVS_KEY_DISPLAY_BRIGHTNESS      "brightness"
 #define NVS_KEY_DISPLAY_ADAPTIVE        "disp_adapt"
 #define NVS_KEY_DISPLAY_SCREENSAVER     "disp_saver"
@@ -123,6 +125,9 @@
 #define UI_WIFI_KEYBOARD_H_PERCENT      (30)
 
 #define EXAMPLE_ADC_ATTEN           ADC_ATTEN_DB_12
+
+extern "C" void jc_ui_tap_sound_set_enabled(bool enabled);
+extern "C" void jc_ui_haptic_feedback_set_enabled(bool enabled);
  
 #define EXAMPLE_ADC2_CHAN0          ADC_CHANNEL_4
 static int adc_raw[2][10];
@@ -268,6 +273,7 @@ static lv_obj_t *create_settings_toggle_row(lv_obj_t *parent, const char *title)
 static constexpr uint32_t kSettingScreenAnimTimeMs = 220;
 static constexpr int kStatusBarBluetoothIconId = 0x424C45;
 static constexpr int kStatusBarZigbeeIconId = 0x5A425A;
+static constexpr int kQuickAccessActionApplyAirplaneRadioPreferences = 0x41525031;
 
 TaskHandle_t wifi_scan_handle_task;
 static SemaphoreHandle_t s_ble_mutex;
@@ -1394,6 +1400,8 @@ AppSettings::AppSettings():
     _displayTimezoneInfoLabel(nullptr),
     _audioMediaVolumeSlider(nullptr),
     _audioSystemVolumeSlider(nullptr),
+    _audioTapSoundSwitch(nullptr),
+    _audioHapticFeedbackSwitch(nullptr),
     _bluetoothMenuItem(nullptr),
     _zigbeeMenuItem(nullptr),
     _wifiMenuItem(nullptr),
@@ -1502,6 +1510,35 @@ AppSettings::~AppSettings()
     }
 }
 
+bool AppSettings::handleQuickAccessAction(int action_id)
+{
+    if (action_id != kQuickAccessActionApplyAirplaneRadioPreferences) {
+        return ESP_Brookesia_PhoneApp::handleQuickAccessAction(action_id);
+    }
+
+    loadNvsParam();
+
+#if APP_SETTINGS_FEATURE_WIFI
+    if (applyWifiOperatingMode(true, "quick access airplane mode") != ESP_OK) {
+        return false;
+    }
+#endif
+
+#if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
+    const bool ble_enabled = _nvs_param_map[NVS_KEY_BLE_ENABLE] != 0;
+    if (!ble_enabled) {
+        bleCancelScan();
+    }
+    if (bleSetEnabled(ble_enabled) != ESP_OK) {
+        _nvs_param_map[NVS_KEY_BLE_ENABLE] = 0;
+        setNvsParam(NVS_KEY_BLE_ENABLE, 0);
+    }
+#endif
+
+    updateUiByNvsParam();
+    return true;
+}
+
 void AppSettings::initializeDefaultNvsParams(void)
 {
     _nvs_param_map[NVS_KEY_WIFI_ENABLE] = false;
@@ -1514,6 +1551,8 @@ void AppSettings::initializeDefaultNvsParams(void)
     _nvs_param_map[NVS_KEY_AUDIO_VOLUME] = max(min((int)_nvs_param_map[NVS_KEY_AUDIO_VOLUME], SPEAKER_VOLUME_MAX), SPEAKER_VOLUME_MIN);
     _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME] = bsp_extra_audio_system_volume_get();
     _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME] = max(min((int)_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], SPEAKER_VOLUME_MAX), SPEAKER_VOLUME_MIN);
+    _nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] = 1;
+    _nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] = 1;
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = brightness;
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = max(min((int)_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], SCREEN_BRIGHTNESS_MAX), SCREEN_BRIGHTNESS_MIN);
     _nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE] = 0;
@@ -1605,6 +1644,8 @@ bool AppSettings::init(void)
     initializeDefaultNvsParams();
     // Load NVS parameters if exist
     loadNvsParam();
+    jc_ui_tap_sound_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] != 0);
+    jc_ui_haptic_feedback_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] != 0);
 #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
     {
         char ble_name[32] = {0};
@@ -2482,6 +2523,30 @@ void AppSettings::extraUiInit(void)
         }
     };
 
+    auto createAudioSwitchRow = [](const char *title) {
+        lv_obj_t *row = lv_obj_create(ui_PanelScreenSettingVolumeList);
+        lv_obj_set_size(row, lv_pct(100), 72);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(row, 18, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_left(row, 18, 0);
+        lv_obj_set_style_pad_right(row, 18, 0);
+        lv_obj_set_style_pad_top(row, 10, 0);
+        lv_obj_set_style_pad_bottom(row, 10, 0);
+
+        lv_obj_t *label = lv_label_create(row);
+        lv_obj_set_width(label, 180);
+        lv_label_set_text(label, title);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x111827), 0);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+
+        return row;
+    };
+
     lv_label_set_text(ui_LabelPanelScreenSettingVolumeSwitch, "Media");
     lv_slider_set_range(ui_SliderPanelScreenSettingVolumeSwitch, SPEAKER_VOLUME_MIN, SPEAKER_VOLUME_MAX);
     lv_obj_add_event_cb(ui_SliderPanelScreenSettingVolumeSwitch, onSliderPanelVolumeSwitchValueChangeEventCallback,
@@ -2502,6 +2567,23 @@ void AppSettings::extraUiInit(void)
                             LV_EVENT_RELEASED, this);
 
         styleAudioSliderRow(row, label, _audioSystemVolumeSlider, nullptr);
+    }
+
+    {
+        lv_obj_t *row = createAudioSwitchRow("Tap Sound");
+        _audioTapSoundSwitch = lv_switch_create(row);
+        lv_obj_align(_audioTapSoundSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(_audioTapSoundSwitch, onSwitchPanelScreenSettingTapSoundValueChangeEventCallback,
+                            LV_EVENT_VALUE_CHANGED, this);
+    }
+
+    {
+        lv_obj_t *row = createAudioSwitchRow("Haptic Feedback");
+        _audioHapticFeedbackSwitch = lv_switch_create(row);
+        lv_obj_align(_audioHapticFeedbackSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(_audioHapticFeedbackSwitch,
+                            onSwitchPanelScreenSettingHapticFeedbackValueChangeEventCallback,
+                            LV_EVENT_VALUE_CHANGED, this);
     }
     lv_obj_add_flag(ui_ButtonScreenSettingVolumeReturn, LV_OBJ_FLAG_HIDDEN);
     // Record the screen index and install the screen loaded event callback
@@ -3548,6 +3630,8 @@ bool AppSettings::factoryResetPreferences(void)
 
     ok &= clearSavedWifiCredentials();
     ok &= loadNvsParam();
+    jc_ui_tap_sound_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] != 0);
+    jc_ui_haptic_feedback_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] != 0);
     applyManualTimezonePreference();
     bsp_extra_audio_media_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
     bsp_extra_audio_system_volume_set(_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME]);
@@ -5128,6 +5212,20 @@ void AppSettings::updateUiByNvsParam(void)
     if (_audioSystemVolumeSlider != nullptr) {
         lv_slider_set_value(_audioSystemVolumeSlider, _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], LV_ANIM_OFF);
     }
+    if (lv_obj_ready(_audioTapSoundSwitch)) {
+        if (_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] != 0) {
+            lv_obj_add_state(_audioTapSoundSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_audioTapSoundSwitch, LV_STATE_CHECKED);
+        }
+    }
+    if (lv_obj_ready(_audioHapticFeedbackSwitch)) {
+        if (_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] != 0) {
+            lv_obj_add_state(_audioHapticFeedbackSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_audioHapticFeedbackSwitch, LV_STATE_CHECKED);
+        }
+    }
 #endif
 
 #if APP_SETTINGS_FEATURE_WIFI
@@ -6432,6 +6530,38 @@ void AppSettings::onSliderPanelSystemVolumeValueChangeEventCallback( lv_event_t 
     if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
         bsp_extra_audio_play_system_notification();
     }
+
+end:
+    return;
+}
+
+void AppSettings::onSwitchPanelScreenSettingTapSoundValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    bool enabled = false;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app->_audioTapSoundSwitch, end, "Invalid tap sound switch");
+
+    enabled = (lv_obj_get_state(app->_audioTapSoundSwitch) & LV_STATE_CHECKED) != 0;
+    app->_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] = enabled ? 1 : 0;
+    app->setNvsParam(NVS_KEY_AUDIO_TAP_SOUND, enabled ? 1 : 0);
+    jc_ui_tap_sound_set_enabled(enabled);
+
+end:
+    return;
+}
+
+void AppSettings::onSwitchPanelScreenSettingHapticFeedbackValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
+    bool enabled = false;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app->_audioHapticFeedbackSwitch, end, "Invalid haptic feedback switch");
+
+    enabled = (lv_obj_get_state(app->_audioHapticFeedbackSwitch) & LV_STATE_CHECKED) != 0;
+    app->_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] = enabled ? 1 : 0;
+    app->setNvsParam(NVS_KEY_AUDIO_HAPTIC_FEEDBACK, enabled ? 1 : 0);
+    jc_ui_haptic_feedback_set_enabled(enabled);
 
 end:
     return;

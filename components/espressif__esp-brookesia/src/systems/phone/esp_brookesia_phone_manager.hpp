@@ -43,6 +43,12 @@ private:
         AUDIO,
     };
 
+    enum class QuickAccessNotificationMode {
+        SOUND_AND_VIBRATION = 0,
+        VIBRATION_ONLY,
+        MUTED_ALL,
+    };
+
     // Core
     bool processAppStartPrepare(ESP_Brookesia_CoreApp *app) override;
     bool processAppRunExtra(ESP_Brookesia_CoreApp *app) override;
@@ -61,6 +67,13 @@ private:
     void hideQuickAccessOverlay(bool animate = true);
     void refreshQuickAccessAppList(void);
     void refreshQuickAccessVolumePanel(void);
+    void refreshQuickAccessNotificationButton(void);
+    int setQuickAccessAirplaneMode(bool enabled);
+    void cycleQuickAccessNotificationMode(void);
+    bool openQuickAccessSettingsApp(void);
+    bool syncQuickAccessAirplaneSettingsRadios(void);
+    bool setQuickAccessAirplaneNvsFlag(const char *key, int value);
+    bool getQuickAccessAirplaneNvsFlag(const char *key, bool default_value) const;
     void showQuickAccessAppList(void);
     void showQuickAccessVolumePanel(void);
     void showQuickAccessOverlay(QuickAccessPanelType type);
@@ -146,9 +159,20 @@ private:
     lv_obj_t *_quick_access_restart_button;
     lv_obj_t *_quick_access_shutdown_button;
     lv_obj_t *_quick_access_sleep_button;
+    lv_obj_t *_quick_access_settings_button;
+    lv_obj_t *_quick_access_notification_button;
+    lv_obj_t *_quick_access_notification_icon;
     lv_obj_t *_quick_access_airplane_button;
     lv_obj_t *_quick_access_shutdown_confirm;
     bool _quick_access_airplane_mode_enabled;
+    bool _quick_access_airplane_saved_wifi_enabled;
+    bool _quick_access_airplane_saved_wifi_ap_enabled;
+    bool _quick_access_airplane_saved_ble_enabled;
+    bool _quick_access_airplane_saved_zigbee_enabled;
+    QuickAccessNotificationMode _quick_access_notification_mode;
+    int _quick_access_saved_media_volume;
+    int _quick_access_saved_system_volume;
+    bool _quick_access_saved_vibration_enabled;
     QuickAccessPanelType _quick_access_panel_type;
     std::unordered_map<lv_obj_t *, int> _quick_access_close_button_app_id_map;
     std::unordered_map<lv_obj_t *, int> _quick_access_row_app_id_map;

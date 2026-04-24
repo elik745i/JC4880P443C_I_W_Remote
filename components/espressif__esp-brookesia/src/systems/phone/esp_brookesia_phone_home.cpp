@@ -140,6 +140,14 @@ bool ESP_Brookesia_PhoneHome::processAppUninstall(ESP_Brookesia_CoreApp *app)
     return true;
 }
 
+bool ESP_Brookesia_PhoneHome::hideLauncherIcon(int app_id)
+{
+    ESP_BROOKESIA_LOGD("Hide launcher icon for app(%d)", app_id);
+    ESP_BROOKESIA_CHECK_FALSE_RETURN(checkInitialized(), false, "Not initialized");
+
+    return _app_launcher.removeIcon(app_id);
+}
+
 bool ESP_Brookesia_PhoneHome::processAppRun(ESP_Brookesia_CoreApp *app)
 {
     ESP_Brookesia_PhoneApp *phone_app = static_cast<ESP_Brookesia_PhoneApp *>(app);

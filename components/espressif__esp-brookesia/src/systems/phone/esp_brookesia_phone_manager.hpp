@@ -80,6 +80,8 @@ private:
     static void onQuickAccessRefreshTimerCallback(lv_timer_t *timer);
     static void onQuickAccessCloseAllTimerCallback(lv_timer_t *timer);
     static void onQuickAccessVolumeSliderEventCallback(lv_event_t *event);
+    static void onQuickAccessPowerButtonEventCallback(lv_event_t *event);
+    static void onQuickAccessShutdownConfirmEventCallback(lv_event_t *event);
     // App Launcher
     static void onAppLauncherGestureEventCallback(lv_event_t *event);
     // Navigation Bar
@@ -141,6 +143,12 @@ private:
     lv_obj_t *_quick_access_media_volume_value_label;
     lv_obj_t *_quick_access_system_volume_slider;
     lv_obj_t *_quick_access_system_volume_value_label;
+    lv_obj_t *_quick_access_restart_button;
+    lv_obj_t *_quick_access_shutdown_button;
+    lv_obj_t *_quick_access_sleep_button;
+    lv_obj_t *_quick_access_airplane_button;
+    lv_obj_t *_quick_access_shutdown_confirm;
+    bool _quick_access_airplane_mode_enabled;
     QuickAccessPanelType _quick_access_panel_type;
     std::unordered_map<lv_obj_t *, int> _quick_access_close_button_app_id_map;
     std::unordered_map<lv_obj_t *, int> _quick_access_row_app_id_map;

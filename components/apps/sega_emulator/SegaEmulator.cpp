@@ -232,6 +232,21 @@ lv_coord_t rotation_label_angle(uint16_t degrees)
     }
 }
 
+lv_coord_t rotation_preview_angle(uint16_t degrees)
+{
+    switch (degrees) {
+        case 0:
+            return 0;
+        case 90:
+            return 900;
+        case 180:
+            return 1800;
+        case 270:
+        default:
+            return 2700;
+    }
+}
+
 bool rotation_swaps_axes(uint16_t degrees)
 {
     return (degrees == 90) || (degrees == 270);
@@ -342,6 +357,20 @@ bool file_exists(const char *path)
 
     struct stat path_stat = {};
     return stat(path, &path_stat) == 0;
+}
+
+off_t file_size_bytes(const char *path)
+{
+    if (path == nullptr) {
+        return -1;
+    }
+
+    struct stat path_stat = {};
+    if (stat(path, &path_stat) != 0) {
+        return -1;
+    }
+
+    return path_stat.st_size;
 }
 
 bool ensure_sd_rom_root_available(bool allow_mount)
@@ -2035,9 +2064,7 @@ void SegaEmulator::emulatorTask()
 
             if (_saveRequested.exchange(false)) {
                 const bool saved = saveResumeState();
-                if (saved) {
-                    setPlayerLoadButtonEnabled(true);
-                }
+                setPlayerLoadButtonEnabled(hasManualSaveState());
                 setPlayerStatus(saved ? "State saved." : "Failed to save state.");
             }
             if (_loadRequested.exchange(false)) {
@@ -2051,7 +2078,7 @@ void SegaEmulator::emulatorTask()
                     setPlayerStatus("State loaded.");
                 } else {
                     setPlayerStatus("No saved state available.");
-                    setPlayerLoadButtonEnabled(false);
+                    setPlayerLoadButtonEnabled(hasManualSaveState());
                 }
             }
 
@@ -2263,9 +2290,7 @@ void SegaEmulator::emulatorTask()
 
         if (_saveRequested.exchange(false)) {
             const bool saved = saveResumeState();
-            if (saved) {
-                setPlayerLoadButtonEnabled(true);
-            }
+            setPlayerLoadButtonEnabled(hasManualSaveState());
             setPlayerStatus(saved ? "State saved." : "Failed to save state.");
         }
         if (_loadRequested.exchange(false)) {
@@ -2279,7 +2304,7 @@ void SegaEmulator::emulatorTask()
                 setPlayerStatus("State loaded.");
             } else {
                 setPlayerStatus("No saved state available.");
-                    setPlayerLoadButtonEnabled(false);
+                setPlayerLoadButtonEnabled(hasManualSaveState());
             }
         }
 
@@ -2469,6 +2494,7 @@ void SegaEmulator::showLoadStatePicker()
 
     const uint16_t rotationDegrees = getPlayerRotationDegrees();
     const lv_coord_t labelAngle = rotation_label_angle(rotationDegrees);
+    const lv_coord_t previewAngle = rotation_preview_angle(rotationDegrees);
 
     SegaVector<SaveSlotEntry> entries;
     if (!collectSavedStates(entries, true) || entries.empty()) {
@@ -2583,6 +2609,9 @@ void SegaEmulator::showLoadStatePicker()
 
         lv_obj_t *preview = lv_canvas_create(button);
         lv_obj_set_size(preview, kSaveSlotPreviewWidth, kSaveSlotPreviewHeight);
+        lv_obj_set_style_transform_angle(preview, previewAngle, 0);
+        lv_obj_set_style_transform_pivot_x(preview, kSaveSlotPreviewWidth / 2, 0);
+        lv_obj_set_style_transform_pivot_y(preview, kSaveSlotPreviewHeight / 2, 0);
         if (entry.previewBuffer != nullptr) {
             lv_canvas_set_buffer(preview,
                                  entry.previewBuffer,
@@ -3154,6 +3183,12 @@ bool SegaEmulator::saveResumeState(const SegaString &savePath)
             ESP_LOGW(kTag, "Failed to save Mega Drive state to %s", savePath.c_str());
             return false;
         }
+
+        if (!sega_gwenesis_validate_state_file(savePath.c_str())) {
+            ESP_LOGW(kTag, "Mega Drive save state validation failed for %s", savePath.c_str());
+            unlink(savePath.c_str());
+            return false;
+        }
         return true;
     }
 
@@ -3165,6 +3200,12 @@ bool SegaEmulator::saveResumeState(const SegaString &savePath)
 
     system_save_state(file);
     fclose(file);
+    if (file_size_bytes(savePath.c_str()) <= 0) {
+        ESP_LOGW(kTag, "SMS/Game Gear save state is empty at %s", savePath.c_str());
+        unlink(savePath.c_str());
+        return false;
+    }
+
     return true;
 }
 
@@ -3270,6 +3311,14 @@ bool SegaEmulator::collectSavedStates(SegaVector<SaveSlotEntry> &entries, bool l
         slotEntry.statePath = gameDirectory + "/" + entry->d_name;
         slotEntry.thumbPath = slotEntry.statePath.substr(0, slotEntry.statePath.size() - 6) + ".thumb";
         slotEntry.sortKey = parse_save_slot_key(entry->d_name);
+
+        if (file_size_bytes(slotEntry.statePath.c_str()) <= 0) {
+            continue;
+        }
+        if ((_currentCore == EmulatorCore::Gwenesis) && !sega_gwenesis_validate_state_file(slotEntry.statePath.c_str())) {
+            continue;
+        }
+
         entries.push_back(std::move(slotEntry));
     }
     closedir(directory);

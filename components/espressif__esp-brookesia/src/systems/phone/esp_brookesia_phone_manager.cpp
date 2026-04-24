@@ -5,6 +5,7 @@
  */
 #include <cmath>
 #include <vector>
+#include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_brookesia_phone_manager.hpp"
 #include "esp_brookesia_phone.hpp"
@@ -53,6 +54,13 @@ static constexpr int kQuickAccessIconSlotWidth = 28;
 static constexpr int kQuickAccessMusicButtonSize = 34;
 static constexpr int kQuickAccessMusicButtonGap = 8;
 static constexpr uint32_t kQuickAccessRefreshMs = 250;
+static constexpr int kQuickAccessPowerButtonSize = 88;
+static constexpr int kQuickAccessPowerButtonGap = 12;
+
+static const lv_point_t kQuickAccessPlaneBodyPoints[] = {{20, 2}, {20, 38}};
+static const lv_point_t kQuickAccessPlaneWingPoints[] = {{4, 18}, {20, 22}, {36, 18}};
+static const lv_point_t kQuickAccessPlaneTailLeftPoints[] = {{20, 30}, {10, 38}};
+static const lv_point_t kQuickAccessPlaneTailRightPoints[] = {{20, 30}, {30, 38}};
 
 static lv_obj_t *create_quick_access_symbol_button(lv_obj_t *parent, const char *symbol)
 {
@@ -80,6 +88,80 @@ static lv_obj_t *create_quick_access_symbol_button(lv_obj_t *parent, const char 
     lv_obj_center(label);
 
     return button;
+}
+
+static lv_obj_t *create_quick_access_power_button(lv_obj_t *parent, uint32_t bg_color, uint32_t pressed_color,
+        uint32_t checked_color, uint32_t text_color, const char *symbol, bool checkable)
+{
+    lv_obj_t *button = lv_btn_create(parent);
+    if (button == nullptr) {
+        return nullptr;
+    }
+
+    lv_obj_set_size(button, kQuickAccessPowerButtonSize, kQuickAccessPowerButtonSize);
+    lv_obj_set_style_radius(button, 24, 0);
+    lv_obj_set_style_bg_color(button, lv_color_hex(bg_color), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(button, lv_color_hex(pressed_color), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(button, lv_color_hex(checked_color), LV_PART_MAIN | LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(button, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_border_width(button, 3, LV_PART_MAIN | LV_STATE_CHECKED);
+    lv_obj_set_style_border_color(button, lv_color_hex(0xDBEAFE), LV_PART_MAIN | LV_STATE_CHECKED);
+    lv_obj_set_style_shadow_width(button, 18, 0);
+    lv_obj_set_style_shadow_color(button, lv_color_hex(0x04070A), 0);
+    lv_obj_set_style_shadow_opa(button, LV_OPA_40, 0);
+    lv_obj_set_style_translate_y(button, 3, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+    if (checkable) {
+        lv_obj_add_flag(button, LV_OBJ_FLAG_CHECKABLE);
+    }
+
+    if (symbol != nullptr) {
+        lv_obj_t *label = lv_label_create(button);
+        if (label != nullptr) {
+            lv_label_set_text(label, symbol);
+            lv_obj_set_style_text_color(label, lv_color_hex(text_color), 0);
+            lv_obj_set_style_text_font(label, &lv_font_montserrat_28, 0);
+            lv_obj_center(label);
+        }
+    }
+
+    return button;
+}
+
+static void create_quick_access_plane_icon(lv_obj_t *button, uint32_t color)
+{
+    lv_obj_t *icon = lv_obj_create(button);
+    if (icon == nullptr) {
+        return;
+    }
+
+    lv_obj_remove_style_all(icon);
+    lv_obj_set_size(icon, 40, 40);
+    lv_obj_center(icon);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+
+    const lv_point_t *plane_segments[] = {
+        kQuickAccessPlaneBodyPoints,
+        kQuickAccessPlaneWingPoints,
+        kQuickAccessPlaneTailLeftPoints,
+        kQuickAccessPlaneTailRightPoints,
+    };
+    const uint16_t plane_segment_lengths[] = {2, 3, 2, 2};
+
+    for (size_t index = 0; index < (sizeof(plane_segments) / sizeof(plane_segments[0])); ++index) {
+        lv_obj_t *line = lv_line_create(icon);
+        if (line == nullptr) {
+            continue;
+        }
+
+        lv_line_set_points(line, plane_segments[index], plane_segment_lengths[index]);
+        lv_obj_set_style_line_width(line, 3, 0);
+        lv_obj_set_style_line_rounded(line, true, 0);
+        lv_obj_set_style_line_color(line, lv_color_hex(color), 0);
+        lv_obj_center(line);
+    }
 }
 
 static int get_internal_heap_used_percent()
@@ -115,6 +197,12 @@ ESP_Brookesia_PhoneManager::ESP_Brookesia_PhoneManager(ESP_Brookesia_Core &core_
     _quick_access_media_volume_value_label(nullptr),
     _quick_access_system_volume_slider(nullptr),
     _quick_access_system_volume_value_label(nullptr),
+    _quick_access_restart_button(nullptr),
+    _quick_access_shutdown_button(nullptr),
+    _quick_access_sleep_button(nullptr),
+    _quick_access_airplane_button(nullptr),
+    _quick_access_shutdown_confirm(nullptr),
+    _quick_access_airplane_mode_enabled(false),
     _quick_access_panel_type(QuickAccessPanelType::NONE),
     _quick_access_close_button_app_id_map(),
     _quick_access_row_app_id_map(),
@@ -280,6 +368,12 @@ bool ESP_Brookesia_PhoneManager::del(void)
     _quick_access_media_volume_value_label = nullptr;
     _quick_access_system_volume_slider = nullptr;
     _quick_access_system_volume_value_label = nullptr;
+    _quick_access_restart_button = nullptr;
+    _quick_access_shutdown_button = nullptr;
+    _quick_access_sleep_button = nullptr;
+    _quick_access_airplane_button = nullptr;
+    _quick_access_shutdown_confirm = nullptr;
+    _quick_access_airplane_mode_enabled = false;
     _quick_access_panel_type = QuickAccessPanelType::NONE;
     if (_quick_access_refresh_timer != nullptr) {
         lv_timer_del(_quick_access_refresh_timer);
@@ -480,8 +574,8 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
 
     _quick_access_volume_panel = lv_obj_create(_quick_access_overlay);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_volume_panel, false, "Create quick access volume panel failed");
-    lv_obj_set_size(_quick_access_volume_panel, lv_pct(50), lv_pct(50));
-    lv_obj_set_pos(_quick_access_volume_panel, lv_pct(50), getQuickAccessPanelHiddenY(QuickAccessPanelType::AUDIO));
+    lv_obj_set_size(_quick_access_volume_panel, lv_pct(100), lv_pct(50));
+    lv_obj_set_pos(_quick_access_volume_panel, 0, getQuickAccessPanelHiddenY(QuickAccessPanelType::AUDIO));
     lv_obj_set_style_radius(_quick_access_volume_panel, 0, 0);
     lv_obj_set_style_bg_color(_quick_access_volume_panel, lv_color_hex(kQuickAccessPanelBg), 0);
     lv_obj_set_style_bg_grad_color(_quick_access_volume_panel, lv_color_hex(0x314256), 0);
@@ -495,26 +589,68 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
     lv_obj_add_flag(_quick_access_volume_panel, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *volume_title = lv_label_create(_quick_access_volume_panel);
-    lv_label_set_text(volume_title, "Audio");
+    lv_label_set_text(volume_title, "Quick Controls");
     lv_obj_set_style_text_color(volume_title, lv_color_hex(kQuickAccessText), 0);
     lv_obj_set_style_text_font(volume_title, &lv_font_montserrat_18, 0);
     lv_obj_align(volume_title, LV_ALIGN_TOP_LEFT, 0, 0);
 
     lv_obj_t *audio_hint = lv_label_create(_quick_access_volume_panel);
-    lv_label_set_text(audio_hint, "Media and system sound");
+    lv_label_set_text(audio_hint, "Power and audio");
     lv_obj_set_style_text_color(audio_hint, lv_color_hex(kQuickAccessMutedText), 0);
     lv_obj_align(audio_hint, LV_ALIGN_TOP_LEFT, 0, 28);
 
-    lv_obj_t *media_label = lv_label_create(_quick_access_volume_panel);
+    lv_obj_t *power_grid = lv_obj_create(_quick_access_volume_panel);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(power_grid, false, "Create quick access power grid failed");
+    lv_obj_remove_style_all(power_grid);
+    lv_obj_set_size(power_grid,
+                    (kQuickAccessPowerButtonSize * 2) + kQuickAccessPowerButtonGap,
+                    (kQuickAccessPowerButtonSize * 2) + kQuickAccessPowerButtonGap);
+    lv_obj_align(power_grid, LV_ALIGN_TOP_LEFT, 0, 64);
+    lv_obj_set_flex_flow(power_grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(power_grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(power_grid, 0, 0);
+    lv_obj_set_style_pad_row(power_grid, kQuickAccessPowerButtonGap, 0);
+    lv_obj_set_style_pad_column(power_grid, kQuickAccessPowerButtonGap, 0);
+    lv_obj_clear_flag(power_grid, LV_OBJ_FLAG_SCROLLABLE);
+
+    _quick_access_restart_button = create_quick_access_power_button(power_grid, 0x22C55E, 0x16A34A, 0x22C55E,
+                                                                    kQuickAccessText, LV_SYMBOL_REFRESH, false);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_restart_button, false, "Create restart button failed");
+    lv_obj_add_event_cb(_quick_access_restart_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_CLICKED, this);
+
+    _quick_access_shutdown_button = create_quick_access_power_button(power_grid, 0xEF4444, 0xDC2626, 0xEF4444,
+                                                                     kQuickAccessText, LV_SYMBOL_POWER, false);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_shutdown_button, false, "Create shutdown button failed");
+    lv_obj_add_event_cb(_quick_access_shutdown_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_CLICKED, this);
+
+    _quick_access_sleep_button = create_quick_access_power_button(power_grid, 0xFACC15, 0xEAB308, 0xFACC15,
+                                                                  0x1F2937, LV_SYMBOL_EYE_CLOSE, false);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_sleep_button, false, "Create sleep button failed");
+    lv_obj_add_event_cb(_quick_access_sleep_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_CLICKED, this);
+
+    _quick_access_airplane_button = create_quick_access_power_button(power_grid, 0x3B82F6, 0x2563EB, 0x1D4ED8,
+                                                                     kQuickAccessText, nullptr, true);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_airplane_button, false, "Create airplane button failed");
+    create_quick_access_plane_icon(_quick_access_airplane_button, kQuickAccessText);
+    lv_obj_add_event_cb(_quick_access_airplane_button, onQuickAccessPowerButtonEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *audio_panel = lv_obj_create(_quick_access_volume_panel);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(audio_panel, false, "Create quick access audio panel failed");
+    lv_obj_remove_style_all(audio_panel);
+    lv_obj_set_size(audio_panel, lv_pct(50), lv_pct(100));
+    lv_obj_align(audio_panel, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_clear_flag(audio_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *media_label = lv_label_create(audio_panel);
     lv_label_set_text(media_label, "Media");
     lv_obj_set_style_text_color(media_label, lv_color_hex(kQuickAccessText), 0);
     lv_obj_align(media_label, LV_ALIGN_TOP_LEFT, 16, 60);
 
-    _quick_access_media_volume_value_label = lv_label_create(_quick_access_volume_panel);
+    _quick_access_media_volume_value_label = lv_label_create(audio_panel);
     lv_obj_set_style_text_color(_quick_access_media_volume_value_label, lv_color_hex(kQuickAccessMutedText), 0);
     lv_obj_align(_quick_access_media_volume_value_label, LV_ALIGN_TOP_LEFT, 16, 84);
 
-    _quick_access_media_volume_slider = lv_slider_create(_quick_access_volume_panel);
+    _quick_access_media_volume_slider = lv_slider_create(audio_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_media_volume_slider, false, "Create quick access media slider failed");
     lv_slider_set_range(_quick_access_media_volume_slider, 0, 100);
     lv_slider_set_mode(_quick_access_media_volume_slider, LV_SLIDER_MODE_NORMAL);
@@ -523,16 +659,16 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
     lv_obj_add_event_cb(_quick_access_media_volume_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(_quick_access_media_volume_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_RELEASED, this);
 
-    lv_obj_t *system_label = lv_label_create(_quick_access_volume_panel);
+    lv_obj_t *system_label = lv_label_create(audio_panel);
     lv_label_set_text(system_label, "System");
     lv_obj_set_style_text_color(system_label, lv_color_hex(kQuickAccessText), 0);
     lv_obj_align(system_label, LV_ALIGN_TOP_RIGHT, -18, 60);
 
-    _quick_access_system_volume_value_label = lv_label_create(_quick_access_volume_panel);
+    _quick_access_system_volume_value_label = lv_label_create(audio_panel);
     lv_obj_set_style_text_color(_quick_access_system_volume_value_label, lv_color_hex(kQuickAccessMutedText), 0);
     lv_obj_align(_quick_access_system_volume_value_label, LV_ALIGN_TOP_RIGHT, -18, 84);
 
-    _quick_access_system_volume_slider = lv_slider_create(_quick_access_volume_panel);
+    _quick_access_system_volume_slider = lv_slider_create(audio_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_system_volume_slider, false, "Create quick access system slider failed");
     lv_slider_set_range(_quick_access_system_volume_slider, 0, 100);
     lv_slider_set_mode(_quick_access_system_volume_slider, LV_SLIDER_MODE_NORMAL);
@@ -663,6 +799,10 @@ void ESP_Brookesia_PhoneManager::hideQuickAccessOverlay(bool animate)
     if ((_quick_access_volume_panel != nullptr) && lv_obj_is_valid(_quick_access_volume_panel)) {
         lv_obj_add_flag(_quick_access_volume_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_y(_quick_access_volume_panel, getQuickAccessPanelHiddenY(QuickAccessPanelType::AUDIO));
+    }
+    if ((_quick_access_shutdown_confirm != nullptr) && lv_obj_is_valid(_quick_access_shutdown_confirm)) {
+        lv_msgbox_close(_quick_access_shutdown_confirm);
+        _quick_access_shutdown_confirm = nullptr;
     }
     lv_obj_set_style_bg_opa(_quick_access_overlay, LV_OPA_TRANSP, 0);
     _quick_access_panel_type = QuickAccessPanelType::NONE;
@@ -843,6 +983,14 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessVolumePanel(void)
     lv_slider_set_value(_quick_access_system_volume_slider, system_volume, LV_ANIM_OFF);
     lv_label_set_text_fmt(_quick_access_media_volume_value_label, "%d%%", media_volume);
     lv_label_set_text_fmt(_quick_access_system_volume_value_label, "%d%%", system_volume);
+
+    if ((_quick_access_airplane_button != nullptr) && lv_obj_is_valid(_quick_access_airplane_button)) {
+        if (_quick_access_airplane_mode_enabled) {
+            lv_obj_add_state(_quick_access_airplane_button, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_quick_access_airplane_button, LV_STATE_CHECKED);
+        }
+    }
 }
 
 void ESP_Brookesia_PhoneManager::showQuickAccessAppList(void)
@@ -1124,6 +1272,72 @@ void ESP_Brookesia_PhoneManager::onQuickAccessVolumeSliderEventCallback(lv_event
 
     if (lv_event_get_code(event) == LV_EVENT_RELEASED) {
         bsp_extra_audio_play_system_notification();
+    }
+}
+
+void ESP_Brookesia_PhoneManager::onQuickAccessPowerButtonEventCallback(lv_event_t *event)
+{
+    ESP_Brookesia_PhoneManager *manager = static_cast<ESP_Brookesia_PhoneManager *>(lv_event_get_user_data(event));
+    ESP_BROOKESIA_CHECK_NULL_EXIT(manager, "Invalid manager");
+
+    lv_obj_t *button = lv_event_get_target(event);
+    if (button == manager->_quick_access_restart_button) {
+        manager->hideQuickAccessOverlay(false);
+        esp_restart();
+        return;
+    }
+
+    if (button == manager->_quick_access_shutdown_button) {
+        if ((manager->_quick_access_shutdown_confirm != nullptr) && lv_obj_is_valid(manager->_quick_access_shutdown_confirm)) {
+            return;
+        }
+
+        static const char *shutdown_buttons[] = {"Cancel", "Confirm", ""};
+        manager->_quick_access_shutdown_confirm = lv_msgbox_create(lv_layer_top(), "Shut down?",
+                                                                   "Shutdown is not wired yet.", shutdown_buttons, false);
+        ESP_BROOKESIA_CHECK_NULL_EXIT(manager->_quick_access_shutdown_confirm, "Create shutdown confirm failed");
+        lv_obj_center(manager->_quick_access_shutdown_confirm);
+        lv_obj_add_event_cb(manager->_quick_access_shutdown_confirm, onQuickAccessShutdownConfirmEventCallback,
+                            LV_EVENT_VALUE_CHANGED, manager);
+        lv_obj_add_event_cb(manager->_quick_access_shutdown_confirm, onQuickAccessShutdownConfirmEventCallback,
+                            LV_EVENT_DELETE, manager);
+        return;
+    }
+
+    if (button == manager->_quick_access_sleep_button) {
+        bsp_extra_audio_play_system_notification();
+        return;
+    }
+
+    if (button == manager->_quick_access_airplane_button) {
+        manager->_quick_access_airplane_mode_enabled = lv_obj_has_state(button, LV_STATE_CHECKED);
+        manager->refreshQuickAccessVolumePanel();
+        bsp_extra_audio_play_system_notification();
+        return;
+    }
+
+    ESP_BROOKESIA_CHECK_FALSE_EXIT(false, "Unknown quick access power button");
+}
+
+void ESP_Brookesia_PhoneManager::onQuickAccessShutdownConfirmEventCallback(lv_event_t *event)
+{
+    ESP_Brookesia_PhoneManager *manager = static_cast<ESP_Brookesia_PhoneManager *>(lv_event_get_user_data(event));
+    ESP_BROOKESIA_CHECK_NULL_EXIT(manager, "Invalid manager");
+
+    lv_obj_t *msgbox = lv_event_get_target(event);
+    switch (lv_event_get_code(event)) {
+    case LV_EVENT_VALUE_CHANGED:
+        if ((msgbox != nullptr) && lv_obj_is_valid(msgbox)) {
+            lv_msgbox_close(msgbox);
+        }
+        break;
+    case LV_EVENT_DELETE:
+        if (manager->_quick_access_shutdown_confirm == msgbox) {
+            manager->_quick_access_shutdown_confirm = nullptr;
+        }
+        break;
+    default:
+        break;
     }
 }
 

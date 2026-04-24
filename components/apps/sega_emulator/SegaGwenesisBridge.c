@@ -255,6 +255,24 @@ bool sega_gwenesis_load_state_file(const char *path)
     return true;
 }
 
+bool sega_gwenesis_validate_state_file(const char *path)
+{
+    FILE *file;
+
+    if (path == NULL) {
+        return false;
+    }
+
+    file = fopen(path, "rb");
+    if (file == NULL) {
+        return false;
+    }
+
+    const bool valid = savestate_has_tag(file, "REG_A");
+    fclose(file);
+    return valid;
+}
+
 bool sega_gwenesis_save_state_file(const char *path)
 {
     FILE *file;

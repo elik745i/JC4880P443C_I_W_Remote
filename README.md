@@ -74,7 +74,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
 - Music Player runtime metadata, library indexes, and long-lived worker stacks now prefer PSRAM, which reduces launch-time and background SRAM pressure.
 - Music Player playlist confirmation dialogs now use safe LVGL async-close handling to avoid the panic that could occur when deleting or cancelling from the modal.
-- Quick-access controls now stay available while apps are open, with smaller launcher row icons and richer live Music Player detail in the strip.
+- Quick-access controls now stay available while apps are open, with a full-width power-and-audio curtain, smaller launcher row icons, and richer live Music Player detail in the strip.
 - Internet Radio now mirrors Music Player-style top-bar quick actions for country station lists, including previous / next station controls and live buffering detail while the quick-access sheet is open.
 - Internet Radio now exposes a live buffered-stream meter, larger playback modal layout, deeper PSRAM-first buffering, and delayed startup until the stream cache reaches a safer prefill level.
 - Internet Radio steady-state downloading now refills in the background instead of blocking the audio playback path, which reduces refill-time audio dropouts on slow stations.
@@ -86,8 +86,8 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Flash-backed core dump capture is now enabled, and the next boot persists a readable crash report under SPIFFS for later developer analysis.
 - The reboot recovery popup can now show a manual `Report` action that tries to submit the saved crash report when Wi-Fi is connected, otherwise it reports that the device is offline or the private relay is not configured.
 - Additional enclosure revisions and raw CAD exports are included under `3D/` for the updated hardware fit iterations.
-- SEGA manual saves now use separate `SAVE` and `LOAD` actions instead of auto-resume behavior, so launching a ROM always starts from a clean boot unless a save is chosen explicitly.
-- The SEGA load flow now pauses emulation and shows a rotated save-slot picker with up to five recent preview thumbnails pulled from SD-card save folders.
+- SEGA manual saves now use separate `SAVE` and `LOAD` actions instead of auto-resume behavior, so launching a ROM always starts from a clean boot unless a valid save is chosen explicitly.
+- The SEGA load flow now pauses emulation and shows a rotated save-slot picker with up to five recent preview thumbnails pulled from SD-card save folders, with load-button state and preview orientation kept in sync with the active handheld rotation.
 - Genesis save-state loading now restores the full 68K register set and rejects older incompatible save files instead of crashing after load.
 - The SEGA browser now keeps the top bar visible on entry and return-from-game while gameplay itself stays fullscreen.
 - The SEGA browser header and save-slot picker scrolling were cleaned up so the title no longer overlaps and the horizontal save list no longer recenters itself while browsing.
@@ -157,7 +157,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.6 validates at `0x667590`, leaving `0x128A70` bytes free in the smaller OTA app slot.
+- Version 1.2.6 validates at `0x6682F0`, leaving `0x127D10` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

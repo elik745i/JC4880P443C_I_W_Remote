@@ -18,6 +18,7 @@ extern "C" {
 bool sega_gwenesis_load_rom(const char *path, uint8_t *framebuffer, size_t framebuffer_size);
 bool sega_gwenesis_load_state_file(const char *path);
 bool sega_gwenesis_save_state_file(const char *path);
+bool sega_gwenesis_validate_state_file(const char *path);
 void sega_gwenesis_set_input_mask(uint32_t input_mask);
 
 typedef struct {

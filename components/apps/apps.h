@@ -20,6 +20,10 @@
 #include "file_manager/FileManager.hpp"
 #endif
 
+#if CONFIG_JC4880_APP_WEB_SERVER
+#include "web_server/WebServerApp.hpp"
+#endif
+
 #if CONFIG_JC4880_APP_INTERNET_RADIO
 #include "internet_radio/InternetRadio.hpp"
 #endif

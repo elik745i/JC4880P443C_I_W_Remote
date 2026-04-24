@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.6 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.7 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -41,6 +41,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Shared launcher icon set sized to fit the OTA partition budget.
 - Persistent Wi-Fi credentials and reconnect behavior backed by NVS.
 - Wi-Fi Settings now also includes device AP mode setup with saved hotspot enable, SSID, and password controls.
+- Added a native Web Server launcher app with quick-access curtain control, local mDNS discovery, captive-portal friendly AP behavior, SD-card `/web` hosting with SPIFFS fallback, and an embedded recovery uploader when site files are missing.
 - Display timezone dropdown in GMT format with saved preference storage.
 - Auto timezone detection from the internet after Wi-Fi connects.
 - Firmware screen factory reset button with confirmation and settings wipe.
@@ -157,7 +158,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.6 validates at `0x6682F0`, leaving `0x127D10` bytes free in the smaller OTA app slot.
+- Version 1.2.7 validates at `0x6C86C0`, leaving `0x0C7940` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

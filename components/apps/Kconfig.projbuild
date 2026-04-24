@@ -99,6 +99,11 @@ menu "JC4880 Modular Configuration"
             bool "File manager"
             default y
 
+        config JC4880_APP_WEB_SERVER
+            bool "Web server"
+            default y
+            depends on JC4880_FEATURE_WIFI
+
         config JC4880_APP_MUSIC_PLAYER
             bool "Music player"
             default y

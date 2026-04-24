@@ -1190,6 +1190,10 @@ extern "C" void app_main(void)
     install_app_or_delete(*phone, new FileManager(), "file manager");
 #endif
 
+#if CONFIG_JC4880_APP_WEB_SERVER
+    install_app_or_delete(*phone, new WebServerApp(), "web server");
+#endif
+
 #if CONFIG_JC4880_APP_MUSIC_PLAYER
     install_app_or_delete(*phone, new MusicPlayer(), "music player");
 #endif

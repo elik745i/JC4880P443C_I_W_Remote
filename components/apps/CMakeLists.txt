@@ -1,6 +1,8 @@
 set(APPS_DIR ${CMAKE_CURRENT_LIST_DIR})
 set(APPS_SRCS ${APPS_DIR}/system_ui_service.cpp)
 list(APPEND APPS_SRCS ${APPS_DIR}/lvgl_input_helper.c)
+list(APPEND APPS_SRCS ${APPS_DIR}/joypad_runtime.cpp)
+list(APPEND APPS_SRCS ${APPS_DIR}/joypad_transport.cpp)
 
 list(APPEND APPS_SRCS ${APPS_DIR}/hardware_history_service.cpp)
 
@@ -16,6 +18,12 @@ endfunction()
 
 if(CONFIG_JC4880_APP_SETTINGS)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/setting)
+
+    if(NOT CONFIG_JC4880_FEATURE_LEGACY_BLE_MENU)
+        list(REMOVE_ITEM APPS_SRCS
+             ${APPS_DIR}/setting/ui/screens/ui_ScreenSettingBLE.c
+             ${APPS_DIR}/setting/ui/images/ui_img_bluetooth_png.c)
+    endif()
 endif()
 
 if(CONFIG_JC4880_APP_CALCULATOR)

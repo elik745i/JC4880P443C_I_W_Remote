@@ -138,6 +138,7 @@ LV_IMG_DECLARE( ui_img_sound_png);   // assets/Sound.png
 LV_IMG_DECLARE( ui_img_light_png);   // assets/Light.png
 LV_IMG_DECLARE( ui_img_about_png);   // assets/About.png
 LV_IMG_DECLARE( ui_img_return_png);   // assets/return.png
+LV_IMG_DECLARE( ui_img_controller_png);   // 3D/map/controller.png
 
 void ui_setting_init(void);
 

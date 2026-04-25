@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.8 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.9 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -64,6 +64,8 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Saved networks now stay connectable without live availability gating, and failed attempts can fall back to the previously connected network instead of leaving the device disconnected.
 - Intentional disconnect flows no longer trigger automatic reconnect recovery, so a manual disconnect can keep Wi-Fi offline until the user asks for another connection.
 - BLE startup, teardown, and disconnect recovery on the ESP-Hosted path were hardened to avoid stuck startup states and disconnect-time crashes.
+- BLE game controller support now runs through the ESP32-C6 coprocessor with Bluepad32-based report forwarding, analog sticks and triggers, and broader controller button coverage.
+- The BLE controller settings page now includes a live controller visualizer, persistent per-controller calibration storage, and calibration profile reuse across reconnects.
 - The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
 - Hardware Monitor now keeps one hour of background history in PSRAM for CPU load, SRAM, PSRAM, Wi-Fi, battery, and CPU temperature instead of sampling only while the page is open.
@@ -86,6 +88,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Radio app close/reopen handling now clears stale LVGL screen pointers on teardown, preventing the main-screen artifacts and close-time panic that could occur after failed online lookups.
 - Attachable joystick hardware support is now being prepared in parallel with the main firmware and enclosure work, with the current mechanical and circuit references tracked in this repo.
 - The repo now also includes newer attachable joystick enclosure assets and fresh 3D reference exports for the ongoing accessory fit work.
+- Build-time modular configuration now exposes top-level menuconfig switches for major launcher apps and feature domains, so firmware variants can be trimmed without hand-editing code.
 - Panic behavior now reboots automatically, and the next boot shows a short recovery popup that distinguishes crash, watchdog, brownout, and CPU lockup resets.
 - Flash-backed core dump capture is now enabled, and the next boot persists a readable crash report under SPIFFS for later developer analysis.
 - The reboot recovery popup can now show a manual `Report` action that tries to submit the saved crash report when Wi-Fi is connected, otherwise it reports that the device is offline or the private relay is not configured.
@@ -140,6 +143,13 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - If the C6 is not flashed with the firmware from the same release, BLE and ZigBee features on the P4 side are not expected to work correctly.
 - The C6 firmware is built from `coprocessor_c6/` and is released alongside the main P4 firmware.
 
+### Game Controller Support
+
+- BLE controller support is tested with the TOBO BSP-D9 game controller.
+- Controller manual: [TOBO BSP-D9 manual](User_Manual/Tobo%20BSP%20D9.pdf).
+- To pair the TOBO BSP-D9 with the unit, turn on `BLE Controller` in Settings, then press `HOME+X` on the controller.
+- Reflash the ESP32-C6 first with the coprocessor binary from the [latest release](https://github.com/elik745i/JC4880P443C_I_W_Remote/releases/latest), otherwise controller pairing on the P4 side is not expected to work correctly.
+
 ### Emulator Support
 
 - The SEGA app scans `/sdcard/sega_games` for `.sms`, `.gg`, `.sg`, `.md`, `.gen`, `.bin`, and `.smd` ROMs.
@@ -161,7 +171,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.8 validates at `0x6D0AD0`, leaving `0x0BF530` bytes free in the smaller OTA app slot.
+- Version 1.2.9 validates at `0x6DE150`, leaving `0x0B1EB0` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

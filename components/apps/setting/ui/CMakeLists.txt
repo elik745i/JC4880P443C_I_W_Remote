@@ -16,6 +16,7 @@ SET(SOURCES screens/ui_ScreenSettingMain.c
     images/ui_img_light_png.c
     images/ui_img_about_png.c
     images/ui_img_return_png.c
+    images/ui_img_controller_png.c
     fonts/ui_font_FontPuHui96.c
     fonts/ui_font_FontPuhui20.c
     fonts/ui_font_FontPuhui30.c)

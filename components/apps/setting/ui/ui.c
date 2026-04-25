@@ -160,9 +160,15 @@ if ( event_code == LV_EVENT_CLICKED) {
 }
 void ui_event_PanelSettingMainContainerItem2( lv_event_t * e) {
     lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
+#if CONFIG_JC4880_FEATURE_LEGACY_BLE_MENU
 if ( event_code == LV_EVENT_CLICKED) {
             UI_SETTING_SCREEN_CHANGE_FORWARD( &ui_ScreenSettingBLE, &ui_ScreenSettingBLE_screen_init);
 }
+#else
+    LV_UNUSED(target);
+    if ( event_code == LV_EVENT_CLICKED) {
+    }
+#endif
 }
 void ui_event_PanelSettingMainContainerItem3( lv_event_t * e) {
     lv_event_code_t event_code = lv_event_get_code(e);lv_obj_t * target = lv_event_get_target(e);
@@ -219,7 +225,9 @@ void ui_setting_init( void )
 {
 ui_ScreenSettingMain_screen_init();
 ui_ScreenSettingWiFi_screen_init();
+#if CONFIG_JC4880_FEATURE_LEGACY_BLE_MENU
 ui_ScreenSettingBLE_screen_init();
+#endif
 ui_ScreenSettingVolume_screen_init();
 ui_ScreenSettingLight_screen_init();
 ui_ScreenSettingAbout_screen_init();

@@ -8,6 +8,7 @@ set(COMPONENT_SRCS
 	"${common_dir}/proto/esp_hosted_rpc.pb-c.c"
 	"${common_dir}/utils/esp_hosted_cli.c"
 	"c6_custom_app_main.c"
+	"c6_joypad_service.c"
 	"protocomm_pserial.c"
 	"esp_hosted_coprocessor.c"
 	"mempool.c"
@@ -49,7 +50,10 @@ set(COMPONENT_ADD_INCLUDEDIRS
 	"${common_dir}/proto"
 	"${common_dir}/rpc"
 	"${common_dir}/transport"
+	"${PROJECT_DIR}/../common_components/bsp_extra/include"
 )
+
+set(COMPONENT_REQUIRES bluepad32 btstack esp_wifi protobuf-c protocomm wpa_supplicant)
 
 if(CONFIG_SOC_BT_SUPPORTED)
 # Select BT UART code based on IDF Target

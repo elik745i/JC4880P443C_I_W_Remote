@@ -50,6 +50,7 @@
 
 extern EventGroupHandle_t s_wifi_event_group;
 extern bool s_wifi_restore_in_progress;
+extern bool s_wifi_runtime_ready;
 
 extern char st_wifi_ssid[WIFI_SSID_STORAGE_SIZE];
 extern char st_wifi_password[WIFI_PASSWORD_STORAGE_SIZE];

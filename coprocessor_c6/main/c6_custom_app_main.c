@@ -9,6 +9,7 @@
 #endif
 
 #include "esp_hosted_coprocessor.h"
+#include "c6_joypad_service.h"
 
 #if CONFIG_ZB_ENABLED
 #include "c6_zigbee_service.h"
@@ -30,6 +31,7 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(init_nvs_storage());
     ESP_ERROR_CHECK(esp_hosted_coprocessor_init());
+    ESP_ERROR_CHECK(c6_joypad_service_init());
 
 #if CONFIG_ESP_COEX_SW_COEXIST_ENABLE && CONFIG_ZB_ENABLED
     ESP_ERROR_CHECK(esp_coex_wifi_i154_enable());

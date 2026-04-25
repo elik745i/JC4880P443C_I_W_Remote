@@ -26,6 +26,15 @@ menu "JC4880 Modular Configuration"
                 help
                     Master switch for BLE-oriented features exposed by the firmware.
 
+            config JC4880_FEATURE_LEGACY_BLE_MENU
+                bool "Legacy P4 BLE settings menu"
+                default y
+                depends on JC4880_FEATURE_BLUETOOTH && JC4880_FEATURE_BLE
+                help
+                    Builds the legacy ESP32-P4 BLE settings screen. Disable this for
+                    Bluepad32/C6 firmware where controller BLE is handled by the
+                    coprocessor, while keeping the menu available for regular firmware.
+
             config JC4880_FEATURE_ZIGBEE
                 bool "ZigBee features"
                 default y

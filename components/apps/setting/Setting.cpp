@@ -40,12 +40,14 @@
 #include "bsp_board_extra.h"
 #include "cJSON.h"
 #include "nvs.h"
+#if APP_SETTINGS_FEATURE_BLUETOOTH_MENU && CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ENABLED
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
+#endif
 
 #include "ui/ui.h"
 #include "Setting.hpp"
@@ -53,6 +55,8 @@
 #include "app_sntp.h"
 #include "battery_history_service.h"
 #include "hardware_history_service.h"
+#include "joypad_runtime.h"
+#include "joypad_transport.h"
 #include "lvgl_input_helper.h"
 #include "storage_access.h"
 #include "system_ui_service.h"
@@ -65,10 +69,16 @@
 #define APP_SETTINGS_FEATURE_WIFI 0
 #endif
 
-#if CONFIG_JC4880_FEATURE_BLUETOOTH || CONFIG_JC4880_FEATURE_BLE
+#if CONFIG_JC4880_FEATURE_LEGACY_BLE_MENU
 #define APP_SETTINGS_FEATURE_BLUETOOTH_MENU 1
 #else
 #define APP_SETTINGS_FEATURE_BLUETOOTH_MENU 0
+#endif
+
+#if APP_SETTINGS_FEATURE_BLUETOOTH_MENU && CONFIG_BT_ENABLED && CONFIG_BT_NIMBLE_ENABLED
+#define APP_SETTINGS_FEATURE_LEGACY_BLUETOOTH_RUNTIME 1
+#else
+#define APP_SETTINGS_FEATURE_LEGACY_BLUETOOTH_RUNTIME 0
 #endif
 
 #if CONFIG_JC4880_FEATURE_DISPLAY || CONFIG_JC4880_FEATURE_TIME_SYNC
@@ -86,6 +96,7 @@
 #define HOME_REFRESH_TASK_STACK_SIZE    (1024 * 4)
 #define HOME_REFRESH_TASK_PRIORITY      (1)
 #define HOME_REFRESH_TASK_PERIOD_MS     (2000)
+#define JOYPAD_BLE_LIVE_REFRESH_MS      (33)
 
 #define FIRMWARE_UPDATE_TASK_STACK_SIZE  (1024 * 10)
 #define FIRMWARE_UPDATE_TASK_PRIORITY    (4)
@@ -117,6 +128,49 @@
 #define NVS_KEY_OTA_PENDING_VERSION     "ota_ver"
 #define NVS_KEY_OTA_PENDING_NOTES       "ota_notes"
 #define NVS_KEY_OTA_PENDING_SHOW        "ota_show"
+
+static constexpr int32_t kJoypadBackendOptions[] = {
+    JC4880_JOYPAD_BACKEND_DISABLED,
+    JC4880_JOYPAD_BACKEND_BLE,
+    JC4880_JOYPAD_BACKEND_MANUAL,
+};
+static constexpr int32_t kJoypadManualModeOptions[] = {
+    JC4880_JOYPAD_MANUAL_MODE_SPI,
+    JC4880_JOYPAD_MANUAL_MODE_RESISTIVE,
+};
+static constexpr int32_t kJoypadMapOptions[] = {
+    JC4880_JOYPAD_MAP_NONE,
+    JC4880_JOYPAD_MAP_UP,
+    JC4880_JOYPAD_MAP_DOWN,
+    JC4880_JOYPAD_MAP_LEFT,
+    JC4880_JOYPAD_MAP_RIGHT,
+    JC4880_JOYPAD_MAP_BUTTON_A,
+    JC4880_JOYPAD_MAP_BUTTON_B,
+    JC4880_JOYPAD_MAP_BUTTON_C,
+    JC4880_JOYPAD_MAP_START,
+    JC4880_JOYPAD_MAP_EXIT,
+    JC4880_JOYPAD_MAP_SAVE,
+    JC4880_JOYPAD_MAP_LOAD,
+};
+static constexpr int32_t kJoypadGpioOptions[] = {
+    -1,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    49,
+    50,
+    51,
+    52,
+};
+static constexpr const char *kJoypadBackendOptionsText = "Disabled\nBLE\nManual";
+static constexpr const char *kJoypadManualModeOptionsText = "SPI\nResistive";
+static constexpr const char *kJoypadMapOptionsText = "None\nUp\nDown\nLeft\nRight\nA\nB\nC\nStart\nExit\nSave\nLoad";
+static constexpr const char *kJoypadGpioOptionsText = "Disabled\nGPIO 28\nGPIO 29\nGPIO 30\nGPIO 31\nGPIO 32\nGPIO 33\nGPIO 34\nGPIO 35\nGPIO 49\nGPIO 50\nGPIO 51\nGPIO 52";
 
 #define UI_MAIN_ITEM_LEFT_OFFSET        (20)
 #define UI_WIFI_LIST_UP_PAD             (20)
@@ -274,6 +328,60 @@ static constexpr uint32_t kSettingScreenAnimTimeMs = 220;
 static constexpr int kStatusBarBluetoothIconId = 0x424C45;
 static constexpr int kStatusBarZigbeeIconId = 0x5A425A;
 static constexpr int kQuickAccessActionApplyAirplaneRadioPreferences = 0x41525031;
+static constexpr const char *kJoypadBleRemapLabels[JC4880_JOYPAD_BLE_CONTROL_COUNT] = {
+    "D-pad Up",
+    "D-pad Down",
+    "D-pad Left",
+    "D-pad Right",
+    "A Button",
+    "B Button",
+    "C Button",
+    "Start Button",
+    "Y Button",
+    "Left Shoulder",
+    "Right Shoulder",
+    "Left Trigger",
+    "Right Trigger",
+    "Select Button",
+    "System Button",
+    "Capture / Turbo",
+    "Left Stick Click",
+    "Right Stick Click",
+    "Left Stick Up",
+    "Left Stick Down",
+    "Left Stick Left",
+    "Left Stick Right",
+    "Right Stick Up",
+    "Right Stick Down",
+    "Right Stick Left",
+    "Right Stick Right",
+};
+static constexpr const char *kJoypadSpiLabels[JC4880_JOYPAD_SPI_CONTROL_COUNT] = {
+    "SPI D-pad Up",
+    "SPI D-pad Down",
+    "SPI D-pad Left",
+    "SPI D-pad Right",
+    "Start Button",
+    "Exit Button",
+    "Save Button",
+    "Load Button",
+    "A Button",
+    "B Button",
+    "C Button",
+};
+static constexpr const char *kJoypadResistiveLabels[2] = {
+    "Resistive D-pad 01",
+    "Resistive D-pad 02",
+};
+static constexpr const char *kJoypadButtonLabels[JC4880_JOYPAD_BUTTON_CONTROL_COUNT] = {
+    "Start Button",
+    "Exit Button",
+    "Save Button",
+    "Load Button",
+    "A Button",
+    "B Button",
+    "C Button",
+};
 
 TaskHandle_t wifi_scan_handle_task;
 static SemaphoreHandle_t s_ble_mutex;
@@ -290,9 +398,6 @@ struct BleScanResult {
 
 constexpr const char *kBleDefaultDeviceName = "JC4880P443C Remote";
 constexpr const char *kZigbeeDefaultDeviceName = "JC4880P443C ZigBee";
-constexpr int32_t kBleScanDurationMs = 8000;
-constexpr size_t kBleScanResultLimit = 8;
-constexpr int32_t kBleStartupTimeoutMs = 8000;
 
 enum class BleRuntimeState : uint8_t {
     Disabled = 0,
@@ -302,6 +407,14 @@ enum class BleRuntimeState : uint8_t {
 };
 
 BleRuntimeState s_bleRuntimeState = BleRuntimeState::Disabled;
+bool s_bleScanInProgress = false;
+std::string s_bleScanStatus = "BLE discovery is idle.";
+std::vector<BleScanResult> s_bleScanResults;
+
+#if APP_SETTINGS_FEATURE_LEGACY_BLUETOOTH_RUNTIME
+constexpr int32_t kBleScanDurationMs = 8000;
+constexpr size_t kBleScanResultLimit = 8;
+constexpr int32_t kBleStartupTimeoutMs = 8000;
 bool s_bleDesiredEnabled = false;
 bool s_bleTransportReady = false;
 bool s_bleControllerReady = false;
@@ -312,10 +425,7 @@ bool s_bleStopInProgress = false;
 uint8_t s_bleOwnAddrType = BLE_OWN_ADDR_PUBLIC;
 std::string s_bleStatusMessage = "BLE is off. Enable it to advertise from the ESP32-C6 radio.";
 std::string s_bleConfiguredName = kBleDefaultDeviceName;
-bool s_bleScanInProgress = false;
 bool s_bleResumeAdvertisingAfterScan = false;
-std::string s_bleScanStatus = "BLE discovery is idle.";
-std::vector<BleScanResult> s_bleScanResults;
 SemaphoreHandle_t s_bleHostStoppedSem = nullptr;
 int64_t s_bleStartTimestampUs = 0;
 
@@ -711,6 +821,18 @@ static esp_err_t bleSetEnabled(bool enabled)
         return ESP_ERR_TIMEOUT;
     }
 
+    if (enabled) {
+        jc4880_joypad_config_t joypad_config = {};
+        if (jc4880_joypad_get_config(&joypad_config) &&
+            (joypad_config.backend == JC4880_JOYPAD_BACKEND_BLE)) {
+            s_bleDesiredEnabled = false;
+            bleSetStatusLocked(BleRuntimeState::Error,
+                               "Legacy hosted BLE is unavailable while Joypad BLE uses the ESP32-C6 radio.");
+            bleUnlock();
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+    }
+
     s_bleDesiredEnabled = enabled;
 
     if (!enabled) {
@@ -802,8 +924,19 @@ static esp_err_t bleSetEnabled(bool enabled)
     return err;
 }
 
+static bool bluetoothMenuDelegatesToJoypadBle()
+{
+    jc4880_joypad_config_t joypad_config = {};
+    return jc4880_joypad_get_config(&joypad_config) &&
+           (joypad_config.backend == JC4880_JOYPAD_BACKEND_BLE);
+}
+
 static std::string bleStatusText(bool preference_enabled)
 {
+    if (bluetoothMenuDelegatesToJoypadBle()) {
+        return "Joypad BLE is managed from the Joypad menu through the ESP32-C6 radio. The legacy Bluetooth screen is disabled.";
+    }
+
     if (!preference_enabled && (s_bleRuntimeState == BleRuntimeState::Disabled)) {
         return kBleDisabledMessage;
     }
@@ -916,6 +1049,55 @@ static esp_err_t bleUpdateConfiguredName(const std::string &name)
     bleUnlock();
     return ESP_OK;
 }
+
+#else
+
+static bool bluetoothMenuDelegatesToJoypadBle()
+{
+    jc4880_joypad_config_t joypad_config = {};
+    return jc4880_joypad_get_config(&joypad_config) &&
+           (joypad_config.backend == JC4880_JOYPAD_BACKEND_BLE);
+}
+
+static std::string bleStatusText(bool preference_enabled)
+{
+    if (bluetoothMenuDelegatesToJoypadBle()) {
+        return "Joypad BLE is managed from the Joypad menu through the ESP32-C6 radio. The legacy Bluetooth screen is disabled.";
+    }
+
+    if (!preference_enabled) {
+        return kBleDisabledMessage;
+    }
+
+    return std::string(kBleUnsupportedMessage) + " Root P4 Bluetooth is disabled in this firmware build.";
+}
+
+[[maybe_unused]] static void bleCheckStartupTimeout(void)
+{
+}
+
+static esp_err_t bleSetEnabled(bool enabled)
+{
+    s_bleRuntimeState = enabled ? BleRuntimeState::Error : BleRuntimeState::Disabled;
+    return enabled ? ESP_ERR_NOT_SUPPORTED : ESP_OK;
+}
+
+static esp_err_t bleStartScan(void)
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+static void bleCancelScan(void)
+{
+}
+
+static esp_err_t bleUpdateConfiguredName(const std::string &name)
+{
+    (void)name;
+    return ESP_OK;
+}
+
+#endif
 
 } // namespace
 
@@ -1403,6 +1585,7 @@ AppSettings::AppSettings():
     _audioTapSoundSwitch(nullptr),
     _audioHapticFeedbackSwitch(nullptr),
     _bluetoothMenuItem(nullptr),
+    _joypadMenuItem(nullptr),
     _zigbeeMenuItem(nullptr),
     _wifiMenuItem(nullptr),
     _audioMenuItem(nullptr),
@@ -1418,6 +1601,37 @@ AppSettings::AppSettings():
     _bluetoothScanStatusLabel(nullptr),
     _bluetoothScanResultsLabel(nullptr),
     _bluetoothKeyboard(nullptr),
+    _joypadScreen(nullptr),
+    _joypadBleScreen(nullptr),
+    _joypadLocalScreen(nullptr),
+    _joypadBleMenuItem(nullptr),
+    _joypadLocalMenuItem(nullptr),
+    _joypadBleActiveSwitch(nullptr),
+    _joypadManualActiveSwitch(nullptr),
+    _joypadBleEnableSwitch(nullptr),
+    _joypadBleDiscoverySwitch(nullptr),
+    _joypadBleDeviceDropdown(nullptr),
+    _joypadBleStatusLabel(nullptr),
+    _joypadBleCalibrationInfoLabel(nullptr),
+    _joypadBleCalibrationButton(nullptr),
+    _joypadBleCalibrationButtonLabel(nullptr),
+    _joypadBackendDropdown(nullptr),
+    _joypadManualModeDropdown(nullptr),
+    _joypadInfoLabel(nullptr),
+    _joypadBleTriggerBars{},
+    _joypadBleShoulderIndicators{},
+    _joypadBleStickBases{},
+    _joypadBleStickKnobs{},
+    _joypadBleDpadIndicators{},
+    _joypadBleFaceIndicators{},
+    _joypadBlePreviewCenterAxes{},
+    _joypadBlePreviewDeviceAddr{},
+    _joypadBlePreviewCenterValid(false),
+    _joypadBleRemapDropdowns{},
+    _joypadManualSpiDropdowns{},
+    _joypadManualResistiveDropdowns{},
+    _joypadManualButtonDropdowns{},
+    _joypadBleDeviceOptions(),
     _zigbeeEnableSwitch(nullptr),
     _zigbeeNameTextArea(nullptr),
     _zigbeeNameSaveButton(nullptr),
@@ -1646,7 +1860,7 @@ bool AppSettings::init(void)
     loadNvsParam();
     jc_ui_tap_sound_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] != 0);
     jc_ui_haptic_feedback_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] != 0);
-#if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
+#if APP_SETTINGS_FEATURE_BLUETOOTH_MENU && APP_SETTINGS_FEATURE_LEGACY_BLUETOOTH_RUNTIME
     {
         char ble_name[32] = {0};
         if (!loadNvsStringParam(NVS_KEY_BLE_DEVICE_NAME, ble_name, sizeof(ble_name)) || (ble_name[0] == '\0')) {
@@ -1884,7 +2098,9 @@ void AppSettings::extraUiInit(void)
     };
 
     lv_obj_add_flag(ui_PanelSettingMainContainerItem1, LV_OBJ_FLAG_HIDDEN);
+    #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
     lv_obj_add_flag(ui_PanelSettingMainContainerItem2, LV_OBJ_FLAG_HIDDEN);
+    #endif
     lv_obj_add_flag(ui_PanelSettingMainContainerItem3, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelSettingMainContainerItem4, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelSettingMainContainerItem5, LV_OBJ_FLAG_HIDDEN);
@@ -1901,6 +2117,7 @@ void AppSettings::extraUiInit(void)
     #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
     _bluetoothMenuItem = createMainMenuItem("Bluetooth", &ui_img_bluetooth_png, nullptr, nullptr);
     #endif
+    _joypadMenuItem = createMainBadgeMenuItem("Joypad", "JP", lv_color_hex(0x0F766E), nullptr);
     #if CONFIG_JC4880_FEATURE_ZIGBEE
     _zigbeeMenuItem = createMainBadgeMenuItem("ZigBee", "ZB", lv_color_hex(0xD97706), nullptr);
     #endif
@@ -2201,12 +2418,15 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_event_cb(ui_KeyboardScreenSettingVerification, onKeyboardScreenSettingVerificationClickedEventCallback,
                         LV_EVENT_CANCEL, this);
     // Record the screen index and install the screen loaded event callback
+    #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
     lv_obj_add_flag(ui_ButtonScreenSettingBLEReturn, LV_OBJ_FLAG_HIDDEN);
+    #endif
     _screen_list[UI_WIFI_SCAN_INDEX] = ui_ScreenSettingWiFi;
     lv_obj_add_event_cb(ui_ScreenSettingWiFi, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
     _screen_list[UI_WIFI_CONNECT_INDEX] = ui_ScreenSettingVerification;
     lv_obj_add_event_cb(ui_ScreenSettingVerification, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
+    #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
     /* Bluetooth */
     lv_label_set_text(ui_LabelPanelScreenSettingBLESwitch, "BLE");
     lv_obj_clear_flag(ui_ImagePanelScreenSettingBLESwitch, LV_OBJ_FLAG_HIDDEN);
@@ -2373,6 +2593,7 @@ void AppSettings::extraUiInit(void)
     // Record the screen index and install the screen loaded event callback
     _screen_list[UI_BLUETOOTH_SETTING_INDEX] = ui_ScreenSettingBLE;
     lv_obj_add_event_cb(ui_ScreenSettingBLE, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+    #endif
 
     /* Display */
     lv_slider_set_range(ui_SliderPanelScreenSettingLightSwitch1, SCREEN_BRIGHTNESS_MIN, SCREEN_BRIGHTNESS_MAX);
@@ -3023,6 +3244,559 @@ void AppSettings::ensureHardwareScreen(void)
     _screen_list[UI_HARDWARE_SETTING_INDEX] = _hardwareScreen;
     lv_obj_add_event_cb(_hardwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 #endif
+}
+
+void AppSettings::ensureJoypadScreen(void)
+{
+    if ((_joypadScreen != nullptr) && lv_obj_ready(_joypadScreen) &&
+        (_joypadBleScreen != nullptr) && lv_obj_ready(_joypadBleScreen) &&
+        (_joypadLocalScreen != nullptr) && lv_obj_ready(_joypadLocalScreen)) {
+        return;
+    }
+
+    auto createJoypadHeader = [](lv_obj_t *screen, const char *title, const char *badge_text, lv_color_t badge_color) {
+        lv_obj_t *titleLabel = lv_label_create(screen);
+        lv_label_set_text(titleLabel, title);
+        lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(titleLabel, lv_color_hex(0x0F172A), 0);
+        lv_obj_align(titleLabel, LV_ALIGN_TOP_MID, 0, 74);
+
+        lv_obj_t *badge = lv_obj_create(screen);
+        lv_obj_set_size(badge, 38, 38);
+        lv_obj_align_to(badge, titleLabel, LV_ALIGN_OUT_LEFT_MID, -16, 0);
+        lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(badge, 0, 0);
+        lv_obj_set_style_bg_color(badge, badge_color, 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+
+        lv_obj_t *badgeLabel = lv_label_create(badge);
+        lv_label_set_text(badgeLabel, badge_text);
+        lv_obj_set_style_text_font(badgeLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(badgeLabel, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(badgeLabel);
+    };
+
+    auto createJoypadPanel = [](lv_obj_t *screen, lv_coord_t height) {
+        lv_obj_t *panel = lv_obj_create(screen);
+        lv_obj_set_size(panel, lv_pct(92), height);
+        lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 132);
+        lv_obj_set_style_radius(panel, 20, 0);
+        lv_obj_set_style_border_width(panel, 0, 0);
+        lv_obj_set_style_bg_color(panel, lv_color_hex(0xF8FAFC), 0);
+        lv_obj_set_style_pad_all(panel, 14, 0);
+        lv_obj_set_style_pad_row(panel, 12, 0);
+        lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_scroll_dir(panel, LV_DIR_VER);
+        return panel;
+    };
+
+    auto createSection = [](lv_obj_t *parent, const char *title, const char *hint) {
+        lv_obj_t *section = lv_obj_create(parent);
+        lv_obj_set_width(section, lv_pct(100));
+        lv_obj_set_height(section, LV_SIZE_CONTENT);
+        lv_obj_clear_flag(section, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(section, 18, 0);
+        lv_obj_set_style_border_width(section, 0, 0);
+        lv_obj_set_style_bg_color(section, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_pad_all(section, 14, 0);
+        lv_obj_set_style_pad_row(section, 10, 0);
+        lv_obj_set_flex_flow(section, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(section, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        lv_obj_t *sectionTitle = lv_label_create(section);
+        lv_label_set_text(sectionTitle, title);
+        lv_obj_set_style_text_font(sectionTitle, &lv_font_montserrat_20, 0);
+        lv_obj_set_style_text_color(sectionTitle, lv_color_hex(0x0F172A), 0);
+
+        lv_obj_t *sectionHint = lv_label_create(section);
+        lv_obj_set_width(sectionHint, lv_pct(100));
+        lv_label_set_long_mode(sectionHint, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(sectionHint, hint);
+        lv_obj_set_style_text_font(sectionHint, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(sectionHint, lv_color_hex(0x475569), 0);
+        return section;
+    };
+
+    auto createDropdownRow = [this](lv_obj_t *parent, const char *title, const char *options, lv_event_cb_t callback, lv_obj_t **out_dropdown) {
+        lv_obj_t *row = create_settings_toggle_row(parent, title);
+        lv_obj_t *dropdown = lv_dropdown_create(row);
+        lv_dropdown_set_options_static(dropdown, options);
+        lv_obj_set_width(dropdown, 180);
+        lv_obj_align(dropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(dropdown, callback, LV_EVENT_VALUE_CHANGED, this);
+        if (out_dropdown != nullptr) {
+            *out_dropdown = dropdown;
+        }
+    };
+
+    auto createIndicatorButton = [](lv_obj_t *parent, const char *label, lv_coord_t size) {
+        lv_obj_t *button = lv_obj_create(parent);
+        lv_obj_set_size(button, size, size);
+        lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(button, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(button, 2, 0);
+        lv_obj_set_style_border_color(button, lv_color_hex(0x94A3B8), 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(0xE2E8F0), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(button, 0, 0);
+
+        lv_obj_t *buttonLabel = lv_label_create(button);
+        lv_label_set_text(buttonLabel, label);
+        lv_obj_set_style_text_font(buttonLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(buttonLabel, lv_color_hex(0x0F172A), 0);
+        lv_obj_center(buttonLabel);
+        return button;
+    };
+
+    auto createShoulderIndicator = [](lv_obj_t *parent, const char *label) {
+        lv_obj_t *indicator = lv_obj_create(parent);
+        lv_obj_set_size(indicator, 46, 30);
+        lv_obj_clear_flag(indicator, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(indicator, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(indicator, 15, 0);
+        lv_obj_set_style_border_width(indicator, 2, 0);
+        lv_obj_set_style_border_color(indicator, lv_color_hex(0x94A3B8), 0);
+        lv_obj_set_style_bg_color(indicator, lv_color_hex(0xE2E8F0), 0);
+        lv_obj_set_style_bg_opa(indicator, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(indicator, 0, 0);
+
+        lv_obj_t *indicatorLabel = lv_label_create(indicator);
+        lv_label_set_text(indicatorLabel, label);
+        lv_obj_set_style_text_font(indicatorLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(indicatorLabel, lv_color_hex(0x0F172A), 0);
+        lv_obj_center(indicatorLabel);
+        return indicator;
+    };
+
+    auto createStickVisualizer = [](lv_obj_t *parent, const char *title, lv_obj_t **out_base, lv_obj_t **out_knob) {
+        lv_obj_t *container = lv_obj_create(parent);
+        lv_obj_set_size(container, 128, 148);
+        lv_obj_clear_flag(container, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(container, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_bg_opa(container, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(container, 0, 0);
+        lv_obj_set_style_pad_all(container, 0, 0);
+
+        lv_obj_t *titleLabel = lv_label_create(container);
+        lv_label_set_text(titleLabel, title);
+        lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(titleLabel, lv_color_hex(0x334155), 0);
+        lv_obj_align(titleLabel, LV_ALIGN_TOP_MID, 0, 0);
+
+        lv_obj_t *base = lv_obj_create(container);
+        lv_obj_set_size(base, 92, 92);
+        lv_obj_align(base, LV_ALIGN_BOTTOM_MID, 0, 0);
+        lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(base, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(base, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(base, 3, 0);
+        lv_obj_set_style_border_color(base, lv_color_hex(0x94A3B8), 0);
+        lv_obj_set_style_bg_color(base, lv_color_hex(0xDBEAFE), 0);
+        lv_obj_set_style_bg_opa(base, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(base, 0, 0);
+
+        lv_obj_t *crossH = lv_obj_create(base);
+        lv_obj_set_size(crossH, 56, 2);
+        lv_obj_center(crossH);
+        lv_obj_clear_flag(crossH, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_border_width(crossH, 0, 0);
+        lv_obj_set_style_bg_color(crossH, lv_color_hex(0xBFDBFE), 0);
+
+        lv_obj_t *crossV = lv_obj_create(base);
+        lv_obj_set_size(crossV, 2, 56);
+        lv_obj_center(crossV);
+        lv_obj_clear_flag(crossV, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_border_width(crossV, 0, 0);
+        lv_obj_set_style_bg_color(crossV, lv_color_hex(0xBFDBFE), 0);
+
+        lv_obj_t *knob = lv_obj_create(base);
+        lv_obj_set_size(knob, 28, 28);
+        lv_obj_clear_flag(knob, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(knob, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(knob, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(knob, 2, 0);
+        lv_obj_set_style_border_color(knob, lv_color_hex(0x1D4ED8), 0);
+        lv_obj_set_style_bg_color(knob, lv_color_hex(0x60A5FA), 0);
+        lv_obj_set_style_bg_opa(knob, LV_OPA_COVER, 0);
+        lv_obj_center(knob);
+
+        if (out_base != nullptr) {
+            *out_base = base;
+        }
+        if (out_knob != nullptr) {
+            *out_knob = knob;
+        }
+        return container;
+    };
+
+    auto createStickOverlay = [](lv_obj_t *parent, lv_coord_t size, lv_obj_t **out_base, lv_obj_t **out_knob) {
+        lv_obj_t *base = lv_obj_create(parent);
+        lv_obj_set_size(base, size, size);
+        lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(base, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(base, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(base, 2, 0);
+        lv_obj_set_style_border_color(base, lv_color_hex(0x94A3B8), 0);
+        lv_obj_set_style_bg_color(base, lv_color_hex(0xDBEAFE), 0);
+        lv_obj_set_style_bg_opa(base, LV_OPA_40, 0);
+        lv_obj_set_style_pad_all(base, 0, 0);
+
+        lv_obj_t *crossH = lv_obj_create(base);
+        lv_obj_set_size(crossH, static_cast<lv_coord_t>((size * 3) / 5), 2);
+        lv_obj_center(crossH);
+        lv_obj_clear_flag(crossH, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_border_width(crossH, 0, 0);
+        lv_obj_set_style_bg_color(crossH, lv_color_hex(0x60A5FA), 0);
+
+        lv_obj_t *crossV = lv_obj_create(base);
+        lv_obj_set_size(crossV, 2, static_cast<lv_coord_t>((size * 3) / 5));
+        lv_obj_center(crossV);
+        lv_obj_clear_flag(crossV, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_border_width(crossV, 0, 0);
+        lv_obj_set_style_bg_color(crossV, lv_color_hex(0x60A5FA), 0);
+
+        lv_obj_t *knob = lv_obj_create(base);
+        const lv_coord_t knob_size = static_cast<lv_coord_t>(std::max<int>(18, size / 3));
+        lv_obj_set_size(knob, knob_size, knob_size);
+        lv_obj_clear_flag(knob, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(knob, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(knob, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(knob, 2, 0);
+        lv_obj_set_style_border_color(knob, lv_color_hex(0x0284C7), 0);
+        lv_obj_set_style_bg_color(knob, lv_color_hex(0x38BDF8), 0);
+        lv_obj_set_style_bg_opa(knob, LV_OPA_COVER, 0);
+        lv_obj_center(knob);
+
+        if (out_base != nullptr) {
+            *out_base = base;
+        }
+        if (out_knob != nullptr) {
+            *out_knob = knob;
+        }
+        return base;
+    };
+
+    auto addRefreshOnLoad = [this](lv_obj_t *screen) {
+        lv_obj_add_event_cb(screen, [](lv_event_t *e) {
+            AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+            if (app != nullptr) {
+                app->refreshJoypadUi();
+            }
+        }, LV_EVENT_SCREEN_LOADED, this);
+    };
+
+    auto createHubItem = [](lv_obj_t *parent, const char *title, const char *subtitle, const char *badge_text, lv_color_t badge_color) {
+        lv_obj_t *item = lv_obj_create(parent);
+        lv_obj_set_width(item, lv_pct(100));
+        lv_obj_set_height(item, 96);
+        lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(item, 18, 0);
+        lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(item, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0xDCEEFF), LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(item, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_pad_all(item, 0, 0);
+
+        lv_obj_t *badge = lv_obj_create(item);
+        lv_obj_set_size(badge, 46, 46);
+        lv_obj_align(badge, LV_ALIGN_LEFT_MID, 18, 0);
+        lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(badge, 0, 0);
+        lv_obj_set_style_bg_color(badge, badge_color, 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+
+        lv_obj_t *badgeLabel = lv_label_create(badge);
+        lv_label_set_text(badgeLabel, badge_text);
+        lv_obj_set_style_text_font(badgeLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(badgeLabel, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(badgeLabel);
+
+        lv_obj_t *titleLabel = lv_label_create(item);
+        lv_label_set_text(titleLabel, title);
+        lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_22, 0);
+        lv_obj_set_style_text_color(titleLabel, lv_color_hex(0x0F172A), 0);
+        lv_obj_align_to(titleLabel, badge, LV_ALIGN_OUT_RIGHT_TOP, 18, -2);
+
+        lv_obj_t *subtitleLabel = lv_label_create(item);
+        lv_obj_set_width(subtitleLabel, lv_pct(58));
+        lv_label_set_long_mode(subtitleLabel, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(subtitleLabel, subtitle);
+        lv_obj_set_style_text_font(subtitleLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(subtitleLabel, lv_color_hex(0x475569), 0);
+        lv_obj_align_to(subtitleLabel, titleLabel, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+
+        lv_obj_t *arrow = lv_img_create(item);
+        lv_img_set_src(arrow, &ui_img_arrow_png);
+        lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -22, 0);
+        return item;
+    };
+
+    if ((_joypadScreen == nullptr) || !lv_obj_ready(_joypadScreen)) {
+        _joypadScreen = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(_joypadScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(_joypadScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_clear_flag(_joypadScreen, LV_OBJ_FLAG_SCROLLABLE);
+
+        createJoypadHeader(_joypadScreen, "Joypad", "JP", lv_color_hex(0x0F766E));
+
+        lv_obj_t *joypadPanel = createJoypadPanel(_joypadScreen, 320);
+        lv_obj_t *introLabel = lv_label_create(joypadPanel);
+        lv_obj_set_width(introLabel, lv_pct(100));
+        lv_label_set_long_mode(introLabel, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(introLabel, "Choose which joypad path you want to configure. Swipe back like the other settings pages.");
+        lv_obj_set_style_text_font(introLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(introLabel, lv_color_hex(0x475569), 0);
+
+        _joypadBleMenuItem = createHubItem(joypadPanel,
+                                           "BLE Controller",
+                                           "Pair through the ESP32-C6 radio, store one controller, and inspect live button activity.",
+                                           "BT",
+                                           lv_color_hex(0x2563EB));
+        _joypadLocalMenuItem = createHubItem(joypadPanel,
+                                             "Local Controller",
+                                             "Configure manual GPIO-backed controls for SPI or resistive local input.",
+                                             "LC",
+                                             lv_color_hex(0x0F766E));
+
+        auto onJoypadHubItemClicked = [](lv_event_t *e) {
+            AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+            if ((app == nullptr) || (lv_event_get_code(e) != LV_EVENT_CLICKED)) {
+                return;
+            }
+
+            app->refreshJoypadUi();
+            lv_obj_t *target = lv_event_get_target(e);
+            if ((target == app->_joypadBleMenuItem) && lv_obj_ready(app->_joypadBleScreen)) {
+                lv_scr_load_anim(app->_joypadBleScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+            } else if ((target == app->_joypadLocalMenuItem) && lv_obj_ready(app->_joypadLocalScreen)) {
+                lv_scr_load_anim(app->_joypadLocalScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+            }
+        };
+        lv_obj_add_event_cb(_joypadBleMenuItem, onJoypadHubItemClicked, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(_joypadLocalMenuItem, onJoypadHubItemClicked, LV_EVENT_CLICKED, this);
+
+        _screen_list[UI_JOYPAD_SETTING_INDEX] = _joypadScreen;
+        lv_obj_add_event_cb(_joypadScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+    }
+
+    if ((_joypadBleScreen == nullptr) || !lv_obj_ready(_joypadBleScreen)) {
+        _joypadBleScreen = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(_joypadBleScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(_joypadBleScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_clear_flag(_joypadBleScreen, LV_OBJ_FLAG_SCROLLABLE);
+        createJoypadHeader(_joypadBleScreen, "BLE Controller", "BT", lv_color_hex(0x2563EB));
+        lv_obj_t *joypadPanel = createJoypadPanel(_joypadBleScreen, 1230);
+
+        lv_obj_t *connectionSection = createSection(joypadPanel,
+                                                    "Connection",
+                                                    "Use the ESP32-C6 radio for controller pairing and reconnects. The status block updates with live button activity.");
+
+        lv_obj_t *bleActiveRow = create_settings_toggle_row(connectionSection, "Use BLE Controller");
+        _joypadBleActiveSwitch = lv_switch_create(bleActiveRow);
+        lv_obj_align(_joypadBleActiveSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(_joypadBleActiveSwitch, onJoypadConfigChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+        lv_obj_t *bleEnableRow = create_settings_toggle_row(connectionSection, "Enable BLE Joypad");
+        _joypadBleEnableSwitch = lv_switch_create(bleEnableRow);
+        lv_obj_align(_joypadBleEnableSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(_joypadBleEnableSwitch, onJoypadConfigChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+        lv_obj_t *bleDiscoveryRow = create_settings_toggle_row(connectionSection, "Allow Discovery / Pairing");
+        _joypadBleDiscoverySwitch = lv_switch_create(bleDiscoveryRow);
+        lv_obj_align(_joypadBleDiscoverySwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(_joypadBleDiscoverySwitch, onJoypadConfigChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+        createDropdownRow(connectionSection, "Stored Controller", "No controller selected", onJoypadConfigChangedEventCallback, &_joypadBleDeviceDropdown);
+
+        _joypadBleStatusLabel = lv_label_create(connectionSection);
+        lv_obj_set_width(_joypadBleStatusLabel, lv_pct(100));
+        lv_label_set_long_mode(_joypadBleStatusLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(_joypadBleStatusLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_joypadBleStatusLabel, lv_color_hex(0x334155), 0);
+
+        lv_obj_t *calibrationSection = createSection(joypadPanel,
+                                                     "Recalibration",
+                                                     "Compact live view for sticks, triggers, shoulders, D-pad, and face buttons. Start with both sticks released at center, then sweep to the furthest points you can reach before finishing.");
+
+        lv_obj_t *controllerPad = lv_obj_create(calibrationSection);
+        lv_obj_set_width(controllerPad, lv_pct(100));
+        lv_obj_set_height(controllerPad, LV_SIZE_CONTENT);
+        lv_obj_clear_flag(controllerPad, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(controllerPad, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(controllerPad, 22, 0);
+        lv_obj_set_style_border_width(controllerPad, 0, 0);
+        lv_obj_set_style_bg_color(controllerPad, lv_color_hex(0xEFF6FF), 0);
+        lv_obj_set_style_bg_opa(controllerPad, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_all(controllerPad, 12, 0);
+        lv_obj_set_style_pad_row(controllerPad, 0, 0);
+        lv_obj_set_flex_flow(controllerPad, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(controllerPad, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        constexpr lv_coord_t kControllerStageWidth = 400;
+        constexpr lv_coord_t kControllerStageHeight = 293;
+        constexpr lv_coord_t kControllerSourceWidth = 800;
+        constexpr lv_coord_t kControllerSourceHeight = 585;
+        auto scaleX = [](int coordinate) {
+            return static_cast<lv_coord_t>((coordinate * kControllerStageWidth) / kControllerSourceWidth);
+        };
+        auto scaleY = [](int coordinate) {
+            return static_cast<lv_coord_t>((coordinate * kControllerStageHeight) / kControllerSourceHeight);
+        };
+
+        lv_obj_t *controllerStage = lv_obj_create(controllerPad);
+        lv_obj_set_size(controllerStage, kControllerStageWidth, kControllerStageHeight);
+        lv_obj_clear_flag(controllerStage, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(controllerStage, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_bg_opa(controllerStage, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(controllerStage, 0, 0);
+        lv_obj_set_style_pad_all(controllerStage, 0, 0);
+
+        lv_obj_t *controllerImage = lv_img_create(controllerStage);
+        lv_img_set_src(controllerImage, &ui_img_controller_png);
+        lv_img_set_zoom(controllerImage, static_cast<uint16_t>((256 * kControllerStageWidth) / kControllerSourceWidth));
+        lv_obj_center(controllerImage);
+
+        _joypadBleTriggerBars[0] = lv_bar_create(controllerStage);
+        lv_obj_set_size(_joypadBleTriggerBars[0], scaleX(150), 12);
+        lv_obj_set_pos(_joypadBleTriggerBars[0], scaleX(88), scaleY(36));
+        lv_bar_set_range(_joypadBleTriggerBars[0], 0, 1024);
+        lv_bar_set_value(_joypadBleTriggerBars[0], 0, LV_ANIM_OFF);
+        lv_obj_set_style_radius(_joypadBleTriggerBars[0], 6, 0);
+        lv_obj_set_style_bg_color(_joypadBleTriggerBars[0], lv_color_hex(0xCBD5E1), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(_joypadBleTriggerBars[0], LV_OPA_80, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(_joypadBleTriggerBars[0], lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+
+        _joypadBleTriggerBars[1] = lv_bar_create(controllerStage);
+        lv_obj_set_size(_joypadBleTriggerBars[1], scaleX(150), 12);
+        lv_obj_set_pos(_joypadBleTriggerBars[1], scaleX(562), scaleY(36));
+        lv_bar_set_range(_joypadBleTriggerBars[1], 0, 1024);
+        lv_bar_set_value(_joypadBleTriggerBars[1], 0, LV_ANIM_OFF);
+        lv_obj_set_style_radius(_joypadBleTriggerBars[1], 6, 0);
+        lv_obj_set_style_bg_color(_joypadBleTriggerBars[1], lv_color_hex(0xCBD5E1), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(_joypadBleTriggerBars[1], LV_OPA_80, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(_joypadBleTriggerBars[1], lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+
+        _joypadBleShoulderIndicators[0] = createShoulderIndicator(controllerStage, "L1");
+        lv_obj_set_size(_joypadBleShoulderIndicators[0], scaleX(72), scaleY(34));
+        lv_obj_set_pos(_joypadBleShoulderIndicators[0], scaleX(108), scaleY(6));
+        _joypadBleShoulderIndicators[1] = createShoulderIndicator(controllerStage, "R1");
+        lv_obj_set_size(_joypadBleShoulderIndicators[1], scaleX(72), scaleY(34));
+        lv_obj_set_pos(_joypadBleShoulderIndicators[1], scaleX(620), scaleY(6));
+
+        createStickOverlay(controllerStage, scaleX(112), &_joypadBleStickBases[0], &_joypadBleStickKnobs[0]);
+        lv_obj_set_pos(_joypadBleStickBases[0], scaleX(188), scaleY(220));
+        createStickOverlay(controllerStage, scaleX(112), &_joypadBleStickBases[1], &_joypadBleStickKnobs[1]);
+        lv_obj_set_pos(_joypadBleStickBases[1], scaleX(500), scaleY(220));
+
+        _joypadBleDpadIndicators[0] = createIndicatorButton(controllerStage, "U", scaleX(30));
+        lv_obj_set_pos(_joypadBleDpadIndicators[0], scaleX(121), scaleY(115));
+        _joypadBleDpadIndicators[1] = createIndicatorButton(controllerStage, "L", scaleX(30));
+        lv_obj_set_pos(_joypadBleDpadIndicators[1], scaleX(92), scaleY(146));
+        _joypadBleDpadIndicators[2] = createIndicatorButton(controllerStage, "R", scaleX(30));
+        lv_obj_set_pos(_joypadBleDpadIndicators[2], scaleX(150), scaleY(146));
+        _joypadBleDpadIndicators[3] = createIndicatorButton(controllerStage, "D", scaleX(30));
+        lv_obj_set_pos(_joypadBleDpadIndicators[3], scaleX(121), scaleY(176));
+
+        _joypadBleFaceIndicators[0] = createIndicatorButton(controllerStage, "X", scaleX(32));
+        lv_obj_set_pos(_joypadBleFaceIndicators[0], scaleX(592), scaleY(143));
+        _joypadBleFaceIndicators[1] = createIndicatorButton(controllerStage, "Y", scaleX(32));
+        lv_obj_set_pos(_joypadBleFaceIndicators[1], scaleX(624), scaleY(112));
+        _joypadBleFaceIndicators[2] = createIndicatorButton(controllerStage, "B", scaleX(32));
+        lv_obj_set_pos(_joypadBleFaceIndicators[2], scaleX(654), scaleY(143));
+        _joypadBleFaceIndicators[3] = createIndicatorButton(controllerStage, "A", scaleX(32));
+        lv_obj_set_pos(_joypadBleFaceIndicators[3], scaleX(624), scaleY(175));
+
+        _joypadBleCalibrationInfoLabel = lv_label_create(calibrationSection);
+        lv_obj_set_width(_joypadBleCalibrationInfoLabel, lv_pct(100));
+        lv_label_set_long_mode(_joypadBleCalibrationInfoLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(_joypadBleCalibrationInfoLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_joypadBleCalibrationInfoLabel, lv_color_hex(0x334155), 0);
+
+        _joypadBleCalibrationButton = lv_btn_create(calibrationSection);
+        lv_obj_set_size(_joypadBleCalibrationButton, 190, 48);
+        lv_obj_set_style_radius(_joypadBleCalibrationButton, 16, 0);
+        lv_obj_set_style_border_width(_joypadBleCalibrationButton, 0, 0);
+        lv_obj_set_style_bg_color(_joypadBleCalibrationButton, lv_color_hex(0x0F766E), 0);
+        lv_obj_set_style_bg_opa(_joypadBleCalibrationButton, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(_joypadBleCalibrationButton, onJoypadCalibrationClickedEventCallback, LV_EVENT_CLICKED, this);
+
+        _joypadBleCalibrationButtonLabel = lv_label_create(_joypadBleCalibrationButton);
+        lv_label_set_text(_joypadBleCalibrationButtonLabel, "Start Calibration");
+        lv_obj_set_style_text_font(_joypadBleCalibrationButtonLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_joypadBleCalibrationButtonLabel, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_center(_joypadBleCalibrationButtonLabel);
+
+        lv_obj_t *remapSection = createSection(joypadPanel,
+                                               "Remap",
+                                               "Choose how each incoming BLE control maps into the Sega input mask and joypad actions.");
+        for (size_t index = 0; index < _joypadBleRemapDropdowns.size(); ++index) {
+            createDropdownRow(remapSection,
+                              kJoypadBleRemapLabels[index],
+                              kJoypadMapOptionsText,
+                              onJoypadConfigChangedEventCallback,
+                              &_joypadBleRemapDropdowns[index]);
+        }
+
+        addRefreshOnLoad(_joypadBleScreen);
+    }
+
+    if ((_joypadLocalScreen == nullptr) || !lv_obj_ready(_joypadLocalScreen)) {
+        _joypadLocalScreen = lv_obj_create(NULL);
+        lv_obj_set_style_bg_color(_joypadLocalScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_opa(_joypadLocalScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+        lv_obj_clear_flag(_joypadLocalScreen, LV_OBJ_FLAG_SCROLLABLE);
+        createJoypadHeader(_joypadLocalScreen, "Local Controller", "LC", lv_color_hex(0x0F766E));
+        lv_obj_t *joypadPanel = createJoypadPanel(_joypadLocalScreen, 680);
+
+        lv_obj_t *generalSection = createSection(joypadPanel,
+                                                 "Mode",
+                                                 "Use GPIO-backed local controls when you want the P4 side to read pins directly without BLE.");
+
+        lv_obj_t *manualActiveRow = create_settings_toggle_row(generalSection, "Use Local Controller");
+        _joypadManualActiveSwitch = lv_switch_create(manualActiveRow);
+        lv_obj_align(_joypadManualActiveSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(_joypadManualActiveSwitch, onJoypadConfigChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+        createDropdownRow(generalSection, "Manual Mode", kJoypadManualModeOptionsText, onJoypadConfigChangedEventCallback, &_joypadManualModeDropdown);
+
+        lv_obj_t *manualSection = createSection(joypadPanel,
+                                                "Pin Mapping",
+                                                "SPI mode maps direct GPIO inputs now. Resistive mode stores pin assignments for the later analog ladder decoder.");
+        for (size_t index = 0; index < _joypadManualSpiDropdowns.size(); ++index) {
+            createDropdownRow(manualSection,
+                              kJoypadSpiLabels[index],
+                              kJoypadGpioOptionsText,
+                              onJoypadConfigChangedEventCallback,
+                              &_joypadManualSpiDropdowns[index]);
+        }
+        for (size_t index = 0; index < _joypadManualResistiveDropdowns.size(); ++index) {
+            createDropdownRow(manualSection,
+                              kJoypadResistiveLabels[index],
+                              kJoypadGpioOptionsText,
+                              onJoypadConfigChangedEventCallback,
+                              &_joypadManualResistiveDropdowns[index]);
+        }
+        for (size_t index = 0; index < _joypadManualButtonDropdowns.size(); ++index) {
+            createDropdownRow(manualSection,
+                              kJoypadButtonLabels[index],
+                              kJoypadGpioOptionsText,
+                              onJoypadConfigChangedEventCallback,
+                              &_joypadManualButtonDropdowns[index]);
+        }
+
+        _joypadInfoLabel = lv_label_create(joypadPanel);
+        lv_obj_set_width(_joypadInfoLabel, lv_pct(100));
+        lv_label_set_long_mode(_joypadInfoLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(_joypadInfoLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_joypadInfoLabel, lv_color_hex(0x475569), 0);
+
+        addRefreshOnLoad(_joypadLocalScreen);
+    }
 }
 
 void AppSettings::ensureZigbeeScreen(void)
@@ -3743,12 +4517,18 @@ void AppSettings::refreshBluetoothUi(void)
     }
 
     const bool bluetooth_enabled = _nvs_param_map[NVS_KEY_BLE_ENABLE] != 0;
+    const bool delegated_to_joypad = bluetoothMenuDelegatesToJoypadBle();
 
     if (lv_obj_ready(ui_SwitchPanelScreenSettingBLESwitch)) {
-        if (bluetooth_enabled) {
+        if (delegated_to_joypad) {
+            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+            lv_obj_add_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_DISABLED);
+        } else if (bluetooth_enabled) {
             lv_obj_add_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_DISABLED);
         } else {
             lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_DISABLED);
         }
     }
 
@@ -3774,14 +4554,40 @@ void AppSettings::refreshBluetoothUi(void)
         if (!lv_obj_has_state(_bluetoothNameTextArea, LV_STATE_FOCUSED)) {
             lv_textarea_set_text(_bluetoothNameTextArea, ble_name);
         }
+
+        if (delegated_to_joypad) {
+            lv_obj_add_state(_bluetoothNameTextArea, LV_STATE_DISABLED);
+        } else {
+            lv_obj_clear_state(_bluetoothNameTextArea, LV_STATE_DISABLED);
+        }
+    }
+
+    if (lv_obj_ready(_bluetoothNameSaveButton)) {
+        if (delegated_to_joypad) {
+            lv_obj_add_state(_bluetoothNameSaveButton, LV_STATE_DISABLED);
+        } else {
+            lv_obj_clear_state(_bluetoothNameSaveButton, LV_STATE_DISABLED);
+        }
     }
 
     if (lv_obj_ready(_bluetoothScanButtonLabel)) {
-        lv_label_set_text(_bluetoothScanButtonLabel, s_bleScanInProgress ? "Stop Scan" : "Scan Nearby");
+        lv_label_set_text(_bluetoothScanButtonLabel,
+                          delegated_to_joypad ? "Use Joypad Menu" : (s_bleScanInProgress ? "Stop Scan" : "Scan Nearby"));
+    }
+
+    if (lv_obj_ready(_bluetoothScanButton)) {
+        if (delegated_to_joypad) {
+            lv_obj_add_state(_bluetoothScanButton, LV_STATE_DISABLED);
+        } else {
+            lv_obj_clear_state(_bluetoothScanButton, LV_STATE_DISABLED);
+        }
     }
 
     if (lv_obj_ready(_bluetoothScanStatusLabel)) {
-        if (!bluetooth_enabled) {
+        if (delegated_to_joypad) {
+            lv_label_set_text(_bluetoothScanStatusLabel,
+                              "Open Settings > Joypad to enable Bluepad32, pair a controller, or manage discovery on the ESP32-C6.");
+        } else if (!bluetooth_enabled) {
             lv_label_set_text(_bluetoothScanStatusLabel, "Enable BLE first to scan nearby devices.");
         } else {
             lv_label_set_text(_bluetoothScanStatusLabel, s_bleScanStatus.c_str());
@@ -3790,7 +4596,9 @@ void AppSettings::refreshBluetoothUi(void)
 
     if (lv_obj_ready(_bluetoothScanResultsLabel)) {
         std::string results;
-        if (s_bleScanResults.empty()) {
+        if (delegated_to_joypad) {
+            results = "The Joypad screen owns controller pairing and stored-controller selection when Joypad BLE is active.";
+        } else if (s_bleScanResults.empty()) {
             results = bluetooth_enabled ? "No discovery results yet." : "Discovery is unavailable while BLE is off.";
         } else {
             for (size_t index = 0; index < s_bleScanResults.size(); ++index) {
@@ -3805,6 +4613,342 @@ void AppSettings::refreshBluetoothUi(void)
             }
         }
         lv_label_set_text(_bluetoothScanResultsLabel, results.c_str());
+    }
+}
+
+void AppSettings::refreshJoypadUi(void)
+{
+    if (!isUiActive()) {
+        return;
+    }
+
+    jc4880_joypad_config_t config = {};
+    if (!jc4880_joypad_get_config(&config)) {
+        return;
+    }
+
+    jc4880_joypad_ble_report_state_t report = {};
+    jc4880_joypad_get_ble_report_state(&report);
+
+    if (lv_obj_ready(_joypadManualModeDropdown)) {
+        lv_dropdown_set_selected(_joypadManualModeDropdown,
+                                 findDropdownIndexForValue(kJoypadManualModeOptions,
+                                                           sizeof(kJoypadManualModeOptions) / sizeof(kJoypadManualModeOptions[0]),
+                                                           config.manual_mode));
+    }
+
+    if (lv_obj_ready(_joypadBleActiveSwitch)) {
+        if (config.backend == JC4880_JOYPAD_BACKEND_BLE) {
+            lv_obj_add_state(_joypadBleActiveSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_joypadBleActiveSwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (lv_obj_ready(_joypadManualActiveSwitch)) {
+        if (config.backend == JC4880_JOYPAD_BACKEND_MANUAL) {
+            lv_obj_add_state(_joypadManualActiveSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_joypadManualActiveSwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (lv_obj_ready(_joypadBleEnableSwitch)) {
+        if (config.ble_enabled != 0) {
+            lv_obj_add_state(_joypadBleEnableSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_joypadBleEnableSwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (lv_obj_ready(_joypadBleDiscoverySwitch)) {
+        if (config.ble_discovery_enabled != 0) {
+            lv_obj_add_state(_joypadBleDiscoverySwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_joypadBleDiscoverySwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    _joypadBleDeviceOptions.clear();
+    std::string deviceOptionsText;
+    if (config.ble_device_addr[0] != '\0') {
+        _joypadBleDeviceOptions.emplace_back(config.ble_device_addr);
+        deviceOptionsText += std::string("Saved: ") + config.ble_device_addr;
+    }
+    if ((report.device_addr[0] != '\0') &&
+        (std::find(_joypadBleDeviceOptions.begin(), _joypadBleDeviceOptions.end(), report.device_addr) == _joypadBleDeviceOptions.end())) {
+        if (!deviceOptionsText.empty()) {
+            deviceOptionsText += "\n";
+        }
+        deviceOptionsText += (report.device_name[0] != '\0')
+                                 ? (std::string("Connected: ") + report.device_name + " (" + report.device_addr + ")")
+                                 : (std::string("Connected: ") + report.device_addr);
+        _joypadBleDeviceOptions.emplace_back(report.device_addr);
+    }
+    if (deviceOptionsText.empty()) {
+        deviceOptionsText = "No controller selected";
+    }
+
+    if (lv_obj_ready(_joypadBleDeviceDropdown)) {
+        lv_dropdown_set_options(_joypadBleDeviceDropdown, deviceOptionsText.c_str());
+        uint16_t selectedIndex = 0;
+        for (size_t index = 0; index < _joypadBleDeviceOptions.size(); ++index) {
+            if (_joypadBleDeviceOptions[index] == config.ble_device_addr) {
+                selectedIndex = static_cast<uint16_t>(index);
+                break;
+            }
+        }
+        lv_dropdown_set_selected(_joypadBleDeviceDropdown, selectedIndex);
+    }
+
+    for (size_t index = 0; index < _joypadBleRemapDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadBleRemapDropdowns[index])) {
+            lv_dropdown_set_selected(_joypadBleRemapDropdowns[index],
+                                     findDropdownIndexForValue(kJoypadMapOptions,
+                                                               sizeof(kJoypadMapOptions) / sizeof(kJoypadMapOptions[0]),
+                                                               config.ble_remap[index]));
+        }
+    }
+
+    for (size_t index = 0; index < _joypadManualSpiDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualSpiDropdowns[index])) {
+            lv_dropdown_set_selected(_joypadManualSpiDropdowns[index],
+                                     findDropdownIndexForValue(kJoypadGpioOptions,
+                                                               sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                                               config.manual_spi_gpio[index]));
+        }
+    }
+
+    for (size_t index = 0; index < _joypadManualResistiveDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualResistiveDropdowns[index])) {
+            lv_dropdown_set_selected(_joypadManualResistiveDropdowns[index],
+                                     findDropdownIndexForValue(kJoypadGpioOptions,
+                                                               sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                                               config.manual_resistive_gpio[index]));
+        }
+    }
+
+    for (size_t index = 0; index < _joypadManualButtonDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualButtonDropdowns[index])) {
+            lv_dropdown_set_selected(_joypadManualButtonDropdowns[index],
+                                     findDropdownIndexForValue(kJoypadGpioOptions,
+                                                               sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                                               config.manual_button_gpio[index]));
+        }
+    }
+
+    if (lv_obj_ready(_joypadBleStatusLabel)) {
+        auto describeMask = [](uint32_t raw_mask) {
+            std::string pressed;
+            const struct {
+                uint32_t mask;
+                const char *label;
+            } mask_names[] = {
+                {JC4880_JOYPAD_MASK_UP, "Up"},
+                {JC4880_JOYPAD_MASK_DOWN, "Down"},
+                {JC4880_JOYPAD_MASK_LEFT, "Left"},
+                {JC4880_JOYPAD_MASK_RIGHT, "Right"},
+                {JC4880_JOYPAD_MASK_BUTTON_A, "A"},
+                {JC4880_JOYPAD_MASK_BUTTON_B, "B"},
+                {JC4880_JOYPAD_MASK_BUTTON_C, "C"},
+                {JC4880_JOYPAD_MASK_START, "Start"},
+                {JC4880_JOYPAD_MASK_BUTTON_Y, "Y"},
+                {JC4880_JOYPAD_MASK_SHOULDER_L, "L1"},
+                {JC4880_JOYPAD_MASK_SHOULDER_R, "R1"},
+                {JC4880_JOYPAD_MASK_TRIGGER_L, "L2"},
+                {JC4880_JOYPAD_MASK_TRIGGER_R, "R2"},
+                {JC4880_JOYPAD_MASK_SELECT, "Select"},
+                {JC4880_JOYPAD_MASK_SYSTEM, "System"},
+                {JC4880_JOYPAD_MASK_CAPTURE, "Capture"},
+                {JC4880_JOYPAD_MASK_THUMB_L, "L3"},
+                {JC4880_JOYPAD_MASK_THUMB_R, "R3"},
+                {JC4880_JOYPAD_MASK_STICK_L_UP, "LS Up"},
+                {JC4880_JOYPAD_MASK_STICK_L_DOWN, "LS Down"},
+                {JC4880_JOYPAD_MASK_STICK_L_LEFT, "LS Left"},
+                {JC4880_JOYPAD_MASK_STICK_L_RIGHT, "LS Right"},
+                {JC4880_JOYPAD_MASK_STICK_R_UP, "RS Up"},
+                {JC4880_JOYPAD_MASK_STICK_R_DOWN, "RS Down"},
+                {JC4880_JOYPAD_MASK_STICK_R_LEFT, "RS Left"},
+                {JC4880_JOYPAD_MASK_STICK_R_RIGHT, "RS Right"},
+            };
+
+            for (const auto &entry : mask_names) {
+                if ((raw_mask & entry.mask) == 0) {
+                    continue;
+                }
+                if (!pressed.empty()) {
+                    pressed += ", ";
+                }
+                pressed += entry.label;
+            }
+
+            return pressed.empty() ? std::string("None") : pressed;
+        };
+
+        const char *active_backend = "Disabled";
+        if (config.backend == JC4880_JOYPAD_BACKEND_BLE) {
+            active_backend = "BLE Controller";
+        } else if (config.backend == JC4880_JOYPAD_BACKEND_MANUAL) {
+            active_backend = "Local Controller";
+        }
+
+        std::string status;
+        if (report.connected != 0) {
+            status = "Status: Connected\n";
+            status += std::string("Controller: ") + ((report.device_name[0] != '\0') ? report.device_name : "Unnamed controller") + "\n";
+            status += std::string("Address: ") + ((report.device_addr[0] != '\0') ? report.device_addr : config.ble_device_addr) + "\n";
+        } else if ((config.ble_enabled != 0) && (report.scanning != 0)) {
+            status = "Status: Pairing / scanning\n";
+            status += "Put the controller into pairing mode and watch for a connected report.\n";
+        } else if (config.ble_enabled != 0) {
+            status = "Status: Idle\n";
+            status += (config.ble_device_addr[0] != '\0')
+                          ? (std::string("Waiting for saved controller: ") + config.ble_device_addr + "\n")
+                          : std::string("No controller stored yet.\n");
+        } else {
+            status = "Status: Disabled\nEnable BLE Joypad to let the ESP32-C6 pair or reconnect a controller.\n";
+        }
+        status += std::string("Active Input: ") + active_backend + "\n";
+        status += std::string("Discovery: ") + ((config.ble_discovery_enabled != 0) ? "On" : "Off") + "\n";
+        char raw_mask_text[16] = {};
+        snprintf(raw_mask_text, sizeof(raw_mask_text), "%08" PRIX32, report.raw_mask);
+        status += std::string("Pressed: ") + describeMask(report.raw_mask) + "\n";
+        status += std::string("Raw mask: 0x") + raw_mask_text + "\n";
+        status += "Axes: (" + std::to_string(report.axis_x) + ", " + std::to_string(report.axis_y) + ", ";
+        status += std::to_string(report.axis_rx) + ", " + std::to_string(report.axis_ry) + ")\n";
+        status += "Triggers: (" + std::to_string(report.brake) + ", " + std::to_string(report.throttle) + ")";
+        lv_label_set_text(_joypadBleStatusLabel, status.c_str());
+    }
+
+    refreshJoypadCalibrationUi(report);
+
+    if (lv_obj_ready(_joypadInfoLabel)) {
+        std::string info = (config.backend == JC4880_JOYPAD_BACKEND_MANUAL)
+                               ? std::string("Local controller is the active Sega input source.\n")
+                               : std::string("Local controller is configured but not currently selected as the Sega input source.\n");
+        info += (config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_SPI)
+                    ? "Mode: SPI GPIO inputs are live now.\n"
+                    : "Mode: Resistive pins are stored, but the ladder decoder still needs implementation.\n";
+        info += "Swipe back when you finish configuring local controls.";
+        lv_label_set_text(_joypadInfoLabel, info.c_str());
+    }
+}
+
+void AppSettings::refreshJoypadCalibrationUi(const jc4880_joypad_ble_report_state_t &report)
+{
+    auto setIndicatorState = [](lv_obj_t *object, bool active, lv_color_t active_color) {
+        if (!lv_obj_ready(object)) {
+            return;
+        }
+
+        lv_obj_set_style_bg_color(object, active ? active_color : lv_color_hex(0xE2E8F0), 0);
+        lv_obj_set_style_border_color(object, active ? active_color : lv_color_hex(0x94A3B8), 0);
+        lv_obj_set_style_bg_opa(object, LV_OPA_COVER, 0);
+    };
+
+    auto updateStickKnob = [](lv_obj_t *base, lv_obj_t *knob, int16_t axis_x, int16_t axis_y) {
+        if (!lv_obj_ready(base) || !lv_obj_ready(knob)) {
+            return;
+        }
+
+        const lv_coord_t base_size = lv_obj_get_width(base);
+        const lv_coord_t knob_size = lv_obj_get_width(knob);
+        const float travel_radius = static_cast<float>(base_size - knob_size) * 0.5f;
+        float offset_x = (static_cast<float>(axis_x) / 512.0f) * travel_radius;
+        float offset_y = (static_cast<float>(axis_y) / 512.0f) * travel_radius;
+        const float magnitude = std::sqrt((offset_x * offset_x) + (offset_y * offset_y));
+        if ((magnitude > travel_radius) && (magnitude > 0.0f)) {
+            const float scale = travel_radius / magnitude;
+            offset_x *= scale;
+            offset_y *= scale;
+        }
+
+        const float center_x = (static_cast<float>(base_size) - static_cast<float>(knob_size)) * 0.5f;
+        const float center_y = (static_cast<float>(base_size) - static_cast<float>(knob_size)) * 0.5f;
+        const lv_coord_t knob_x = static_cast<lv_coord_t>(std::lround(center_x + offset_x));
+        const lv_coord_t knob_y = static_cast<lv_coord_t>(std::lround(center_y + offset_y));
+        lv_obj_set_pos(knob,
+                       std::max<lv_coord_t>(0, std::min<lv_coord_t>(base_size - knob_size, knob_x)),
+                       std::max<lv_coord_t>(0, std::min<lv_coord_t>(base_size - knob_size, knob_y)));
+    };
+
+    if ((report.connected == 0) || (report.device_addr[0] == '\0')) {
+        _joypadBlePreviewCenterValid = false;
+        _joypadBlePreviewDeviceAddr.fill('\0');
+        _joypadBlePreviewCenterAxes.fill(0);
+    } else if (!_joypadBlePreviewCenterValid ||
+               (std::strncmp(_joypadBlePreviewDeviceAddr.data(), report.device_addr, _joypadBlePreviewDeviceAddr.size()) != 0)) {
+        _joypadBlePreviewCenterValid = true;
+        snprintf(_joypadBlePreviewDeviceAddr.data(), _joypadBlePreviewDeviceAddr.size(), "%s", report.device_addr);
+        _joypadBlePreviewCenterAxes[0] = report.raw_axis_x;
+        _joypadBlePreviewCenterAxes[1] = report.raw_axis_y;
+        _joypadBlePreviewCenterAxes[2] = report.raw_axis_rx;
+        _joypadBlePreviewCenterAxes[3] = report.raw_axis_ry;
+    }
+
+    const auto previewAxis = [this](int16_t raw_value, size_t index) {
+        const int32_t centered = static_cast<int32_t>(raw_value) - static_cast<int32_t>(_joypadBlePreviewCenterAxes[index]);
+        return static_cast<int16_t>(std::max<int32_t>(-512, std::min<int32_t>(512, centered)));
+    };
+
+    const int16_t display_axis_x = (report.calibration_active != 0) ? report.axis_x : previewAxis(report.raw_axis_x, 0);
+    const int16_t display_axis_y = (report.calibration_active != 0) ? report.axis_y : previewAxis(report.raw_axis_y, 1);
+    const int16_t display_axis_rx = (report.calibration_active != 0) ? report.axis_rx : previewAxis(report.raw_axis_rx, 2);
+    const int16_t display_axis_ry = (report.calibration_active != 0) ? report.axis_ry : previewAxis(report.raw_axis_ry, 3);
+    const uint16_t display_brake = (report.calibration_active != 0) ? report.brake : report.raw_brake;
+    const uint16_t display_throttle = (report.calibration_active != 0) ? report.throttle : report.raw_throttle;
+
+    if (lv_obj_ready(_joypadBleTriggerBars[0])) {
+        lv_bar_set_value(_joypadBleTriggerBars[0], display_brake, LV_ANIM_OFF);
+    }
+    if (lv_obj_ready(_joypadBleTriggerBars[1])) {
+        lv_bar_set_value(_joypadBleTriggerBars[1], display_throttle, LV_ANIM_OFF);
+    }
+
+    setIndicatorState(_joypadBleShoulderIndicators[0], (report.raw_mask & JC4880_JOYPAD_MASK_SHOULDER_L) != 0, lv_color_hex(0x2563EB));
+    setIndicatorState(_joypadBleShoulderIndicators[1], (report.raw_mask & JC4880_JOYPAD_MASK_SHOULDER_R) != 0, lv_color_hex(0x2563EB));
+
+    updateStickKnob(_joypadBleStickBases[0], _joypadBleStickKnobs[0], display_axis_x, display_axis_y);
+    updateStickKnob(_joypadBleStickBases[1], _joypadBleStickKnobs[1], display_axis_rx, display_axis_ry);
+
+    setIndicatorState(_joypadBleDpadIndicators[0], (report.raw_mask & JC4880_JOYPAD_MASK_UP) != 0, lv_color_hex(0x0F766E));
+    setIndicatorState(_joypadBleDpadIndicators[1], (report.raw_mask & JC4880_JOYPAD_MASK_LEFT) != 0, lv_color_hex(0x0F766E));
+    setIndicatorState(_joypadBleDpadIndicators[2], (report.raw_mask & JC4880_JOYPAD_MASK_RIGHT) != 0, lv_color_hex(0x0F766E));
+    setIndicatorState(_joypadBleDpadIndicators[3], (report.raw_mask & JC4880_JOYPAD_MASK_DOWN) != 0, lv_color_hex(0x0F766E));
+
+    setIndicatorState(_joypadBleFaceIndicators[0], (report.raw_mask & JC4880_JOYPAD_MASK_BUTTON_C) != 0, lv_color_hex(0x3B82F6));
+    setIndicatorState(_joypadBleFaceIndicators[1], (report.raw_mask & JC4880_JOYPAD_MASK_BUTTON_Y) != 0, lv_color_hex(0xF59E0B));
+    setIndicatorState(_joypadBleFaceIndicators[2], (report.raw_mask & JC4880_JOYPAD_MASK_BUTTON_B) != 0, lv_color_hex(0xEF4444));
+    setIndicatorState(_joypadBleFaceIndicators[3], (report.raw_mask & JC4880_JOYPAD_MASK_BUTTON_A) != 0, lv_color_hex(0x22C55E));
+
+    if (lv_obj_ready(_joypadBleCalibrationButton)) {
+        const bool can_calibrate = (report.connected != 0) && (report.device_addr[0] != '\0');
+        if (can_calibrate) {
+            lv_obj_clear_state(_joypadBleCalibrationButton, LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(_joypadBleCalibrationButton, LV_STATE_DISABLED);
+        }
+    }
+
+    if (lv_obj_ready(_joypadBleCalibrationButtonLabel)) {
+        lv_label_set_text(_joypadBleCalibrationButtonLabel,
+                          (report.calibration_active != 0) ? "Finish Calibration" : "Start Calibration");
+    }
+
+    if (lv_obj_ready(_joypadBleCalibrationInfoLabel)) {
+        std::string info;
+        if (report.calibration_active != 0) {
+            info = "Calibration is running. Sweep both sticks in full circles and press both triggers through the full range, then tap Finish Calibration.";
+        } else if ((report.connected != 0) && (report.calibration_available != 0)) {
+            info = std::string("Calibration profile loaded for ") +
+                   ((report.device_name[0] != '\0') ? report.device_name : report.device_addr) +
+                   ". Up to 20 controller profiles are stored by BLE device address.";
+        } else if (report.connected != 0) {
+            info = "No calibration profile saved for this controller yet. Start calibration to create one for this device.";
+        } else {
+            info = "Connect a BLE controller to preview the live layout or create a saved calibration profile.";
+        }
+        lv_label_set_text(_joypadBleCalibrationInfoLabel, info.c_str());
     }
 }
 
@@ -5784,6 +6928,7 @@ void AppSettings::euiRefresTask(void *arg)
     }
 
     while (1) {
+        uint32_t refresh_period_ms = HOME_REFRESH_TASK_PERIOD_MS;
 #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
         bleCheckStartupTimeout();
 #endif
@@ -5795,6 +6940,16 @@ void AppSettings::euiRefresTask(void *arg)
                 app->refreshBluetoothUi();
             }
 #endif
+            if (lv_scr_act() == app->_joypadBleScreen) {
+                jc4880_joypad_ble_report_state_t report = {};
+                if (jc4880_joypad_get_ble_report_state(&report)) {
+                    app->refreshJoypadCalibrationUi(report);
+                }
+                refresh_period_ms = JOYPAD_BLE_LIVE_REFRESH_MS;
+            } else if ((lv_scr_act() == app->_joypadScreen) ||
+                       (lv_scr_act() == app->_joypadLocalScreen)) {
+                app->refreshJoypadUi();
+            }
             bsp_display_unlock();
         }
 
@@ -5824,7 +6979,7 @@ void AppSettings::euiRefresTask(void *arg)
             bsp_display_unlock();
         }
 
-        vTaskDelay(pdMS_TO_TICKS(HOME_REFRESH_TASK_PERIOD_MS));
+        vTaskDelay(pdMS_TO_TICKS(refresh_period_ms));
     }
 
 err:
@@ -5893,6 +7048,10 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
         app->refreshBluetoothUi();
     }
     #endif
+
+    if (app->_screen_index == UI_JOYPAD_SETTING_INDEX) {
+        app->refreshJoypadUi();
+    }
 
     #if CONFIG_JC4880_FEATURE_ZIGBEE
     if (app->_screen_index == UI_ZIGBEE_SETTING_INDEX) {
@@ -5989,6 +7148,10 @@ void AppSettings::onMainMenuItemClickedEventCallback(lv_event_t *e)
         lv_scr_load_anim(ui_ScreenSettingBLE, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else
     #endif
+    if (target == app->_joypadMenuItem) {
+        app->ensureJoypadScreen();
+        lv_scr_load_anim(app->_joypadScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else
     #if CONFIG_JC4880_FEATURE_ZIGBEE
     if (target == app->_zigbeeMenuItem) {
         app->ensureZigbeeScreen();
@@ -6228,6 +7391,12 @@ void AppSettings::onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv
 
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
+    if (bluetoothMenuDelegatesToJoypadBle()) {
+        lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
+        app->refreshBluetoothUi();
+        goto end;
+    }
+
     enabled = (lv_obj_get_state(ui_SwitchPanelScreenSettingBLESwitch) & LV_STATE_CHECKED) != 0;
     if (!enabled) {
         bleCancelScan();
@@ -6298,6 +7467,11 @@ void AppSettings::onBluetoothScanClickedEventCallback(lv_event_t *e)
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
+    if (bluetoothMenuDelegatesToJoypadBle()) {
+        app->refreshBluetoothUi();
+        goto end;
+    }
+
     if (s_bleScanInProgress) {
         bleCancelScan();
     } else {
@@ -6305,6 +7479,115 @@ void AppSettings::onBluetoothScanClickedEventCallback(lv_event_t *e)
     }
 
     app->refreshBluetoothUi();
+
+end:
+    return;
+}
+
+bool AppSettings::persistJoypadConfigFromUi(void)
+{
+    jc4880_joypad_config_t config = {};
+    if (!jc4880_joypad_get_config(&config)) {
+        return false;
+    }
+
+    const bool ble_active = lv_obj_ready(_joypadBleActiveSwitch) && lv_obj_has_state(_joypadBleActiveSwitch, LV_STATE_CHECKED);
+    const bool manual_active = lv_obj_ready(_joypadManualActiveSwitch) && lv_obj_has_state(_joypadManualActiveSwitch, LV_STATE_CHECKED);
+    if (ble_active) {
+        config.backend = JC4880_JOYPAD_BACKEND_BLE;
+    } else if (manual_active) {
+        config.backend = JC4880_JOYPAD_BACKEND_MANUAL;
+    } else {
+        config.backend = JC4880_JOYPAD_BACKEND_DISABLED;
+    }
+
+    if (lv_obj_ready(_joypadManualModeDropdown)) {
+        config.manual_mode = static_cast<uint8_t>(getDropdownValueForIndex(kJoypadManualModeOptions,
+                                                                           sizeof(kJoypadManualModeOptions) / sizeof(kJoypadManualModeOptions[0]),
+                                                                           lv_dropdown_get_selected(_joypadManualModeDropdown)));
+    }
+
+    config.ble_enabled = (lv_obj_ready(_joypadBleEnableSwitch) && lv_obj_has_state(_joypadBleEnableSwitch, LV_STATE_CHECKED)) ? 1 : 0;
+    config.ble_discovery_enabled = (lv_obj_ready(_joypadBleDiscoverySwitch) && lv_obj_has_state(_joypadBleDiscoverySwitch, LV_STATE_CHECKED)) ? 1 : 0;
+
+    config.ble_device_addr[0] = '\0';
+    if (lv_obj_ready(_joypadBleDeviceDropdown) && !_joypadBleDeviceOptions.empty()) {
+        const uint16_t selected = lv_dropdown_get_selected(_joypadBleDeviceDropdown);
+        if (selected < _joypadBleDeviceOptions.size()) {
+            strlcpy(config.ble_device_addr, _joypadBleDeviceOptions[selected].c_str(), sizeof(config.ble_device_addr));
+        }
+    }
+
+    for (size_t index = 0; index < _joypadBleRemapDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadBleRemapDropdowns[index])) {
+            config.ble_remap[index] = static_cast<uint8_t>(getDropdownValueForIndex(kJoypadMapOptions,
+                                                                                     sizeof(kJoypadMapOptions) / sizeof(kJoypadMapOptions[0]),
+                                                                                     lv_dropdown_get_selected(_joypadBleRemapDropdowns[index])));
+        }
+    }
+
+    for (size_t index = 0; index < _joypadManualSpiDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualSpiDropdowns[index])) {
+            config.manual_spi_gpio[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadGpioOptions,
+                                                                                          sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                                                                          lv_dropdown_get_selected(_joypadManualSpiDropdowns[index])));
+        }
+    }
+    for (size_t index = 0; index < _joypadManualResistiveDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualResistiveDropdowns[index])) {
+            config.manual_resistive_gpio[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadGpioOptions,
+                                                                                                sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                                                                                lv_dropdown_get_selected(_joypadManualResistiveDropdowns[index])));
+        }
+    }
+    for (size_t index = 0; index < _joypadManualButtonDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualButtonDropdowns[index])) {
+            config.manual_button_gpio[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadGpioOptions,
+                                                                                             sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                                                                             lv_dropdown_get_selected(_joypadManualButtonDropdowns[index])));
+        }
+    }
+
+    return jc4880_joypad_set_config(&config);
+}
+
+void AppSettings::onJoypadConfigChangedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    if ((target == app->_joypadBleActiveSwitch) && lv_obj_has_state(app->_joypadBleActiveSwitch, LV_STATE_CHECKED) &&
+        lv_obj_ready(app->_joypadManualActiveSwitch)) {
+        lv_obj_clear_state(app->_joypadManualActiveSwitch, LV_STATE_CHECKED);
+    }
+    if ((target == app->_joypadManualActiveSwitch) && lv_obj_has_state(app->_joypadManualActiveSwitch, LV_STATE_CHECKED) &&
+        lv_obj_ready(app->_joypadBleActiveSwitch)) {
+        lv_obj_clear_state(app->_joypadBleActiveSwitch, LV_STATE_CHECKED);
+    }
+
+    app->persistJoypadConfigFromUi();
+    app->refreshJoypadUi();
+
+end:
+    return;
+}
+
+void AppSettings::onJoypadCalibrationClickedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if (jc4880_joypad_is_ble_calibration_active()) {
+        if (!jc4880_joypad_finish_ble_calibration()) {
+            jc4880_joypad_cancel_ble_calibration();
+        }
+    } else {
+        jc4880_joypad_begin_ble_calibration();
+    }
+
+    app->refreshJoypadUi();
 
 end:
     return;

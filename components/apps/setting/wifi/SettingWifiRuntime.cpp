@@ -71,6 +71,7 @@ static bool read_nvs_string_value(const char *key, std::string &value)
 
 EventGroupHandle_t s_wifi_event_group = nullptr;
 bool s_wifi_restore_in_progress = false;
+bool s_wifi_runtime_ready = false;
 
 char st_wifi_ssid[WIFI_SSID_STORAGE_SIZE] = {0};
 char st_wifi_password[WIFI_PASSWORD_STORAGE_SIZE] = {0};
@@ -865,6 +866,7 @@ esp_err_t AppSettings::applyWifiOperatingMode(bool reconnect_sta, const char *re
 
 esp_err_t AppSettings::initWifi()
 {
+    s_wifi_runtime_ready = false;
     s_wifi_event_group = xEventGroupCreate();
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED);
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_INIT_DONE);
@@ -902,6 +904,8 @@ esp_err_t AppSettings::initWifi()
     loadNvsStringParam(NVS_KEY_WIFI_AP_PASSWORD, st_wifi_ap_password, sizeof(st_wifi_ap_password));
     const bool has_saved_wifi = restoreWifiCredentials();
     ESP_ERROR_CHECK(applyWifiOperatingMode(has_saved_wifi, "saved credentials"));
+
+    s_wifi_runtime_ready = true;
 
     return ESP_OK;
 }

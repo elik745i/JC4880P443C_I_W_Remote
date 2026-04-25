@@ -2,6 +2,10 @@
 # in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
+set(EXTRA_COMPONENT_DIRS
+    ../third_party/bluepad32/src/components
+)
+
 # Add the wrap flag for esp_wifi_init
 add_compile_options(-Wl,--wrap=esp_wifi_init)
 

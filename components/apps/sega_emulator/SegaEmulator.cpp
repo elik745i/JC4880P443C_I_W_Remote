@@ -21,6 +21,7 @@
 #include "nvs.h"
 #include "esp_lcd_touch.h"
 #include "freertos/idf_additions.h"
+#include "joypad_runtime.h"
 #include "lvgl_input_helper.h"
 
 #include "bsp/esp-bsp.h"
@@ -46,14 +47,14 @@ constexpr const char *kSavedGamesRootPath = BSP_SD_MOUNT_POINT "/saved_games";
 constexpr const char *kNvsStorageNamespace = "storage";
 constexpr const char *kRotationDegreesKey = "sega_rot_deg";
 
-constexpr uint32_t kInputUp = 1u << 0;
-constexpr uint32_t kInputDown = 1u << 1;
-constexpr uint32_t kInputLeft = 1u << 2;
-constexpr uint32_t kInputRight = 1u << 3;
-constexpr uint32_t kInputButton1 = 1u << 4;
-constexpr uint32_t kInputButton2 = 1u << 5;
-constexpr uint32_t kInputButton3 = 1u << 6;
-constexpr uint32_t kInputStart = 1u << 7;
+constexpr uint32_t kInputUp = JC4880_JOYPAD_MASK_UP;
+constexpr uint32_t kInputDown = JC4880_JOYPAD_MASK_DOWN;
+constexpr uint32_t kInputLeft = JC4880_JOYPAD_MASK_LEFT;
+constexpr uint32_t kInputRight = JC4880_JOYPAD_MASK_RIGHT;
+constexpr uint32_t kInputButton1 = JC4880_JOYPAD_MASK_BUTTON_A;
+constexpr uint32_t kInputButton2 = JC4880_JOYPAD_MASK_BUTTON_B;
+constexpr uint32_t kInputButton3 = JC4880_JOYPAD_MASK_BUTTON_C;
+constexpr uint32_t kInputStart = JC4880_JOYPAD_MASK_START;
 
 constexpr lv_coord_t kButtonWidth = 82;
 constexpr lv_coord_t kButtonHeight = 56;
@@ -2036,7 +2037,21 @@ void SegaEmulator::emulatorTask()
                 _inputMask.store(touchMask);
             }
 
-            sega_gwenesis_set_input_mask(_inputMask.load());
+            const uint32_t joypadActions = jc4880_joypad_consume_action_mask();
+            if (joypadActions & JC4880_JOYPAD_ACTION_SAVE) {
+                _saveRequested.store(true);
+                setPlayerStatus("Saving state...");
+            }
+            if (joypadActions & JC4880_JOYPAD_ACTION_LOAD) {
+                showLoadStatePicker();
+            }
+            if (joypadActions & JC4880_JOYPAD_ACTION_EXIT) {
+                _closingApp.store(false);
+                setPlayerStatus("Returning to the game list...");
+                stopEmulation();
+            }
+
+            sega_gwenesis_set_input_mask(_inputMask.load() | jc4880_joypad_get_input_mask());
             if (showFrameStats) {
                 const int64_t coreStartUs = esp_timer_get_time();
                 sega_gwenesis_run_frame(drawFrame);
@@ -2260,6 +2275,20 @@ void SegaEmulator::emulatorTask()
         uint32_t touchMask = 0;
         if (readTouchInputMask(touchMask)) {
             _inputMask.store(touchMask);
+        }
+
+        const uint32_t joypadActions = jc4880_joypad_consume_action_mask();
+        if (joypadActions & JC4880_JOYPAD_ACTION_SAVE) {
+            _saveRequested.store(true);
+            setPlayerStatus("Saving state...");
+        }
+        if (joypadActions & JC4880_JOYPAD_ACTION_LOAD) {
+            showLoadStatePicker();
+        }
+        if (joypadActions & JC4880_JOYPAD_ACTION_EXIT) {
+            _closingApp.store(false);
+            setPlayerStatus("Returning to the game list...");
+            stopEmulation();
         }
 
         updateSmsInputState();
@@ -3008,7 +3037,7 @@ void SegaEmulator::finishEmulationOnUiThread()
 
 void SegaEmulator::updateSmsInputState()
 {
-    const uint32_t state = _inputMask.load();
+    const uint32_t state = _inputMask.load() | jc4880_joypad_get_input_mask();
     input.pad[0] = 0;
     input.pad[1] = 0;
     input.system = 0;

@@ -15,6 +15,7 @@
 #include "esp_event.h"
 #include "adc_battery_estimation.h"
 #include "esp_wifi.h"
+#include "joypad_runtime.h"
 #include "lvgl.h"
 #include "esp_brookesia.hpp"
 #include "device_security.hpp"
@@ -39,6 +40,7 @@ private:
         UI_WIFI_SCAN_INDEX,
         UI_WIFI_CONNECT_INDEX,
         UI_BLUETOOTH_SETTING_INDEX,
+        UI_JOYPAD_SETTING_INDEX,
         UI_ZIGBEE_SETTING_INDEX,
         UI_SECURITY_SETTING_INDEX,
         UI_VOLUME_SETTING_INDEX,
@@ -144,6 +146,8 @@ private:
     void refreshDisplayIdleUi(void);
     void refreshTimezoneUi(void);
     void refreshBluetoothUi(void);
+    void refreshJoypadUi(void);
+    void refreshJoypadCalibrationUi(const jc4880_joypad_ble_report_state_t &report);
     void refreshRadioStatusBar(void);
     void refreshZigbeeUi(void);
     void refreshSecurityUi(void);
@@ -166,8 +170,10 @@ private:
     bool persistZigbeeNameFromUi(void);
     void handleSecurityToggleResult(device_security::LockType type, bool success);
     void ensureHardwareScreen(void);
+    void ensureJoypadScreen(void);
     void ensureZigbeeScreen(void);
     void ensureSecurityScreen(void);
+    bool persistJoypadConfigFromUi(void);
     void setFirmwareStatus(const std::string &status, bool is_error = false);
     void ensureFirmwareScreen(void);
     void ensureFirmwareOtaCheckOverlay(void);
@@ -262,6 +268,8 @@ private:
     static void onBluetoothNameSaveClickedEventCallback(lv_event_t *e);
     static void onBluetoothKeyboardEventCallback(lv_event_t *e);
     static void onBluetoothScanClickedEventCallback(lv_event_t *e);
+    static void onJoypadConfigChangedEventCallback(lv_event_t *e);
+    static void onJoypadCalibrationClickedEventCallback(lv_event_t *e);
     // ZigBee
     static void onZigbeeEnableSwitchValueChangeEventCallback(lv_event_t *e);
     static void onZigbeeChannelChangedEventCallback(lv_event_t *e);
@@ -336,6 +344,7 @@ private:
     lv_obj_t *_audioTapSoundSwitch;
     lv_obj_t *_audioHapticFeedbackSwitch;
     lv_obj_t *_bluetoothMenuItem;
+    lv_obj_t *_joypadMenuItem;
     lv_obj_t *_zigbeeMenuItem;
     lv_obj_t *_wifiMenuItem;
     lv_obj_t *_audioMenuItem;
@@ -351,6 +360,37 @@ private:
     lv_obj_t *_bluetoothScanStatusLabel;
     lv_obj_t *_bluetoothScanResultsLabel;
     lv_obj_t *_bluetoothKeyboard;
+    lv_obj_t *_joypadScreen;
+    lv_obj_t *_joypadBleScreen;
+    lv_obj_t *_joypadLocalScreen;
+    lv_obj_t *_joypadBleMenuItem;
+    lv_obj_t *_joypadLocalMenuItem;
+    lv_obj_t *_joypadBleActiveSwitch;
+    lv_obj_t *_joypadManualActiveSwitch;
+    lv_obj_t *_joypadBleEnableSwitch;
+    lv_obj_t *_joypadBleDiscoverySwitch;
+    lv_obj_t *_joypadBleDeviceDropdown;
+    lv_obj_t *_joypadBleStatusLabel;
+    lv_obj_t *_joypadBleCalibrationInfoLabel;
+    lv_obj_t *_joypadBleCalibrationButton;
+    lv_obj_t *_joypadBleCalibrationButtonLabel;
+    lv_obj_t *_joypadBackendDropdown;
+    lv_obj_t *_joypadManualModeDropdown;
+    lv_obj_t *_joypadInfoLabel;
+    std::array<lv_obj_t *, 2> _joypadBleTriggerBars;
+    std::array<lv_obj_t *, 2> _joypadBleShoulderIndicators;
+    std::array<lv_obj_t *, 2> _joypadBleStickBases;
+    std::array<lv_obj_t *, 2> _joypadBleStickKnobs;
+    std::array<lv_obj_t *, 4> _joypadBleDpadIndicators;
+    std::array<lv_obj_t *, 4> _joypadBleFaceIndicators;
+    std::array<int16_t, 4> _joypadBlePreviewCenterAxes;
+    std::array<char, 18> _joypadBlePreviewDeviceAddr;
+    bool _joypadBlePreviewCenterValid;
+    std::array<lv_obj_t *, JC4880_JOYPAD_BLE_CONTROL_COUNT> _joypadBleRemapDropdowns;
+    std::array<lv_obj_t *, JC4880_JOYPAD_SPI_CONTROL_COUNT> _joypadManualSpiDropdowns;
+    std::array<lv_obj_t *, 2> _joypadManualResistiveDropdowns;
+    std::array<lv_obj_t *, JC4880_JOYPAD_BUTTON_CONTROL_COUNT> _joypadManualButtonDropdowns;
+    std::vector<std::string> _joypadBleDeviceOptions;
     lv_obj_t *_zigbeeEnableSwitch;
     lv_obj_t *_zigbeeNameTextArea;
     lv_obj_t *_zigbeeNameSaveButton;

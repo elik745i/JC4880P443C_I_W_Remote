@@ -67,6 +67,7 @@ lv_obj_set_align( ui_LabelPanelSettingMainContainer1WiFi, LV_ALIGN_CENTER );
 lv_label_set_text(ui_LabelPanelSettingMainContainer1WiFi,"Wi-Fi");
 lv_obj_set_style_text_font(ui_LabelPanelSettingMainContainer1WiFi, &lv_font_montserrat_30, LV_PART_MAIN| LV_STATE_DEFAULT);
 
+#if CONFIG_JC4880_FEATURE_LEGACY_BLE_MENU
 ui_PanelSettingMainContainerItem2 = lv_obj_create(ui_PanelSettingMainContainer);
 lv_obj_set_width( ui_PanelSettingMainContainerItem2, 400);
 lv_obj_set_height( ui_PanelSettingMainContainerItem2, 70);
@@ -107,6 +108,12 @@ lv_obj_set_y( ui_LabelPanelSettingMainContainer2Blue, 2 );
 lv_obj_set_align( ui_LabelPanelSettingMainContainer2Blue, LV_ALIGN_CENTER );
 lv_label_set_text(ui_LabelPanelSettingMainContainer2Blue,"Bluetooth");
 lv_obj_set_style_text_font(ui_LabelPanelSettingMainContainer2Blue, &lv_font_montserrat_30, LV_PART_MAIN| LV_STATE_DEFAULT);
+#else
+ui_PanelSettingMainContainerItem2 = NULL;
+ui_ImagePanelSettingMainContainer2Blue = NULL;
+ui_ImagePanelSettingMainContainer2Arrow = NULL;
+ui_LabelPanelSettingMainContainer2Blue = NULL;
+#endif
 
 ui_PanelSettingMainContainerItem3 = lv_obj_create(ui_PanelSettingMainContainer);
 lv_obj_set_width( ui_PanelSettingMainContainerItem3, 400);
@@ -234,7 +241,9 @@ lv_label_set_text(ui_LabelPanelSettingMainContainer5About,"About Device");
 lv_obj_set_style_text_font(ui_LabelPanelSettingMainContainer5About, &lv_font_montserrat_30, LV_PART_MAIN| LV_STATE_DEFAULT);
 
 lv_obj_add_event_cb(ui_PanelSettingMainContainerItem1, ui_event_PanelSettingMainContainerItem1, LV_EVENT_ALL, NULL);
+#if CONFIG_JC4880_FEATURE_LEGACY_BLE_MENU
 lv_obj_add_event_cb(ui_PanelSettingMainContainerItem2, ui_event_PanelSettingMainContainerItem2, LV_EVENT_ALL, NULL);
+#endif
 lv_obj_add_event_cb(ui_PanelSettingMainContainerItem3, ui_event_PanelSettingMainContainerItem3, LV_EVENT_ALL, NULL);
 lv_obj_add_event_cb(ui_PanelSettingMainContainerItem4, ui_event_PanelSettingMainContainerItem4, LV_EVENT_ALL, NULL);
 lv_obj_add_event_cb(ui_PanelSettingMainContainerItem5, ui_event_PanelSettingMainContainerItem5, LV_EVENT_ALL, NULL);

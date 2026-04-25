@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "setting/wifi/SettingWifiPrivate.hpp"
 
 #if __has_include("driver/temperature_sensor.h")
 #include "driver/temperature_sensor.h"
@@ -280,7 +281,7 @@ static void sample_metrics(bool force_medium_sample, bool force_slow_sample)
                                              : 0;
 
     wifi_ap_record_t ap_info = {};
-    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+    if (s_wifi_runtime_ready && (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK)) {
         next_snapshot.wifi_connected = true;
         next_snapshot.wifi_rssi = ap_info.rssi;
         next_snapshot.wifi_percent = wifi_percent_from_rssi(ap_info.rssi);

@@ -6,6 +6,8 @@
 
 #include "battery_history_service.h"
 #include "hardware_history_service.h"
+#include "joypad_transport.h"
+#include "setting/wifi/SettingWifiPrivate.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
@@ -69,6 +71,13 @@ static int wifi_signal_strength_from_rssi(int rssi)
 static int get_wifi_level_from_driver(bool *connected)
 {
     wifi_ap_record_t ap_info = {};
+
+    if (!s_wifi_runtime_ready) {
+        if (connected != nullptr) {
+            *connected = false;
+        }
+        return 0;
+    }
 
     if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
         if (connected != nullptr) {
@@ -162,6 +171,9 @@ bool initialize(ESP_Brookesia_Phone &phone)
     battery_history_service::initialize();
 #endif
     hardware_history_service::initialize();
+    if (!joypad_transport::initialize()) {
+        ESP_LOGW(TAG, "Joypad transport initialization failed");
+    }
 
     if (create_background_task_prefer_psram(status_refresh_task,
                                             "status_refresh",

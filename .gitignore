@@ -4,3 +4,4 @@ sdkconfig.old
 *.pyc
 __pycache__/
 third_party/retro-go-upstream/
+third_party/bluepad32/.git.embedded/

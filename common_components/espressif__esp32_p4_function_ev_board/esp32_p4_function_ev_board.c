@@ -5,11 +5,14 @@
  */
 
 #include "sdkconfig.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_spiffs.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_mipi_dsi.h"
@@ -944,6 +947,35 @@ static void usb_lib_task(void *arg)
     }
 }
 
+static BaseType_t create_board_task_prefer_psram(TaskFunction_t task,
+                                                 const char *name,
+                                                 const uint32_t stack_depth,
+                                                 void *arg,
+                                                 const UBaseType_t priority,
+                                                 TaskHandle_t *task_handle,
+                                                 const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        task_handle,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        ESP_LOGI(TAG, "Started %s with a PSRAM-backed stack", name);
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
+}
+
 esp_err_t bsp_usb_host_start(bsp_usb_host_power_mode_t mode, bool limit_500mA)
 {
     //Install USB Host driver. Should only be called once in entire application
@@ -955,7 +987,13 @@ esp_err_t bsp_usb_host_start(bsp_usb_host_power_mode_t mode, bool limit_500mA)
     BSP_ERROR_CHECK_RETURN_ERR(usb_host_install(&host_config));
 
     // Create a task that will handle USB library events
-    if (xTaskCreate(usb_lib_task, "usb_lib", 4096, NULL, 10, &usb_host_task) != pdTRUE) {
+    if (create_board_task_prefer_psram(usb_lib_task,
+                                       "usb_lib",
+                                       4096,
+                                       NULL,
+                                       10,
+                                       &usb_host_task,
+                                       tskNO_AFFINITY) != pdPASS) {
         ESP_LOGE(TAG, "Creating USB host lib task failed");
         abort();
     }

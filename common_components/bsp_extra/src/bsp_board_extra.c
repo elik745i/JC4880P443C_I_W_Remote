@@ -119,6 +119,35 @@ static bool bsp_extra_dns_server_configured(const ip_addr_t *address)
     return (address != NULL) && !ip_addr_isany(address);
 }
 
+static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
+                                                      const char *name,
+                                                      const uint32_t stack_depth,
+                                                      void *arg,
+                                                      const UBaseType_t priority,
+                                                      TaskHandle_t *task_handle,
+                                                      const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        task_handle,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        ESP_LOGI(TAG, "Started %s with a PSRAM-backed stack", name);
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
+}
+
 static int audio_clamp_volume(int volume)
 {
     if (volume < 0) {
@@ -944,8 +973,13 @@ esp_err_t bsp_extra_display_idle_init(void)
 
     s_display_idle_state.base_brightness_percent = clamp_display_brightness_percent(s_display_idle_state.base_brightness_percent);
 
-    BaseType_t ret = xTaskCreatePinnedToCore(display_idle_task, "display_idle", DISPLAY_IDLE_TASK_STACK_SIZE,
-                                             NULL, DISPLAY_IDLE_TASK_PRIORITY, NULL, 1);
+    BaseType_t ret = create_background_task_prefer_psram(display_idle_task,
+                                                         "display_idle",
+                                                         DISPLAY_IDLE_TASK_STACK_SIZE,
+                                                         NULL,
+                                                         DISPLAY_IDLE_TASK_PRIORITY,
+                                                         NULL,
+                                                         1);
     if (ret != pdPASS) {
         return ESP_ERR_NO_MEM;
     }

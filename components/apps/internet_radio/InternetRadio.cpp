@@ -95,7 +95,44 @@ struct HttpMp3StreamContext {
     SemaphoreHandle_t mutex = nullptr;
     TaskHandle_t refill_task_handle = nullptr;
     bool refill_task_stop_requested = false;
+    bool refill_task_uses_caps_stack = false;
 };
+
+static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
+                                                      const char *name,
+                                                      const uint32_t stack_depth,
+                                                      void *arg,
+                                                      const UBaseType_t priority,
+                                                      TaskHandle_t *task_handle,
+                                                      const BaseType_t core_id,
+                                                      bool *used_caps_stack)
+{
+    if (used_caps_stack != nullptr) {
+        *used_caps_stack = false;
+    }
+
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        task_handle,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        if (used_caps_stack != nullptr) {
+            *used_caps_stack = true;
+        }
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
+}
 
 const char *audio_player_event_name(audio_player_callback_event_t event)
 {
@@ -502,6 +539,10 @@ void http_mp3_stream_refill_task(void *user_ctx)
     }
 
     context->refill_task_handle = nullptr;
+    if (context->refill_task_uses_caps_stack) {
+        vTaskDeleteWithCaps(nullptr);
+        return;
+    }
     vTaskDelete(nullptr);
 }
 
@@ -2059,13 +2100,14 @@ bool InternetRadio::startPreviewPlayback(const ListEntry &entry)
         return false;
     }
 
-    if (xTaskCreatePinnedToCore(http_mp3_stream_refill_task,
-                                "radio_refill",
-                                kStreamRefillTaskStackSize,
-                                stream_context,
-                                kStreamRefillTaskPriority,
-                                &stream_context->refill_task_handle,
-                                tskNO_AFFINITY) != pdPASS) {
+    if (create_background_task_prefer_psram(http_mp3_stream_refill_task,
+                                            "radio_refill",
+                                            kStreamRefillTaskStackSize,
+                                            stream_context,
+                                            kStreamRefillTaskPriority,
+                                            &stream_context->refill_task_handle,
+                                            tskNO_AFFINITY,
+                                            &stream_context->refill_task_uses_caps_stack) != pdPASS) {
         http_mp3_stream_close(stream_context);
         setStatusFromTask("Unable to start stream refill task.");
         return false;

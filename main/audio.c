@@ -53,8 +53,11 @@ void i2s_echo(void *args)
         return;
     }
 
-    // 分配缓冲区用于录音和播放
-    uint8_t *buffer = (uint8_t *)heap_caps_malloc(EXAMPLE_RECV_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    // Prefer PSRAM for the echo buffer to keep internal RAM available for DMA-only paths.
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(EXAMPLE_RECV_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (buffer == NULL) {
+        buffer = (uint8_t *)heap_caps_malloc(EXAMPLE_RECV_BUF_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
     if (buffer == NULL) {
         ESP_LOGE(TAG, "Failed to allocate buffer");
         vTaskDelete(NULL);

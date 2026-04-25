@@ -22,6 +22,7 @@
 #include "esp_timer.h"
 #include "esp_http_client.h"
 #include "esp_mac.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "esp_memory_utils.h"
 #include "esp_heap_caps.h"
@@ -176,6 +177,28 @@ static void trigger_ui_haptic_feedback(void)
     if (esp_timer_start_once(s_hapticPulseTimer, kHapticPulseUs) != ESP_OK) {
         gpio_set_level(kHapticFeedbackGpio, 0);
     }
+}
+
+static void initialize_power_management(void)
+{
+#if CONFIG_PM_ENABLE
+    esp_pm_config_t pm_config = {
+        .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
+        .min_freq_mhz = CONFIG_XTAL_FREQ,
+#if CONFIG_FREERTOS_USE_TICKLESS_IDLE
+        .light_sleep_enable = true,
+#else
+        .light_sleep_enable = false,
+#endif
+    };
+
+    ESP_ERROR_CHECK(esp_pm_configure(&pm_config));
+    ESP_LOGI(TAG,
+             "Power management enabled: max=%d MHz min=%d MHz light_sleep=%s",
+             pm_config.max_freq_mhz,
+             pm_config.min_freq_mhz,
+             pm_config.light_sleep_enable ? "on" : "off");
+#endif
 }
 
 static void on_lvgl_input_feedback(lv_indev_drv_t *indev_drv, uint8_t event_code)
@@ -1120,6 +1143,8 @@ extern "C" void app_main(void)
         err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(err);
+
+    initialize_power_management();
 
     restore_audio_preferences_from_nvs();
 

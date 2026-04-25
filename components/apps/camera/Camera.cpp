@@ -39,6 +39,35 @@
 
 using namespace std;
 
+static BaseType_t create_camera_task_prefer_psram(TaskFunction_t task,
+                                                  const char *name,
+                                                  const uint32_t stack_depth,
+                                                  void *arg,
+                                                  const UBaseType_t priority,
+                                                  TaskHandle_t *task_handle,
+                                                  const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        task_handle,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        ESP_LOGI(TAG, "Started %s with a PSRAM-backed stack", name);
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
+}
+
 typedef enum {
     CAMERA_EVENT_TASK_RUN = BIT(0),
     CAMERA_EVENT_DELETE = BIT(1),
@@ -95,7 +124,16 @@ bool Camera::run(void)
         _camera_init_sem = xSemaphoreCreateBinary();
         assert(_camera_init_sem != NULL);
 
-        xTaskCreatePinnedToCore((TaskFunction_t)taskCameraInit, "Camera Init", 4096, this, 2, NULL, 0);
+        if (create_camera_task_prefer_psram((TaskFunction_t)taskCameraInit,
+                                            "Camera Init",
+                                            4096,
+                                            this,
+                                            2,
+                                            NULL,
+                                            0) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to start camera init task");
+            return false;
+        }
         if (xSemaphoreTake(_camera_init_sem, pdMS_TO_TICKS(CAMERA_INIT_TASK_WAIT_MS)) != pdTRUE) {
             ESP_LOGE(TAG, "Camera init timeout");
             return false;
@@ -110,7 +148,16 @@ bool Camera::run(void)
     hum_detect = get_humanface_detect();
     assert(hum_detect != NULL);
 
-    xTaskCreatePinnedToCore((TaskFunction_t)camera_dectect_task, "Camera Detect", 1024 * 8, this, 5, &_detect_task_handle, 1);
+    if (create_camera_task_prefer_psram((TaskFunction_t)camera_dectect_task,
+                                        "Camera Detect",
+                                        1024 * 8,
+                                        this,
+                                        5,
+                                        &_detect_task_handle,
+                                        1) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start camera detect task");
+        return false;
+    }
 
     xEventGroupSetBits(camera_event_group, CAMERA_EVENT_TASK_RUN);
     xEventGroupClearBits(camera_event_group, CAMERA_EVENT_DELETE);

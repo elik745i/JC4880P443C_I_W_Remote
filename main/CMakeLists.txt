@@ -10,7 +10,7 @@ target_compile_options(
         -DLV_USE_MUSIC_PLAYER
 )
 
-if(CONFIG_ESP_BROOKESIA_MEMORY_USE_CUSTOM)
+if(CONFIG_ESP_BROOKESIA_MEMORY_USE_CUSTOM AND NOT CMAKE_BUILD_EARLY_EXPANSION)
     idf_build_get_property(build_components BUILD_COMPONENTS)
     foreach(COMPONENT ${build_components})
         if(COMPONENT MATCHES "esp-brookesia" OR COMPONENT MATCHES "espressif__esp-brookesia")

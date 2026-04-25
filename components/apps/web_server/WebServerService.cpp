@@ -4,13 +4,17 @@
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
+#include <limits>
+#include <new>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <utility>
 #include <vector>
 
 #include "bsp/esp-bsp.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -25,6 +29,60 @@ static constexpr const char *kSpiffsWebRoot = BSP_SPIFFS_MOUNT_POINT "/web";
 static constexpr const char *kMdnsHostName = "jc4880-web";
 static constexpr const char *kMdnsInstanceName = "JC4880 Web Server";
 static constexpr size_t kIoBufferSize = 2048;
+
+template <typename T>
+class PsramAllocator {
+public:
+    using value_type = T;
+
+    PsramAllocator() noexcept = default;
+
+    template <typename U>
+    PsramAllocator(const PsramAllocator<U> &) noexcept
+    {
+    }
+
+    [[nodiscard]] T *allocate(std::size_t count)
+    {
+        if (count > (std::numeric_limits<std::size_t>::max() / sizeof(T))) {
+            std::abort();
+        }
+
+        void *storage = heap_caps_malloc(count * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (storage == nullptr) {
+            storage = heap_caps_malloc(count * sizeof(T), MALLOC_CAP_8BIT);
+        }
+        if (storage == nullptr) {
+            std::abort();
+        }
+
+        return static_cast<T *>(storage);
+    }
+
+    void deallocate(T *ptr, std::size_t) noexcept
+    {
+        heap_caps_free(ptr);
+    }
+
+    template <typename U>
+    bool operator==(const PsramAllocator<U> &) const noexcept
+    {
+        return true;
+    }
+
+    template <typename U>
+    bool operator!=(const PsramAllocator<U> &) const noexcept
+    {
+        return false;
+    }
+};
+
+using PsramString = std::basic_string<char, std::char_traits<char>, PsramAllocator<char>>;
+
+template <typename T>
+using PsramVector = std::vector<T, PsramAllocator<T>>;
+
+using PsramPathCandidate = std::pair<PsramString, bool>;
 
 const char *kEmbeddedIndexHtml = R"HTML(<!doctype html>
 <html lang="en">
@@ -287,9 +345,9 @@ const char *content_type_for_path(const std::string &path)
     return "application/octet-stream";
 }
 
-std::string json_escape(const std::string &value)
+PsramString json_escape(const std::string &value)
 {
-    std::string output;
+    PsramString output;
     output.reserve(value.size() + 8);
     for (const char ch : value) {
         switch (ch) {
@@ -316,7 +374,7 @@ std::string json_escape(const std::string &value)
     return output;
 }
 
-std::string bool_json(bool value)
+PsramString bool_json(bool value)
 {
     return value ? "true" : "false";
 }
@@ -328,7 +386,7 @@ bool request_accepts_gzip(httpd_req_t *req)
         return false;
     }
 
-    std::string value(header_len + 1, '\0');
+    PsramString value(header_len + 1, '\0');
     if (httpd_req_get_hdr_value_str(req, "Accept-Encoding", value.data(), value.size()) != ESP_OK) {
         return false;
     }
@@ -385,7 +443,7 @@ std::string read_query_value(httpd_req_t *req, const char *key)
         return {};
     }
 
-    std::string query(query_len + 1, '\0');
+    PsramString query(query_len + 1, '\0');
     if (httpd_req_get_url_query_str(req, query.data(), query.size()) != ESP_OK) {
         return {};
     }
@@ -397,7 +455,7 @@ std::string read_query_value(httpd_req_t *req, const char *key)
     return value;
 }
 
-esp_err_t send_text(httpd_req_t *req, const char *type, const std::string &body)
+esp_err_t send_text(httpd_req_t *req, const char *type, const PsramString &body)
 {
     httpd_resp_set_type(req, type);
     return httpd_resp_send(req, body.c_str(), body.size());
@@ -436,7 +494,7 @@ esp_err_t serve_file(httpd_req_t *req, const std::string &path, bool gzip)
     return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
-void append_file_entries(const char *root_label, const std::string &root_path, std::vector<std::string> &json_entries, const std::string &relative = {})
+void append_file_entries(const char *root_label, const std::string &root_path, PsramVector<PsramString> &json_entries, const std::string &relative = {})
 {
     const std::string full_path = relative.empty() ? root_path : join_path(root_path, relative);
     DIR *dir = opendir(full_path.c_str());
@@ -512,7 +570,7 @@ esp_err_t handle_status_json(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Server unavailable");
     }
 
-    const std::string body = std::string("{") +
+    const PsramString body = PsramString("{") +
                              "\"running\":" + bool_json(service->isRunning()) +
                              ",\"ap_mode\":" + bool_json(service->isApModeActive()) +
                              ",\"source\":\"" + json_escape(service->sourceSummary()) + "\"" +
@@ -530,7 +588,7 @@ esp_err_t handle_files_json(httpd_req_t *req)
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Server unavailable");
     }
 
-    std::vector<std::string> file_entries;
+    PsramVector<PsramString> file_entries;
     if (app_storage_ensure_sdcard_available() && is_directory_path(kSdWebRoot)) {
         append_file_entries("SD Card", kSdWebRoot, file_entries);
     }
@@ -538,7 +596,7 @@ esp_err_t handle_files_json(httpd_req_t *req)
         append_file_entries("SPIFFS", kSpiffsWebRoot, file_entries);
     }
 
-    std::string files_json = "[";
+    PsramString files_json = "[";
     for (size_t index = 0; index < file_entries.size(); ++index) {
         if (index > 0) {
             files_json += ",";
@@ -547,7 +605,7 @@ esp_err_t handle_files_json(httpd_req_t *req)
     }
     files_json += "]";
 
-    const std::string body = std::string("{") +
+    const PsramString body = PsramString("{") +
                              "\"live_source\":\"" + json_escape(service->sourceSummary()) + "\"" +
                              ",\"recovery_target\":\"/sdcard/web\"" +
                              ",\"files\":" + files_json + "}";
@@ -602,7 +660,7 @@ esp_err_t handle_upload(httpd_req_t *req)
     }
 
     fclose(file);
-    return send_text(req, "application/json", std::string("{\"saved\":\"") + json_escape(relative_path) + "\"}");
+    return send_text(req, "application/json", PsramString("{\"saved\":\"") + json_escape(relative_path) + "\"}");
 }
 
 esp_err_t handle_captive_redirect(httpd_req_t *req)
@@ -701,6 +759,7 @@ bool WebServerService::start()
     config.max_uri_handlers = 12;
     config.stack_size = 8192;
     config.server_port = 80;
+    config.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
 
     httpd_handle_t handle = nullptr;
     esp_err_t err = httpd_start(&handle, &config);

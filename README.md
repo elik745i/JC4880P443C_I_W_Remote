@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.7 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.8 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -47,9 +47,11 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Firmware screen factory reset button with confirmation and settings wipe.
 - Firmware releases now publish OTA-detectable `.bin` assets directly instead of ZIP-only packages.
 - GitHub OTA updates now follow release-asset redirects correctly, keep visible status during checks and flashes, preserve failure messages, and keep the final OTA verification worker on an internal stack so the update no longer panics at the end of flashing.
+- Power management now enables tickless idle and runtime light-sleep configuration on the main ESP32-P4 firmware so idle CPU utilization can drop instead of staying artificially high.
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
 - Additional low-risk PSRAM placement for radio preview workers, background service stacks, and emulator lookup / ROM buffers to preserve internal SRAM for time-sensitive work.
+- Additional PSRAM-first placement now covers more subsystem memory, including NVS cache, mDNS allocations, NimBLE heap usage, the audio echo test buffer, and more background worker stacks.
 - Internet radio buffering and MP3 recovery are more tolerant of malformed or slow streams, which reduces playback stalls.
 - Firmware settings can browse GitHub releases directly and offer OTA updates from attached `.bin` assets.
 - Dead launcher apps and unreachable video-player sources were removed to reduce maintenance surface and keep OTA builds within budget.
@@ -83,6 +85,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Internet-backed Radio flows now fail fast when Wi-Fi has no usable IP or DNS, which avoids long timeout paths when the device is connected to Wi-Fi without real internet access.
 - Radio app close/reopen handling now clears stale LVGL screen pointers on teardown, preventing the main-screen artifacts and close-time panic that could occur after failed online lookups.
 - Attachable joystick hardware support is now being prepared in parallel with the main firmware and enclosure work, with the current mechanical and circuit references tracked in this repo.
+- The repo now also includes newer attachable joystick enclosure assets and fresh 3D reference exports for the ongoing accessory fit work.
 - Panic behavior now reboots automatically, and the next boot shows a short recovery popup that distinguishes crash, watchdog, brownout, and CPU lockup resets.
 - Flash-backed core dump capture is now enabled, and the next boot persists a readable crash report under SPIFFS for later developer analysis.
 - The reboot recovery popup can now show a manual `Report` action that tries to submit the saved crash report when Wi-Fi is connected, otherwise it reports that the device is offline or the private relay is not configured.
@@ -158,7 +161,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.7 validates at `0x6C86C0`, leaving `0x0C7940` bytes free in the smaller OTA app slot.
+- Version 1.2.8 validates at `0x6D0AD0`, leaving `0x0BF530` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

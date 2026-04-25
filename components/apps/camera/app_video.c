@@ -25,6 +25,35 @@ static const char *TAG = "app_video";
 #define VIDEO_TASK_STACK_SIZE           (4 * 1024)
 #define VIDEO_TASK_PRIORITY             (3)
 
+static BaseType_t create_video_task_prefer_psram(TaskFunction_t task,
+                                                 const char *name,
+                                                 const uint32_t stack_depth,
+                                                 void *arg,
+                                                 const UBaseType_t priority,
+                                                 TaskHandle_t *task_handle,
+                                                 const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        task_handle,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        ESP_LOGI(TAG, "Started %s with a PSRAM-backed stack", name);
+        return pdPASS;
+    }
+
+    ESP_LOGW(TAG,
+             "Falling back to internal RAM stack for %s. Internal free=%u largest=%u PSRAM free=%u",
+             name,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
+}
+
 typedef enum {
     VIDEO_TASK_DELETE = BIT(0),
     VIDEO_TASK_DELETE_DONE = BIT(1),
@@ -372,7 +401,13 @@ esp_err_t app_video_stream_task_start(int video_fd, int core_id)
 
     video_stream_start(video_fd);
 
-    BaseType_t result = xTaskCreatePinnedToCore(video_stream_task, "video stream task", VIDEO_TASK_STACK_SIZE, &video_fd, VIDEO_TASK_PRIORITY, &app_camera_video.video_stream_task_handle, core_id);
+    BaseType_t result = create_video_task_prefer_psram(video_stream_task,
+                                                       "video stream task",
+                                                       VIDEO_TASK_STACK_SIZE,
+                                                       &video_fd,
+                                                       VIDEO_TASK_PRIORITY,
+                                                       &app_camera_video.video_stream_task_handle,
+                                                       core_id);
 
     if (result != pdPASS) {
         ESP_LOGE(TAG, "failed to create video stream task");

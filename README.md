@@ -427,6 +427,8 @@ http://127.0.0.1:8765/
 
 To open it in a VS Code tab like the integrated browser tab already used during development, open that URL inside VS Code after the task is running.
 
+![Joypad Layout Configurator screenshot](User_Manual/webconfigurator.jpg)
+
 ### Stop It
 
 The configurator is only a local localhost server. To shut it down, stop the terminal or task that is running `server.py`.

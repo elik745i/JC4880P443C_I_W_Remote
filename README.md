@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.9 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.10 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -29,6 +29,8 @@ Joystick view:
 Joystick circuit draft:
 
 ![Attachable joystick circuit](User_Manual/Joystick_circuit.png)
+
+![Attachable joystick MCP23017 circuit](User_Manual/Joystick_MCP_circuit.png)
 
 ![Attachable joystick wiring example](3D/wiring.jpeg)
 
@@ -68,6 +70,8 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - BLE startup, teardown, and disconnect recovery on the ESP-Hosted path were hardened to avoid stuck startup states and disconnect-time crashes.
 - BLE game controller support now runs through the ESP32-C6 coprocessor with Bluepad32-based report forwarding, analog sticks and triggers, and broader controller button coverage.
 - The BLE controller settings page now includes a live controller visualizer, persistent per-controller calibration storage, and calibration profile reuse across reconnects.
+- Joypad layout editing now uses a dedicated local configurator that reads and regenerates the firmware layout header directly, supports BLE and Local controller targets, and lets controller artwork be refreshed alongside the generated LVGL asset.
+- The BLE controller preview now follows the generated Joypad layout live on-device, including layout-driven buttons, triggers, and calibration-centered stick movement instead of the old split preview path.
 - The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
 - Hardware Monitor now keeps one hour of background history in PSRAM for CPU load, SRAM, PSRAM, Wi-Fi, battery, and CPU temperature instead of sampling only while the page is open.
@@ -173,7 +177,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.9 validates at `0x6DE150`, leaving `0x0B1EB0` bytes free in the smaller OTA app slot.
+- Version 1.2.10 validates at `0x6E5800`, leaving `0x0AA800` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 
@@ -396,6 +400,69 @@ idf.py reconfigure build
 ```
 
 If you changed preset defaults with `SDKCONFIG_DEFAULTS`, keep using the same command line for that profile so the build graph stays consistent.
+
+## Joypad Layout Configurator
+
+The BLE controller overlay layout editor lives under `tools/joypad_layout/` and runs as a small local web app inside VS Code.
+
+### Start It In VS Code
+
+Run the VS Code task:
+
+```text
+JC4880: Joypad Layout Configurator
+```
+
+That task starts this command in a terminal:
+
+```powershell
+& "C:\Users\Elik\.espressif\python_env\idf5.5_py3.12_env\Scripts\python.exe" "${workspaceFolder}\tools\joypad_layout\server.py"
+```
+
+The server listens on:
+
+```text
+http://127.0.0.1:8765/
+```
+
+To open it in a VS Code tab like the integrated browser tab already used during development, open that URL inside VS Code after the task is running.
+
+### Stop It
+
+The configurator is only a local localhost server. To shut it down, stop the terminal or task that is running `server.py`.
+
+Common ways in VS Code:
+
+- Press `Ctrl+C` in the terminal that is running `JC4880: Joypad Layout Configurator`.
+- Use `Tasks: Terminate Task` and select `JC4880: Joypad Layout Configurator`.
+- Kill the terminal tab that is hosting the task.
+
+### What The Buttons Do
+
+- `Read`: reloads both BLE and Local controller layouts from `components/apps/setting/joypad/SettingJoypadLayout.hpp`, then refreshes `tools/joypad_layout/joypad_layout.json` from that generated source of truth.
+- `Apply`: writes the current configurator state back into `tools/joypad_layout/joypad_layout.json` and regenerates `components/apps/setting/joypad/SettingJoypadLayout.hpp`.
+
+The generated header is the authoritative layout source used by firmware builds. `Apply` only updates code artifacts, so build and flash remain manual steps.
+
+### Background PNG Replacement
+
+The configurator also lets you replace the default controller background PNG.
+
+When you choose a PNG and press `Replace Background PNG`, the tool updates:
+
+- `3D/map/controller.png` for the web preview.
+- `components/apps/setting/ui/images/ui_img_controller_png.c` for the firmware image asset.
+
+That means the next firmware build and flash will use the same background artwork that the configurator preview is showing.
+
+Typical follow-up flow:
+
+```text
+1. Run JC4880: Joypad Layout Configurator
+2. Adjust layout or replace the background PNG
+3. Press Apply if you changed layout geometry or visuals
+4. Build with JC4880: Build P4 or flash with JC4880: Build and Flash P4
+```
 
 ## VS Code Flash Target Switch
 

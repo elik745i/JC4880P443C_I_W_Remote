@@ -877,33 +877,73 @@ esp_err_t AppSettings::initWifi()
         xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_UI_INIT_DONE);
     }
 
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_err_t err = esp_netif_init();
+    if ((err != ESP_OK) && (err != ESP_ERR_INVALID_STATE)) {
+        ESP_LOGE(TAG, "Failed to initialize esp_netif: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_event_loop_create_default();
+    if ((err != ESP_OK) && (err != ESP_ERR_INVALID_STATE)) {
+        ESP_LOGE(TAG, "Failed to create default event loop: %s", esp_err_to_name(err));
+        return err;
+    }
+
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    assert(sta_netif);
+    if (sta_netif == nullptr) {
+        ESP_LOGE(TAG, "Failed to create default station netif");
+        return ESP_FAIL;
+    }
+
     esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
-    assert(ap_netif);
+    if (ap_netif == nullptr) {
+        ESP_LOGE(TAG, "Failed to create default SoftAP netif");
+        return ESP_FAIL;
+    }
+
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize hosted Wi-Fi: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set Wi-Fi storage after init: %s", esp_err_to_name(err));
+        return err;
+    }
 
     esp_event_handler_instance_t instance_any_id;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                        ESP_EVENT_ANY_ID,
-                                                        &wifiEventHandler,
-                                                        this,
-                                                        &instance_any_id));
+    err = esp_event_handler_instance_register(WIFI_EVENT,
+                                              ESP_EVENT_ANY_ID,
+                                              &wifiEventHandler,
+                                              this,
+                                              &instance_any_id);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register Wi-Fi event handler: %s", esp_err_to_name(err));
+        return err;
+    }
+
     esp_event_handler_instance_t instance_got_ip;
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
-                                                        &wifiEventHandler,
-                                                        this,
-                                                        &instance_got_ip));
+    err = esp_event_handler_instance_register(IP_EVENT,
+                                              IP_EVENT_STA_GOT_IP,
+                                              &wifiEventHandler,
+                                              this,
+                                              &instance_got_ip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register IP event handler: %s", esp_err_to_name(err));
+        return err;
+    }
 
     loadNvsStringParam(NVS_KEY_WIFI_AP_SSID, st_wifi_ap_ssid, sizeof(st_wifi_ap_ssid));
     loadNvsStringParam(NVS_KEY_WIFI_AP_PASSWORD, st_wifi_ap_password, sizeof(st_wifi_ap_password));
     const bool has_saved_wifi = restoreWifiCredentials();
-    ESP_ERROR_CHECK(applyWifiOperatingMode(has_saved_wifi, "saved credentials"));
+    err = applyWifiOperatingMode(has_saved_wifi, "saved credentials");
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to apply initial Wi-Fi operating mode: %s", esp_err_to_name(err));
+        return err;
+    }
 
     s_wifi_runtime_ready = true;
 

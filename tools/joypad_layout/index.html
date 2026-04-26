@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Joypad Layout Configurator</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="workspace">
+    <section class="toolbar">
+      <div>
+        <h1>Joypad Layout Configurator</h1>
+        <p>Edit geometry, labels, colors, text styling, and custom polygon shapes for the selected BLE or local controller overlay, then apply the result back into the generated layout code.</p>
+      </div>
+      <div class="toolbar-actions">
+        <label class="toolbar-select">
+          <span>Target</span>
+          <select id="layoutTargetSelect">
+            <option value="bleController">BLE Controller</option>
+            <option value="localController">Local Controller</option>
+          </select>
+        </label>
+        <button id="refreshCodeButton" type="button">Read</button>
+        <button id="applyButton" type="button">Apply</button>
+      </div>
+      <p id="status" class="status">Loading layout...</p>
+    </section>
+
+    <section class="editor-grid">
+      <div class="device-shell">
+        <section class="panel-group canvas-tools">
+          <h3>Background</h3>
+          <p>Replace the preview PNG and regenerate the firmware image asset so the next manual build and flash use the same controller artwork.</p>
+          <div class="canvas-tools-row">
+            <label>
+              PNG File
+              <input id="backgroundFile" type="file" accept="image/png">
+            </label>
+            <button id="backgroundUploadButton" type="button">Replace Background PNG</button>
+          </div>
+          <div class="zoom-controls">
+            <label class="zoom-control" for="zoomRange">
+              <span>Zoom</span>
+              <input id="zoomRange" type="range" min="50" max="400" step="10" value="100">
+            </label>
+            <output id="zoomValue" class="zoom-value" for="zoomRange">100%</output>
+          </div>
+        </section>
+        <div id="canvasViewport" class="canvas-viewport">
+          <div id="canvasZoomLayer" class="canvas-zoom-layer">
+            <div id="deviceCanvas" class="device-canvas">
+              <div id="previewFrame" class="preview-frame">
+                <img id="controllerImage" class="controller-image" src="/controller.png" alt="Controller artwork">
+                <div id="overlayLayer" class="overlay-layer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="inspector">
+        <div class="inspector-header">
+          <h2>Selection</h2>
+          <section class="inspector-toolbar">
+            <label class="inspector-toolbar-field">
+              <span>Add Button</span>
+              <select id="addButtonSelect"></select>
+            </label>
+            <button id="addButtonButton" type="button">Add To Canvas</button>
+          </section>
+        </div>
+        <div id="emptySelection" class="empty-selection">Select an overlay element to inspect its source coordinates.</div>
+        <form id="inspectorForm" class="inspector-form hidden">
+          <section class="panel-group inspector-actions">
+            <button id="deleteButtonButton" class="danger-button" type="button">Delete Selected Button</button>
+          </section>
+          <section class="panel-group">
+            <h3>Placement</h3>
+            <label>
+              Key
+              <input id="fieldKey" type="text" readonly>
+            </label>
+            <div class="field-grid">
+              <label>
+                <span id="fieldXLabelText">X / Center X</span>
+                <input id="fieldX" type="number">
+              </label>
+              <label>
+                <span id="fieldYLabelText">Y / Center Y</span>
+                <input id="fieldY" type="number">
+              </label>
+              <div class="dimension-row">
+                <label>
+                  <span id="fieldWLabelText">Width / Size</span>
+                  <input id="fieldW" type="number">
+                </label>
+                <button id="dimensionLinkButton" class="link-toggle-button" type="button" aria-pressed="true" aria-label="Keep width and height linked" title="Keep width and height linked"></button>
+                <label id="fieldHWrapper">
+                  <span id="fieldHLabelText">Height</span>
+                  <input id="fieldH" type="number">
+                </label>
+              </div>
+              <label>
+                <span>Rotation</span>
+                <input id="fieldRotation" type="number" min="-360" max="360" step="1">
+              </label>
+            </div>
+          </section>
+
+          <section class="panel-group">
+            <h3>Label</h3>
+            <div class="field-grid">
+              <label>
+                Name
+                <input id="fieldLabel" type="text">
+              </label>
+              <label>
+                Text Size
+                <input id="fieldTextSize" type="number" min="8" max="64">
+              </label>
+              <label>
+                Text Style
+                <select id="fieldTextStyle">
+                  <option value="regular">Regular</option>
+                  <option value="bold">Bold</option>
+                  <option value="italic">Italic</option>
+                  <option value="bold-italic">Bold Italic</option>
+                </select>
+              </label>
+              <label>
+                Text Color
+                <input id="fieldTextColor" type="color">
+              </label>
+            </div>
+          </section>
+
+          <section class="panel-group">
+            <h3>Shape Style</h3>
+            <div class="shape-style-actions">
+              <button id="copyShapeButton" type="button">Copy Shape</button>
+              <button id="pasteShapeButton" type="button" disabled>Paste Shape</button>
+            </div>
+            <div class="field-grid">
+              <label>
+                Fill Color
+                <input id="fieldFillColor" type="color">
+              </label>
+              <label>
+                Border Color
+                <input id="fieldBorderColor" type="color">
+              </label>
+              <label>
+                Border Width
+                <input id="fieldBorderWidth" type="number" min="0" max="12">
+              </label>
+              <label>
+                Standard Shape
+                <select id="fieldShapeType">
+                  <option value="custom">Custom</option>
+                  <option value="roundedRect">Rectangle</option>
+                  <option value="capsule">Capsule</option>
+                  <option value="circle">Circle</option>
+                  <option value="triangle">Triangle</option>
+                  <option value="star">Star</option>
+                  <option value="pentagon">Pentagon</option>
+                </select>
+              </label>
+              <label id="fieldCornerRadiusWrapper">
+                Corner Radius
+                <input id="fieldCornerRadius" type="number" min="0" max="999">
+              </label>
+              <label id="fieldCornerDiameterWrapper">
+                Corner Diameter
+                <input id="fieldCornerDiameter" type="number" min="0" max="1998">
+              </label>
+            </div>
+          </section>
+
+          <section class="panel-group">
+            <h3>Function</h3>
+            <div class="field-grid">
+              <label>
+                Button Function
+                <select id="fieldFunctionType">
+                  <option value="tactile">Tactile</option>
+                  <option value="analog">Analog</option>
+                  <option value="dpad">D-Pad</option>
+                </select>
+              </label>
+              <label id="fieldAnalogLevelWrapper">
+                Analog Fill %
+                <input id="fieldAnalogLevel" type="number" min="0" max="100">
+              </label>
+              <label id="fieldDpadXWrapper">
+                D-Pad X
+                <input id="fieldDpadX" type="number" min="-100" max="100">
+              </label>
+              <label id="fieldDpadYWrapper">
+                D-Pad Y
+                <input id="fieldDpadY" type="number" min="-100" max="100">
+              </label>
+            </div>
+          </section>
+
+          <section class="panel-group shape-editor-group">
+            <div class="shape-editor-header">
+              <div>
+                <h3>Custom Shape Editor</h3>
+                <p>Available only when Standard Shape is set to Custom. Click the current outline to insert a point, drag points to reshape, then turn off point editing to see the softened result.</p>
+              </div>
+              <div class="shape-editor-actions">
+                <button id="togglePointEditButton" type="button">Edit Points</button>
+                <button id="deletePointButton" type="button" disabled>Delete Point</button>
+                <button id="resetShapeButton" type="button">Reset Shape</button>
+              </div>
+            </div>
+            <div class="shape-stage">
+              <svg id="shapeEditor" class="shape-editor" viewBox="0 0 240 240" aria-label="Custom shape editor"></svg>
+            </div>
+          </section>
+        </form>
+        <p class="hint">The top target dropdown switches between BLE and Local controller layouts. Read reloads the generated C++ header used by the codebase. Apply writes the updated layout back into code only. Drag directly on the preview, or type values here. D-pad and face buttons edit center points. Bars, shoulders, and stick bases edit top-left positions. Tactile buttons preview a pressed color, analog buttons preview a fill amount, and D-pad buttons preview a centered XY indicator.</p>
+      </aside>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

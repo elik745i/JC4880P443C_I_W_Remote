@@ -171,6 +171,8 @@ private:
     void handleSecurityToggleResult(device_security::LockType type, bool success);
     void ensureHardwareScreen(void);
     void ensureJoypadScreen(void);
+    void ensureJoypadBleScreen(void);
+    void ensureJoypadLocalScreen(void);
     void ensureZigbeeScreen(void);
     void ensureSecurityScreen(void);
     bool persistJoypadConfigFromUi(void);

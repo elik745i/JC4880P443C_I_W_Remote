@@ -76,6 +76,11 @@ constexpr int kGenesisOutputSampleRate = CODEC_DEFAULT_SAMPLE_RATE;
 
 constexpr lv_coord_t kOverlayButtonCornerRadius = 18;
 constexpr lv_opa_t kOverlayButtonOpacity = LV_OPA_50;
+constexpr lv_opa_t kOverlayHiddenOpacity = LV_OPA_TRANSP;
+constexpr lv_opa_t kOverlayVisibleOpacity = LV_OPA_COVER;
+constexpr uint32_t kOverlayFadeInDurationMs = 180;
+constexpr uint32_t kOverlayFadeOutDurationMs = 260;
+constexpr int64_t kOverlayFadeOutDelayUs = 5000000;
 constexpr lv_coord_t kSideButtonWidth = 70;
 constexpr lv_coord_t kSideButtonHeight = 122;
 constexpr lv_coord_t kSmallOverlayButtonWidth = 64;
@@ -117,6 +122,7 @@ void style_action_button(lv_obj_t *button)
 void style_overlay_button(lv_obj_t *button, lv_coord_t width, lv_coord_t height)
 {
     lv_obj_set_size(button, width, height);
+    lv_obj_set_style_opa(button, kOverlayVisibleOpacity, 0);
     lv_obj_set_style_radius(button, kOverlayButtonCornerRadius, 0);
     lv_obj_set_style_bg_color(button, lv_color_hex(0x0b1020), 0);
     lv_obj_set_style_bg_opa(button, kOverlayButtonOpacity, 0);
@@ -147,6 +153,15 @@ void set_rotated_button_label(lv_obj_t *button, const char *label, lv_coord_t an
     lv_obj_set_style_transform_pivot_x(text, lv_obj_get_width(text) / 2, 0);
     lv_obj_set_style_transform_pivot_y(text, lv_obj_get_height(text) / 2, 0);
     lv_obj_center(text);
+}
+
+void set_overlay_control_opa(void *object, int32_t value)
+{
+    if (object == nullptr) {
+        return;
+    }
+
+    lv_obj_set_style_opa(static_cast<lv_obj_t *>(object), static_cast<lv_opa_t>(value), 0);
 }
 
 template <typename StringT>
@@ -1429,6 +1444,9 @@ void SegaEmulator::createPlayerScreen()
     }
 
     cachePlayerControlRegions();
+    _playerControlsVisible = true;
+    _lastPlayerTouchUs = esp_timer_get_time();
+    animatePlayerControlsVisibility(true);
 }
 
 void SegaEmulator::recreatePlayerScreen()
@@ -2033,9 +2051,11 @@ void SegaEmulator::emulatorTask()
             const int64_t frameStartUs = esp_timer_get_time();
             const bool drawFrame = (skipFrames == 0);
             uint32_t touchMask = 0;
-            if (readTouchInputMask(touchMask)) {
+            bool touchDetected = false;
+            if (readTouchInputMask(touchMask, &touchDetected)) {
                 _inputMask.store(touchMask);
             }
+            updatePlayerControlsVisibility(touchDetected, frameStartUs);
 
             const uint32_t joypadActions = jc4880_joypad_consume_action_mask();
             if (joypadActions & JC4880_JOYPAD_ACTION_SAVE) {
@@ -2273,9 +2293,11 @@ void SegaEmulator::emulatorTask()
         const int64_t frameStartUs = esp_timer_get_time();
         const bool drawFrame = (skipFrames == 0);
         uint32_t touchMask = 0;
-        if (readTouchInputMask(touchMask)) {
+        bool touchDetected = false;
+        if (readTouchInputMask(touchMask, &touchDetected)) {
             _inputMask.store(touchMask);
         }
+        updatePlayerControlsVisibility(touchDetected, frameStartUs);
 
         const uint32_t joypadActions = jc4880_joypad_consume_action_mask();
         if (joypadActions & JC4880_JOYPAD_ACTION_SAVE) {
@@ -3099,9 +3121,12 @@ void SegaEmulator::cachePlayerControlRegions()
     }
 }
 
-bool SegaEmulator::readTouchInputMask(uint32_t &mask) const
+bool SegaEmulator::readTouchInputMask(uint32_t &mask, bool *touchDetected) const
 {
     mask = 0;
+    if (touchDetected != nullptr) {
+        *touchDetected = false;
+    }
 
     esp_lcd_touch_handle_t touchHandle = bsp_display_get_touch_handle();
     if ((touchHandle == nullptr) || _controlRegions.empty()) {
@@ -3115,6 +3140,10 @@ bool SegaEmulator::readTouchInputMask(uint32_t &mask) const
         return false;
     }
 
+    if (touchDetected != nullptr) {
+        *touchDetected = pointCount > 0;
+    }
+
     for (uint8_t pointIndex = 0; pointIndex < pointCount; ++pointIndex) {
         for (const ControlRegion &region : _controlRegions) {
             if (point_in_area(points[pointIndex].x, points[pointIndex].y, region.area)) {
@@ -3124,6 +3153,78 @@ bool SegaEmulator::readTouchInputMask(uint32_t &mask) const
     }
 
     return true;
+}
+
+bool SegaEmulator::shouldAutoHidePlayerControls() const
+{
+    const uint16_t rotationDegrees = getPlayerRotationDegrees();
+    return (rotationDegrees == 90) || (rotationDegrees == 270);
+}
+
+void SegaEmulator::animatePlayerControlsVisibility(bool visible)
+{
+    _playerControlsVisible = visible;
+
+    if (_playerScreen == nullptr) {
+        return;
+    }
+
+    const lv_opa_t targetOpacity = visible ? kOverlayVisibleOpacity : kOverlayHiddenOpacity;
+    const uint32_t durationMs = visible ? kOverlayFadeInDurationMs : kOverlayFadeOutDurationMs;
+    lv_obj_t *buttons[] = {
+        _upButton,
+        _downButton,
+        _leftButton,
+        _rightButton,
+        _buttonA,
+        _buttonB,
+        _buttonC,
+        _startButton,
+        _loadButton,
+        _saveButton,
+        _exitButton,
+    };
+
+    bsp_display_lock(0);
+    for (lv_obj_t *button : buttons) {
+        if ((button == nullptr) || !lv_obj_is_valid(button)) {
+            continue;
+        }
+
+        lv_anim_del(button, set_overlay_control_opa);
+
+        lv_anim_t animation;
+        lv_anim_init(&animation);
+        lv_anim_set_var(&animation, button);
+        lv_anim_set_exec_cb(&animation, set_overlay_control_opa);
+        lv_anim_set_values(&animation, lv_obj_get_style_opa(button, 0), targetOpacity);
+        lv_anim_set_time(&animation, durationMs);
+        lv_anim_set_path_cb(&animation, lv_anim_path_ease_in_out);
+        lv_anim_start(&animation);
+    }
+    bsp_display_unlock();
+}
+
+void SegaEmulator::updatePlayerControlsVisibility(bool touchDetected, int64_t nowUs)
+{
+    if (!shouldAutoHidePlayerControls()) {
+        if (!_playerControlsVisible) {
+            animatePlayerControlsVisibility(true);
+        }
+        return;
+    }
+
+    if (touchDetected) {
+        _lastPlayerTouchUs = nowUs;
+        if (!_playerControlsVisible) {
+            animatePlayerControlsVisibility(true);
+        }
+        return;
+    }
+
+    if (_playerControlsVisible && ((nowUs - _lastPlayerTouchUs) >= kOverlayFadeOutDelayUs)) {
+        animatePlayerControlsVisibility(false);
+    }
 }
 
 bool SegaEmulator::setupAudio(int sampleRate)

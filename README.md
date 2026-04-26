@@ -30,6 +30,8 @@ Joystick circuit draft:
 
 ![Attachable joystick circuit](User_Manual/Joystick_circuit.png)
 
+![Attachable joystick wiring example](3D/wiring.jpeg)
+
 ## What Changed Versus The Vendor Base
 
 Compared with the stock Espressif-based firmware stack used for this hardware profile, this build adds or changes the following:

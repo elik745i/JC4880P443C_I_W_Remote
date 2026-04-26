@@ -193,7 +193,10 @@ private:
     void finishEmulationOnUiThread();
     void updateSmsInputState();
     void cachePlayerControlRegions();
-    bool readTouchInputMask(uint32_t &mask) const;
+    bool readTouchInputMask(uint32_t &mask, bool *touchDetected = nullptr) const;
+    bool shouldAutoHidePlayerControls() const;
+    void animatePlayerControlsVisibility(bool visible);
+    void updatePlayerControlsVisibility(bool touchDetected, int64_t nowUs);
     bool setupAudio(int sampleRate);
     void teardownAudio();
     bool loadBatterySave();
@@ -275,6 +278,8 @@ private:
     SegaString _romFilter;
     EmulatorCore _currentCore = EmulatorCore::SmsPlus;
     uint16_t _playerRotationDegrees = 270;
+    bool _playerControlsVisible = true;
+    int64_t _lastPlayerTouchUs = 0;
     bool _indexLoaded = false;
     size_t _currentPage = 0;
 

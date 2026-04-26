@@ -48,6 +48,7 @@ typedef enum {
 typedef enum {
     JC4880_JOYPAD_MANUAL_MODE_SPI = 0,
     JC4880_JOYPAD_MANUAL_MODE_RESISTIVE = 1,
+    JC4880_JOYPAD_MANUAL_MODE_MCP23017 = 2,
 } jc4880_joypad_manual_mode_t;
 
 typedef enum {
@@ -129,7 +130,9 @@ typedef struct {
     uint8_t manual_mode;
     int8_t manual_spi_gpio[JC4880_JOYPAD_SPI_CONTROL_COUNT];
     int8_t manual_resistive_gpio[2];
-    int8_t manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_COUNT];
+    int8_t manual_resistive_button_binding[JC4880_JOYPAD_BUTTON_CONTROL_COUNT];
+    int8_t manual_mcp_i2c_gpio[2];
+    int8_t manual_mcp_button_pin[JC4880_JOYPAD_BUTTON_CONTROL_COUNT];
     char ble_device_addr[18];
 } jc4880_joypad_config_t;
 

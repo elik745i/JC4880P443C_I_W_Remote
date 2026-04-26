@@ -92,21 +92,59 @@ def _render_visual_array(items: list[dict]) -> str:
     return "\n".join(f"        {_visual_block(item)}," for item in items)
 
 
+def _preview_offset(item: dict, axis: str) -> int:
+    visual = item.get("visual", {})
+    preview = visual.get("preview", {})
+    return int(preview.get(f"offset{axis}", 0) or 0)
+
+
+def _applied_rect(item: dict) -> dict[str, int]:
+    return {
+        "x": int(item["x"]) - _preview_offset(item, "X"),
+        "y": int(item["y"]) - _preview_offset(item, "Y"),
+        "width": int(item["width"]),
+        "height": int(item["height"]),
+    }
+
+
+def _applied_circle(item: dict) -> dict[str, int]:
+    return {
+        "centerX": int(item["centerX"]) - _preview_offset(item, "X"),
+        "centerY": int(item["centerY"]) - _preview_offset(item, "Y"),
+        "size": int(item["size"]),
+    }
+
+
 def _render_layout_constant(symbol_name: str, layout: dict) -> str:
+    trigger_bar_items = [_applied_rect(item) for item in layout["triggerBars"]]
+    shoulder_items = [_applied_rect(item) for item in layout["shoulders"]]
+    stick_items = [
+        _applied_rect({
+            "x": item["x"],
+            "y": item["y"],
+            "width": item.get("width", item["size"]),
+            "height": item.get("height", item.get("width", item["size"])),
+            "visual": item.get("visual", {}),
+        })
+        for item in layout["sticks"]
+    ]
+    dpad_items = [_applied_circle(item) for item in layout["dpadButtons"]]
+    face_items = [_applied_circle(item) for item in layout["faceButtons"]]
+
     trigger_bars = "\n".join(
-        f"        {{{item['x']}, {item['y']}, {item['width']}, {item['height']}}}," for item in layout["triggerBars"]
+        f"        {{{item['x']}, {item['y']}, {item['width']}, {item['height']}}}," for item in trigger_bar_items
     )
     shoulders = "\n".join(
-        f"        {{{item['x']}, {item['y']}, {item['width']}, {item['height']}}}," for item in layout["shoulders"]
+        f"        {{{item['x']}, {item['y']}, {item['width']}, {item['height']}}}," for item in shoulder_items
     )
     sticks = "\n".join(
-        f"        {{{item['x']}, {item['y']}, {item.get('width', item['size'])}, {item.get('height', item.get('width', item['size']))}}}," for item in layout["sticks"]
+        f"        {{{item['x']}, {item['y']}, {item['width']}, {item['height']}}}," for item in stick_items
     )
     dpad = "\n".join(
-        f"        {{{item['centerX']}, {item['centerY']}, {item['size']}}}," for item in layout["dpadButtons"]
+        f"        {{{item['centerX']}, {item['centerY']}, {item['size']}}}," for item in dpad_items
     )
     face = "\n".join(
-        f"        {{{item['centerX']}, {item['centerY']}, {item['size']}}}," for item in layout["faceButtons"]
+        f"        {{{item['centerX']}, {item['centerY']}, {item['size']}}}," for item in face_items
     )
     trigger_visuals = _render_visual_array(layout["triggerBars"])
     shoulder_visuals = _render_visual_array(layout["shoulders"])
@@ -611,7 +649,20 @@ def _png_dimensions(image_bytes: bytes) -> tuple[int, int]:
     return width, height
 
 
-def write_lvgl_png_asset(image_path: Path, asset_path: Path, source_label: str = "3D/map/controller.png") -> None:
+def read_lvgl_png_asset(asset_path: Path) -> bytes:
+    text = asset_path.read_text(encoding="utf-8")
+    byte_values = [int(match, 16) for match in re.findall(r"0x([0-9A-Fa-f]{2})", text)]
+    image_bytes = bytes(byte_values)
+    _png_dimensions(image_bytes)
+    return image_bytes
+
+
+def write_lvgl_png_asset(
+    image_path: Path,
+    asset_path: Path,
+    source_label: str = "3D/map/controller.png",
+    symbol: str = "ui_img_controller_png",
+) -> None:
     image_bytes = image_path.read_bytes()
     width, height = _png_dimensions(image_bytes)
     byte_lines = []
@@ -619,7 +670,6 @@ def write_lvgl_png_asset(image_path: Path, asset_path: Path, source_label: str =
         chunk = image_bytes[offset : offset + 12]
         byte_lines.append("    " + ", ".join(f"0x{byte:02X}" for byte in chunk) + ",")
 
-    symbol = "ui_img_controller_png"
     contents = f'''// Generated from {source_label}
 #include "../ui.h"
 
@@ -645,7 +695,11 @@ const lv_img_dsc_t {symbol} = {{
 
 def write_header(layout_path: Path, header_path: Path) -> None:
     layout_document = _read_layout_document(layout_path)
-    header_path.write_text(_render_header(layout_document), encoding="utf-8")
+    write_header_document(layout_document, header_path)
+
+
+def write_header_document(layout_document: dict, header_path: Path) -> None:
+    header_path.write_text(_render_header(normalize_layout_document(layout_document)), encoding="utf-8")
 
 
 if __name__ == "__main__":

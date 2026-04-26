@@ -391,7 +391,9 @@ private:
     std::array<lv_obj_t *, JC4880_JOYPAD_BLE_CONTROL_COUNT> _joypadBleRemapDropdowns;
     std::array<lv_obj_t *, JC4880_JOYPAD_SPI_CONTROL_COUNT> _joypadManualSpiDropdowns;
     std::array<lv_obj_t *, 2> _joypadManualResistiveDropdowns;
-    std::array<lv_obj_t *, JC4880_JOYPAD_BUTTON_CONTROL_COUNT> _joypadManualButtonDropdowns;
+    std::array<lv_obj_t *, JC4880_JOYPAD_BUTTON_CONTROL_COUNT> _joypadManualResistiveButtonDropdowns;
+    std::array<lv_obj_t *, 2> _joypadManualMcpDropdowns;
+    std::array<lv_obj_t *, JC4880_JOYPAD_BUTTON_CONTROL_COUNT> _joypadManualMcpButtonDropdowns;
     std::vector<std::string> _joypadBleDeviceOptions;
     lv_obj_t *_zigbeeEnableSwitch;
     lv_obj_t *_zigbeeNameTextArea;

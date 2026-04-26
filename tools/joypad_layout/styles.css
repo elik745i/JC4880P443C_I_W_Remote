@@ -204,33 +204,24 @@ button:hover {
 
 .device-canvas {
   position: relative;
-  width: 800px;
-  height: 480px;
+  display: block;
   margin: 0;
-  border-radius: 28px;
-  background:
-    radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.75), transparent 30%),
-    linear-gradient(180deg, #f3f9ff 0%, #deebfa 100%);
-  border: 1px solid rgba(148, 163, 184, 0.5);
+  border-radius: 22px;
+  background: #eff6ff;
+  border: 0;
+  box-shadow: none;
   transform-origin: top left;
 }
 
 .device-canvas::before {
-  content: attr(data-canvas-label);
-  position: absolute;
-  top: 18px;
-  left: 20px;
-  color: #6b7280;
-  font-size: 13px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  content: none;
 }
 
 .preview-frame {
   position: absolute;
-  border-radius: 22px;
-  background: #eff6ff;
-  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.35);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -264,6 +255,10 @@ button:hover {
 
 .overlay-item.selected {
   filter: drop-shadow(0 0 0.35rem rgba(15, 118, 110, 0.35));
+}
+
+.overlay-local-dpad-segment {
+  pointer-events: none;
 }
 
 .overlay-item:focus,
@@ -366,6 +361,32 @@ button:hover {
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   gap: 8px;
   align-items: start;
+}
+
+.offset-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 118px) minmax(0, 118px) 28px;
+  gap: 8px;
+  align-items: end;
+}
+
+.offset-field {
+  max-width: 118px;
+}
+
+.offset-toggle {
+  min-width: 28px;
+  width: 28px;
+  align-self: end;
+  justify-items: center;
+  padding-bottom: 10px;
+}
+
+.offset-toggle input {
+  width: 18px;
+  height: 18px;
+  justify-self: center;
 }
 
 .link-toggle-button {
@@ -588,6 +609,10 @@ button:hover {
   }
 
   .dimension-row {
+    grid-template-columns: 1fr;
+  }
+
+  .offset-row {
     grid-template-columns: 1fr;
   }
 

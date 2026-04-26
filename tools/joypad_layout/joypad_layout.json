@@ -1,1087 +1,674 @@
 {
-  "selectedTarget": "bleController",
-  "layouts": {
-    "bleController": {
-      "deviceCanvas": {
-        "width": 480,
-        "height": 800
-      },
-      "previewFrame": {
-        "x": 40,
-        "y": 254,
-        "width": 400,
-        "height": 293
-      },
-      "controllerSource": {
-        "width": 800,
-        "height": 585
-      },
-      "triggerBars": [
-        {
-          "id": "L2",
-          "x": 2,
-          "y": 19,
-          "width": 150,
-          "height": 120,
-          "visual": {
-            "label": "L2",
-            "fillColor": "#cbd5e1",
-            "borderColor": "#2563eb",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "custom",
-              "cornerRadius": 5,
-              "points": [
-                {
-                  "x": 0,
-                  "y": 39
-                },
-                {
-                  "x": 95,
-                  "y": 38
-                },
-                {
-                  "x": 95,
-                  "y": 48
-                },
-                {
-                  "x": 84,
-                  "y": 51
-                },
-                {
-                  "x": 79,
-                  "y": 61
-                },
-                {
-                  "x": 1,
-                  "y": 62
-                }
-              ],
-              "rotationDegrees": 0
+  "deviceCanvas": {
+    "width": 480,
+    "height": 800
+  },
+  "previewFrame": {
+    "x": 40,
+    "y": 254,
+    "width": 400,
+    "height": 293
+  },
+  "controllerSource": {
+    "width": 671,
+    "height": 491
+  },
+  "triggerBars": [
+    {
+      "id": "L2",
+      "x": -24,
+      "y": 5,
+      "width": 150,
+      "height": 120,
+      "visual": {
+        "label": "L2",
+        "fillColor": "#cbd5e1",
+        "borderColor": "#2563eb",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 14,
+        "textStyle": "bold",
+        "shape": {
+          "type": "custom",
+          "cornerRadius": 5,
+          "points": [
+            {
+              "x": 0,
+              "y": 39
             },
-            "functionType": "analog",
-            "preview": {
-              "analogLevel": 72,
-              "dpadX": 0,
-              "dpadY": 0
+            {
+              "x": 95,
+              "y": 38
             },
-            "enabled": true
-          }
+            {
+              "x": 95,
+              "y": 48
+            },
+            {
+              "x": 84,
+              "y": 51
+            },
+            {
+              "x": 79,
+              "y": 61
+            },
+            {
+              "x": 1,
+              "y": 62
+            }
+          ],
+          "rotationDegrees": 0
         },
-        {
-          "id": "R2",
-          "x": 642,
-          "y": 13,
-          "width": 150,
-          "height": 120,
-          "visual": {
-            "label": "R2",
-            "fillColor": "#cbd5e1",
-            "borderColor": "#2563eb",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "custom",
-              "cornerRadius": 5,
-              "points": [
-                {
-                  "x": 0,
-                  "y": 39
-                },
-                {
-                  "x": 95,
-                  "y": 38
-                },
-                {
-                  "x": 95,
-                  "y": 62
-                },
-                {
-                  "x": 14,
-                  "y": 62
-                },
-                {
-                  "x": 10,
-                  "y": 52
-                },
-                {
-                  "x": 1,
-                  "y": 50
-                }
-              ],
-              "rotationDegrees": 0
-            },
-            "functionType": "analog",
-            "preview": {
-              "analogLevel": 72,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          }
-        }
-      ],
-      "shoulders": [
-        {
-          "id": "L1",
-          "x": 147,
-          "y": 6,
-          "width": 50,
-          "height": 50,
-          "visual": {
-            "label": "L1",
-            "fillColor": "#e2e8f0",
-            "borderColor": "#94a3b8",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 17,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          }
+        "functionType": "analog",
+        "preview": {
+          "analogLevel": 72,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 0,
+          "offsetY": 0,
+          "showOffsetOnCanvas": false
         },
-        {
-          "id": "R1",
-          "x": 607,
-          "y": 7,
-          "width": 50,
-          "height": 50,
-          "visual": {
-            "label": "R1",
-            "fillColor": "#e2e8f0",
-            "borderColor": "#94a3b8",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 17,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          }
-        }
-      ],
-      "sticks": [
-        {
-          "id": "LS",
-          "x": 232,
-          "y": 220,
-          "size": 112,
-          "visual": {
-            "label": "LS",
-            "fillColor": "#38bdf8",
-            "borderColor": "#0284c7",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "dpad",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 112,
-          "height": 112
-        },
-        {
-          "id": "RS",
-          "x": 441,
-          "y": 220,
-          "size": 112,
-          "visual": {
-            "label": "RS",
-            "fillColor": "#38bdf8",
-            "borderColor": "#0284c7",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "dpad",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 112,
-          "height": 112
-        }
-      ],
-      "dpadButtons": [
-        {
-          "id": "U",
-          "centerX": 171,
-          "centerY": 122,
-          "size": 50,
-          "color": "#0F766E",
-          "visual": {
-            "label": "U",
-            "fillColor": "#e2e8f0",
-            "borderColor": "#0f766e",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "custom",
-              "cornerRadius": 18,
-              "points": [
-                {
-                  "x": 51,
-                  "y": 9
-                },
-                {
-                  "x": 78,
-                  "y": 10
-                },
-                {
-                  "x": 96,
-                  "y": 50
-                },
-                {
-                  "x": 73,
-                  "y": 81
-                },
-                {
-                  "x": 50,
-                  "y": 98
-                },
-                {
-                  "x": 26,
-                  "y": 80
-                },
-                {
-                  "x": 4,
-                  "y": 50
-                },
-                {
-                  "x": 22,
-                  "y": 10
-                }
-              ],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        },
-        {
-          "id": "L",
-          "centerX": 138,
-          "centerY": 156,
-          "size": 50,
-          "color": "#0F766E",
-          "visual": {
-            "label": "L",
-            "fillColor": "#e2e8f0",
-            "borderColor": "#0f766e",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "custom",
-              "cornerRadius": 18,
-              "points": [
-                {
-                  "x": 51,
-                  "y": 9
-                },
-                {
-                  "x": 78,
-                  "y": 10
-                },
-                {
-                  "x": 96,
-                  "y": 50
-                },
-                {
-                  "x": 73,
-                  "y": 81
-                },
-                {
-                  "x": 50,
-                  "y": 98
-                },
-                {
-                  "x": 26,
-                  "y": 80
-                },
-                {
-                  "x": 4,
-                  "y": 50
-                },
-                {
-                  "x": 22,
-                  "y": 10
-                }
-              ],
-              "rotationDegrees": 270
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        },
-        {
-          "id": "R",
-          "centerX": 201,
-          "centerY": 158,
-          "size": 50,
-          "color": "#0F766E",
-          "visual": {
-            "label": "R",
-            "fillColor": "#e2e8f0",
-            "borderColor": "#0f766e",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "custom",
-              "cornerRadius": 18,
-              "points": [
-                {
-                  "x": 51,
-                  "y": 9
-                },
-                {
-                  "x": 78,
-                  "y": 10
-                },
-                {
-                  "x": 96,
-                  "y": 50
-                },
-                {
-                  "x": 73,
-                  "y": 81
-                },
-                {
-                  "x": 50,
-                  "y": 98
-                },
-                {
-                  "x": 26,
-                  "y": 80
-                },
-                {
-                  "x": 4,
-                  "y": 50
-                },
-                {
-                  "x": 22,
-                  "y": 10
-                }
-              ],
-              "rotationDegrees": 90
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        },
-        {
-          "id": "D",
-          "centerX": 168,
-          "centerY": 193,
-          "size": 50,
-          "color": "#0F766E",
-          "visual": {
-            "label": "D",
-            "fillColor": "#e2e8f0",
-            "borderColor": "#0f766e",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "custom",
-              "cornerRadius": 18,
-              "points": [
-                {
-                  "x": 51,
-                  "y": 9
-                },
-                {
-                  "x": 78,
-                  "y": 10
-                },
-                {
-                  "x": 96,
-                  "y": 50
-                },
-                {
-                  "x": 73,
-                  "y": 81
-                },
-                {
-                  "x": 50,
-                  "y": 98
-                },
-                {
-                  "x": 26,
-                  "y": 80
-                },
-                {
-                  "x": 4,
-                  "y": 50
-                },
-                {
-                  "x": 22,
-                  "y": 10
-                }
-              ],
-              "rotationDegrees": 180
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        }
-      ],
-      "faceButtons": [
-        {
-          "id": "X",
-          "centerX": 532,
-          "centerY": 156,
-          "size": 50,
-          "color": "#3B82F6",
-          "visual": {
-            "label": "X",
-            "fillColor": "#3b82f6",
-            "borderColor": "#1d4ed8",
-            "borderWidth": 2,
-            "textColor": "#ffffff",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        },
-        {
-          "id": "Y",
-          "centerX": 582,
-          "centerY": 114,
-          "size": 50,
-          "color": "#F59E0B",
-          "visual": {
-            "label": "Y",
-            "fillColor": "#f59e0b",
-            "borderColor": "#d97706",
-            "borderWidth": 2,
-            "textColor": "#ffffff",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        },
-        {
-          "id": "B",
-          "centerX": 627,
-          "centerY": 160,
-          "size": 50,
-          "color": "#EF4444",
-          "visual": {
-            "label": "B",
-            "fillColor": "#ef4444",
-            "borderColor": "#b91c1c",
-            "borderWidth": 2,
-            "textColor": "#ffffff",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        },
-        {
-          "id": "A",
-          "centerX": 578,
-          "centerY": 204,
-          "size": 50,
-          "color": "#22C55E",
-          "visual": {
-            "label": "A",
-            "fillColor": "#22c55e",
-            "borderColor": "#15803d",
-            "borderWidth": 2,
-            "textColor": "#ffffff",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 50,
-          "height": 50
-        }
-      ]
+        "enabled": true
+      }
     },
-    "localController": {
-      "deviceCanvas": {
-        "width": 480,
-        "height": 800
-      },
-      "previewFrame": {
-        "x": 40,
-        "y": 254,
-        "width": 400,
-        "height": 293
-      },
-      "controllerSource": {
-        "width": 800,
-        "height": 585
-      },
-      "triggerBars": [
-        {
-          "id": "L2",
-          "x": 0,
-          "y": 36,
-          "width": 150,
-          "height": 24,
-          "visual": {
-            "label": "L2",
-            "fillColor": "#cbd5e1",
-            "borderColor": "#2563eb",
-            "borderWidth": 2,
-            "textColor": "#0f172a",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "roundedRect",
-              "cornerRadius": 22,
-              "points": [],
-              "rotationDegrees": 0
+    {
+      "id": "R2",
+      "x": 521,
+      "y": -15,
+      "width": 150,
+      "height": 120,
+      "visual": {
+        "label": "R2",
+        "fillColor": "#cbd5e1",
+        "borderColor": "#2563eb",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 14,
+        "textStyle": "bold",
+        "shape": {
+          "type": "custom",
+          "cornerRadius": 5,
+          "points": [
+            {
+              "x": 0,
+              "y": 39
             },
-            "functionType": "analog",
-            "preview": {
-              "analogLevel": 72,
-              "dpadX": 0,
-              "dpadY": 0
+            {
+              "x": 95,
+              "y": 38
             },
-            "enabled": true
-          }
+            {
+              "x": 95,
+              "y": 62
+            },
+            {
+              "x": 14,
+              "y": 62
+            },
+            {
+              "x": 10,
+              "y": 52
+            },
+            {
+              "x": 1,
+              "y": 50
+            }
+          ],
+          "rotationDegrees": 0
         },
-        {
-          "id": "R2",
-          "x": 640,
-          "y": 43,
-          "width": 150,
-          "height": 24,
-          "visual": {
-            "label": "R2",
-            "fillColor": "#CBD5E1",
-            "borderColor": "#2563EB",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "roundedRect",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "analog",
-            "preview": {
-              "analogLevel": 72,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          }
-        }
-      ],
-      "shoulders": [
-        {
-          "id": "L1",
-          "x": 147,
-          "y": 6,
-          "width": 72,
-          "height": 34,
-          "visual": {
-            "label": "L1",
-            "fillColor": "#E2E8F0",
-            "borderColor": "#94A3B8",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "roundedRect",
-              "cornerRadius": 15,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          }
+        "functionType": "analog",
+        "preview": {
+          "analogLevel": 72,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 0,
+          "offsetY": 0,
+          "showOffsetOnCanvas": false
         },
-        {
-          "id": "R1",
-          "x": 568,
-          "y": -2,
-          "width": 72,
-          "height": 34,
-          "visual": {
-            "label": "R1",
-            "fillColor": "#E2E8F0",
-            "borderColor": "#94A3B8",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 14,
-            "textStyle": "bold",
-            "shape": {
-              "type": "roundedRect",
-              "cornerRadius": 15,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          }
-        }
-      ],
-      "sticks": [
-        {
-          "id": "LS",
-          "x": 232,
-          "y": 220,
-          "size": 112,
-          "visual": {
-            "label": "LS",
-            "fillColor": "#38BDF8",
-            "borderColor": "#0284C7",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 112,
-          "height": 112
-        },
-        {
-          "id": "RS",
-          "x": 441,
-          "y": 220,
-          "size": 112,
-          "visual": {
-            "label": "RS",
-            "fillColor": "#38BDF8",
-            "borderColor": "#0284C7",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 112,
-          "height": 112
-        }
-      ],
-      "dpadButtons": [
-        {
-          "id": "U",
-          "centerX": 169,
-          "centerY": 147,
-          "size": 30,
-          "color": "#0F766E",
-          "visual": {
-            "label": "U",
-            "fillColor": "#E2E8F0",
-            "borderColor": "#0F766E",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "dpad",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 30,
-          "height": 30
-        },
-        {
-          "id": "L",
-          "centerX": 142,
-          "centerY": 174,
-          "size": 30,
-          "color": "#0F766E",
-          "visual": {
-            "label": "L",
-            "fillColor": "#E2E8F0",
-            "borderColor": "#0F766E",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "dpad",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 30,
-          "height": 30
-        },
-        {
-          "id": "R",
-          "centerX": 196,
-          "centerY": 174,
-          "size": 30,
-          "color": "#0F766E",
-          "visual": {
-            "label": "R",
-            "fillColor": "#E2E8F0",
-            "borderColor": "#0F766E",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "dpad",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 30,
-          "height": 30
-        },
-        {
-          "id": "D",
-          "centerX": 169,
-          "centerY": 201,
-          "size": 30,
-          "color": "#0F766E",
-          "visual": {
-            "label": "D",
-            "fillColor": "#E2E8F0",
-            "borderColor": "#0F766E",
-            "borderWidth": 2,
-            "textColor": "#0F172A",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "dpad",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 30,
-          "height": 30
-        }
-      ],
-      "faceButtons": [
-        {
-          "id": "X",
-          "centerX": 533,
-          "centerY": 173,
-          "size": 32,
-          "color": "#3B82F6",
-          "visual": {
-            "label": "X",
-            "fillColor": "#3B82F6",
-            "borderColor": "#1D4ED8",
-            "borderWidth": 2,
-            "textColor": "#FFFFFF",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 32,
-          "height": 32
-        },
-        {
-          "id": "Y",
-          "centerX": 582,
-          "centerY": 125,
-          "size": 32,
-          "color": "#F59E0B",
-          "visual": {
-            "label": "Y",
-            "fillColor": "#F59E0B",
-            "borderColor": "#D97706",
-            "borderWidth": 2,
-            "textColor": "#FFFFFF",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 32,
-          "height": 32
-        },
-        {
-          "id": "B",
-          "centerX": 631,
-          "centerY": 173,
-          "size": 32,
-          "color": "#EF4444",
-          "visual": {
-            "label": "B",
-            "fillColor": "#EF4444",
-            "borderColor": "#B91C1C",
-            "borderWidth": 2,
-            "textColor": "#FFFFFF",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 32,
-          "height": 32
-        },
-        {
-          "id": "A",
-          "centerX": 582,
-          "centerY": 222,
-          "size": 32,
-          "color": "#22C55E",
-          "visual": {
-            "label": "A",
-            "fillColor": "#22C55E",
-            "borderColor": "#15803D",
-            "borderWidth": 2,
-            "textColor": "#FFFFFF",
-            "textSize": 16,
-            "textStyle": "bold",
-            "shape": {
-              "type": "circle",
-              "cornerRadius": 999,
-              "points": [],
-              "rotationDegrees": 0
-            },
-            "functionType": "tactile",
-            "preview": {
-              "analogLevel": 50,
-              "dpadX": 0,
-              "dpadY": 0
-            },
-            "enabled": true
-          },
-          "width": 32,
-          "height": 32
-        }
-      ]
+        "enabled": true
+      }
     }
-  }
+  ],
+  "shoulders": [
+    {
+      "id": "L1",
+      "x": 119,
+      "y": 3,
+      "width": 50,
+      "height": 50,
+      "visual": {
+        "label": "L1",
+        "fillColor": "#e2e8f0",
+        "borderColor": "#94a3b8",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 14,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 17,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 0,
+          "offsetY": 0,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      }
+    },
+    {
+      "id": "R1",
+      "x": 475,
+      "y": 1,
+      "width": 50,
+      "height": 50,
+      "visual": {
+        "label": "R1",
+        "fillColor": "#e2e8f0",
+        "borderColor": "#94a3b8",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 14,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 17,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 0,
+          "offsetY": 0,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      }
+    }
+  ],
+  "sticks": [
+    {
+      "id": "LS",
+      "x": 189,
+      "y": 184,
+      "size": 100,
+      "visual": {
+        "label": "LS",
+        "fillColor": "#38bdf8",
+        "borderColor": "#0284c7",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 999,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "dpad",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 0,
+          "offsetY": 0,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      },
+      "width": 100,
+      "height": 100
+    },
+    {
+      "id": "RS",
+      "x": 360,
+      "y": 182,
+      "size": 100,
+      "visual": {
+        "label": "RS",
+        "fillColor": "#38bdf8",
+        "borderColor": "#0284c7",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 999,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "dpad",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 0,
+          "offsetY": 0,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      },
+      "width": 100,
+      "height": 100
+    }
+  ],
+  "dpadButtons": [
+    {
+      "id": "U",
+      "centerX": 160,
+      "centerY": 118,
+      "size": 50,
+      "color": "#0F766E",
+      "visual": {
+        "label": "U",
+        "fillColor": "#e2e8f0",
+        "borderColor": "#0f766e",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "custom",
+          "cornerRadius": 18,
+          "points": [
+            {
+              "x": 51,
+              "y": 9
+            },
+            {
+              "x": 78,
+              "y": 10
+            },
+            {
+              "x": 96,
+              "y": 50
+            },
+            {
+              "x": 73,
+              "y": 81
+            },
+            {
+              "x": 50,
+              "y": 98
+            },
+            {
+              "x": 26,
+              "y": 80
+            },
+            {
+              "x": 4,
+              "y": 50
+            },
+            {
+              "x": 22,
+              "y": 10
+            }
+          ],
+          "rotationDegrees": 0
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 25,
+          "showOffsetOnCanvas": true
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    },
+    {
+      "id": "L",
+      "centerX": 125,
+      "centerY": 157,
+      "size": 50,
+      "color": "#0F766E",
+      "visual": {
+        "label": "L",
+        "fillColor": "#e2e8f0",
+        "borderColor": "#0f766e",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "custom",
+          "cornerRadius": 18,
+          "points": [
+            {
+              "x": 51,
+              "y": 9
+            },
+            {
+              "x": 78,
+              "y": 10
+            },
+            {
+              "x": 96,
+              "y": 50
+            },
+            {
+              "x": 73,
+              "y": 81
+            },
+            {
+              "x": 50,
+              "y": 98
+            },
+            {
+              "x": 26,
+              "y": 80
+            },
+            {
+              "x": 4,
+              "y": 50
+            },
+            {
+              "x": 22,
+              "y": 10
+            }
+          ],
+          "rotationDegrees": 270
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 25,
+          "showOffsetOnCanvas": true
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    },
+    {
+      "id": "R",
+      "centerX": 199,
+      "centerY": 158,
+      "size": 50,
+      "color": "#0F766E",
+      "visual": {
+        "label": "R",
+        "fillColor": "#e2e8f0",
+        "borderColor": "#0f766e",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "custom",
+          "cornerRadius": 18,
+          "points": [
+            {
+              "x": 51,
+              "y": 9
+            },
+            {
+              "x": 78,
+              "y": 10
+            },
+            {
+              "x": 96,
+              "y": 50
+            },
+            {
+              "x": 73,
+              "y": 81
+            },
+            {
+              "x": 50,
+              "y": 98
+            },
+            {
+              "x": 26,
+              "y": 80
+            },
+            {
+              "x": 4,
+              "y": 50
+            },
+            {
+              "x": 22,
+              "y": 10
+            }
+          ],
+          "rotationDegrees": 90
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 25,
+          "showOffsetOnCanvas": true
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    },
+    {
+      "id": "D",
+      "centerX": 161,
+      "centerY": 198,
+      "size": 50,
+      "color": "#0F766E",
+      "visual": {
+        "label": "D",
+        "fillColor": "#e2e8f0",
+        "borderColor": "#0f766e",
+        "borderWidth": 2,
+        "textColor": "#0f172a",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "custom",
+          "cornerRadius": 18,
+          "points": [
+            {
+              "x": 51,
+              "y": 9
+            },
+            {
+              "x": 78,
+              "y": 10
+            },
+            {
+              "x": 96,
+              "y": 50
+            },
+            {
+              "x": 73,
+              "y": 81
+            },
+            {
+              "x": 50,
+              "y": 98
+            },
+            {
+              "x": 26,
+              "y": 80
+            },
+            {
+              "x": 4,
+              "y": 50
+            },
+            {
+              "x": 22,
+              "y": 10
+            }
+          ],
+          "rotationDegrees": 180
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 25,
+          "showOffsetOnCanvas": true
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    }
+  ],
+  "faceButtons": [
+    {
+      "id": "X",
+      "centerX": 459,
+      "centerY": 158,
+      "size": 50,
+      "color": "#3B82F6",
+      "visual": {
+        "label": "X",
+        "fillColor": "#3b82f6",
+        "borderColor": "#1d4ed8",
+        "borderWidth": 2,
+        "textColor": "#ffffff",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 999,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 20,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    },
+    {
+      "id": "Y",
+      "centerX": 500,
+      "centerY": 115,
+      "size": 50,
+      "color": "#F59E0B",
+      "visual": {
+        "label": "Y",
+        "fillColor": "#f59e0b",
+        "borderColor": "#d97706",
+        "borderWidth": 2,
+        "textColor": "#ffffff",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 999,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 20,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    },
+    {
+      "id": "B",
+      "centerX": 543,
+      "centerY": 158,
+      "size": 50,
+      "color": "#EF4444",
+      "visual": {
+        "label": "B",
+        "fillColor": "#ef4444",
+        "borderColor": "#b91c1c",
+        "borderWidth": 2,
+        "textColor": "#ffffff",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 999,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 20,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    },
+    {
+      "id": "A",
+      "centerX": 500,
+      "centerY": 199,
+      "size": 50,
+      "color": "#22C55E",
+      "visual": {
+        "label": "A",
+        "fillColor": "#22c55e",
+        "borderColor": "#15803d",
+        "borderWidth": 2,
+        "textColor": "#ffffff",
+        "textSize": 16,
+        "textStyle": "bold",
+        "shape": {
+          "type": "circle",
+          "cornerRadius": 999,
+          "points": [],
+          "rotationDegrees": 0
+        },
+        "functionType": "tactile",
+        "preview": {
+          "analogLevel": 50,
+          "dpadX": 0,
+          "dpadY": 0,
+          "offsetX": 20,
+          "offsetY": 20,
+          "showOffsetOnCanvas": false
+        },
+        "enabled": true
+      },
+      "width": 50,
+      "height": 50
+    }
+  ]
 }

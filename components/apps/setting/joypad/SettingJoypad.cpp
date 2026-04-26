@@ -18,6 +18,7 @@ constexpr uint32_t kSettingScreenAnimTimeMs = 220;
 constexpr int32_t kJoypadManualModeOptions[] = {
     JC4880_JOYPAD_MANUAL_MODE_SPI,
     JC4880_JOYPAD_MANUAL_MODE_RESISTIVE,
+    JC4880_JOYPAD_MANUAL_MODE_MCP23017,
 };
 
 constexpr int32_t kJoypadMapOptions[] = {
@@ -51,9 +52,58 @@ constexpr int32_t kJoypadGpioOptions[] = {
     52,
 };
 
-constexpr const char *kJoypadManualModeOptionsText = "SPI\nResistive";
+constexpr int32_t kJoypadAnalogGpioOptions[] = {
+    -1,
+    50,
+    51,
+};
+
+constexpr int32_t kJoypadMcpPinOptions[] = {
+    -1,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+};
+
+constexpr int32_t kJoypadResistiveBindingOptions[] = {
+    -1,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+};
+
+constexpr const char *kJoypadManualModeOptionsText = "Direct GPIO (Legacy)\nResistive Keyboard\nMCP23017";
 constexpr const char *kJoypadMapOptionsText = "None\nUp\nDown\nLeft\nRight\nA\nB\nC\nStart\nExit\nSave\nLoad";
 constexpr const char *kJoypadGpioOptionsText = "Disabled\nGPIO 28\nGPIO 29\nGPIO 30\nGPIO 31\nGPIO 32\nGPIO 33\nGPIO 34\nGPIO 35\nGPIO 49\nGPIO 50\nGPIO 51\nGPIO 52";
+constexpr const char *kJoypadAnalogGpioOptionsText = "Disabled\nGPIO 50\nGPIO 51";
+constexpr const char *kJoypadMcpPinOptionsText = "Disabled\nA0\nA1\nA2\nA3\nA4\nA5\nA6\nA7\nB0\nB1\nB2\nB3\nB4\nB5\nB6\nB7";
+constexpr const char *kJoypadResistiveBindingOptionsText = "Disabled\nL1 330 ohm\nL1 680 ohm\nL1 1 kohm\nL1 2.2 kohm\nL1 3.3 kohm\nL1 4.7 kohm\nL1 6.8 kohm\nL1 10 kohm\nL2 330 ohm\nL2 680 ohm\nL2 1 kohm\nL2 2.2 kohm\nL2 3.3 kohm\nL2 4.7 kohm\nL2 6.8 kohm\nL2 10 kohm";
 
 constexpr const char *kJoypadBleRemapLabels[JC4880_JOYPAD_BLE_CONTROL_COUNT] = {
     "D-pad Up",
@@ -99,8 +149,13 @@ constexpr const char *kJoypadSpiLabels[JC4880_JOYPAD_SPI_CONTROL_COUNT] = {
 };
 
 constexpr const char *kJoypadResistiveLabels[2] = {
-    "Resistive D-pad 01",
-    "Resistive D-pad 02",
+    "Resistive Ladder 1 GPIO",
+    "Resistive Ladder 2 GPIO",
+};
+
+constexpr const char *kJoypadMcpLabels[2] = {
+    "MCP SDA GPIO",
+    "MCP SCL GPIO",
 };
 
 constexpr const char *kJoypadButtonLabels[JC4880_JOYPAD_BUTTON_CONTROL_COUNT] = {
@@ -586,7 +641,7 @@ void setJoypadPreviewAnalogActivity(lv_obj_t *object, uint16_t value, lv_color_t
     updateJoypadPreviewAnalogLabel(object, clamped_value);
 }
 
-void appendJoypadLayoutPreview(lv_obj_t *section, const jc4880::joypad_layout::Layout &layout)
+void appendJoypadLayoutPreview(lv_obj_t *section, const jc4880::joypad_layout::Layout &layout, const lv_img_dsc_t *controller_asset = &ui_img_controller_png)
 {
     lv_obj_t *controllerPad = lv_obj_create(section);
     lv_obj_set_width(controllerPad, lv_pct(100));
@@ -622,7 +677,7 @@ void appendJoypadLayoutPreview(lv_obj_t *section, const jc4880::joypad_layout::L
     lv_obj_set_style_pad_all(controllerStage, 0, 0);
 
     lv_obj_t *controllerImage = lv_img_create(controllerStage);
-    lv_img_set_src(controllerImage, &ui_img_controller_png);
+    lv_img_set_src(controllerImage, controller_asset);
     lv_img_set_size_mode(controllerImage, LV_IMG_SIZE_MODE_REAL);
     lv_img_set_zoom(controllerImage, static_cast<uint16_t>((256 * layout.preview_frame.width) / layout.controller_source_width));
     lv_obj_center(controllerImage);
@@ -1599,24 +1654,24 @@ void AppSettings::ensureJoypadLocalScreen(void)
 
         lv_obj_t *generalSection = createSection(joypadPanel,
                                                  "Mode",
-                                                 "Use GPIO-backed local controls when you want the P4 side to read pins directly without BLE.");
+                                                 "Choose which local controller wiring profile the P4 should use without BLE. Legacy direct GPIO remains available, alongside Resistive Keyboard and MCP23017-backed setups.");
 
         lv_obj_t *manualActiveRow = createJoypadSettingsToggleRow(generalSection, "Use Local Controller");
         _joypadManualActiveSwitch = lv_switch_create(manualActiveRow);
         lv_obj_align(_joypadManualActiveSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
         lv_obj_add_event_cb(_joypadManualActiveSwitch, onJoypadConfigChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
 
-        createDropdownRow(generalSection, "Manual Mode", kJoypadManualModeOptionsText, onJoypadConfigChangedEventCallback, &_joypadManualModeDropdown);
+        createDropdownRow(generalSection, "Local Interface", kJoypadManualModeOptionsText, onJoypadConfigChangedEventCallback, &_joypadManualModeDropdown);
 
         constexpr auto &kLocalLayout = jc4880::joypad_layout::kLocalControllerLayout;
         lv_obj_t *previewSection = createSection(joypadPanel,
                                                  "Layout Preview",
                                                  "This preview is built from Joypad Layout Configuration and should match the configured Local canvas in firmware.");
-        appendJoypadLayoutPreview(previewSection, kLocalLayout);
+        appendJoypadLayoutPreview(previewSection, kLocalLayout, &ui_img_local_controller_png);
 
         lv_obj_t *manualSection = createSection(joypadPanel,
                                                 "Pin Mapping",
-                                                "SPI mode maps direct GPIO inputs now. Resistive mode stores pin assignments for the later analog ladder decoder.");
+                                                "Direct GPIO stores per-signal pins, Resistive Keyboard stores ladder GPIO plus resistor assignments, and MCP23017 stores SDA/SCL plus expander pin assignments.");
         for (size_t index = 0; index < _joypadManualSpiDropdowns.size(); ++index) {
             createDropdownRow(manualSection,
                               kJoypadSpiLabels[index],
@@ -1627,16 +1682,30 @@ void AppSettings::ensureJoypadLocalScreen(void)
         for (size_t index = 0; index < _joypadManualResistiveDropdowns.size(); ++index) {
             createDropdownRow(manualSection,
                               kJoypadResistiveLabels[index],
-                              kJoypadGpioOptionsText,
+                              kJoypadAnalogGpioOptionsText,
                               onJoypadConfigChangedEventCallback,
                               &_joypadManualResistiveDropdowns[index]);
         }
-        for (size_t index = 0; index < _joypadManualButtonDropdowns.size(); ++index) {
+        for (size_t index = 0; index < _joypadManualResistiveButtonDropdowns.size(); ++index) {
             createDropdownRow(manualSection,
                               kJoypadButtonLabels[index],
+                              kJoypadResistiveBindingOptionsText,
+                              onJoypadConfigChangedEventCallback,
+                              &_joypadManualResistiveButtonDropdowns[index]);
+        }
+        for (size_t index = 0; index < _joypadManualMcpDropdowns.size(); ++index) {
+            createDropdownRow(manualSection,
+                              kJoypadMcpLabels[index],
                               kJoypadGpioOptionsText,
                               onJoypadConfigChangedEventCallback,
-                              &_joypadManualButtonDropdowns[index]);
+                              &_joypadManualMcpDropdowns[index]);
+        }
+        for (size_t index = 0; index < _joypadManualMcpButtonDropdowns.size(); ++index) {
+            createDropdownRow(manualSection,
+                              kJoypadButtonLabels[index],
+                              kJoypadMcpPinOptionsText,
+                              onJoypadConfigChangedEventCallback,
+                              &_joypadManualMcpButtonDropdowns[index]);
         }
 
         _joypadInfoLabel = lv_label_create(joypadPanel);
@@ -1755,19 +1824,70 @@ void AppSettings::refreshJoypadUi(void)
     for (size_t index = 0; index < _joypadManualResistiveDropdowns.size(); ++index) {
         if (lv_obj_ready(_joypadManualResistiveDropdowns[index])) {
             lv_dropdown_set_selected(_joypadManualResistiveDropdowns[index],
-                                     findDropdownIndexForValue(kJoypadGpioOptions,
-                                                               sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                     findDropdownIndexForValue(kJoypadAnalogGpioOptions,
+                                                               sizeof(kJoypadAnalogGpioOptions) / sizeof(kJoypadAnalogGpioOptions[0]),
                                                                config.manual_resistive_gpio[index]));
         }
     }
 
-    for (size_t index = 0; index < _joypadManualButtonDropdowns.size(); ++index) {
-        if (lv_obj_ready(_joypadManualButtonDropdowns[index])) {
-            lv_dropdown_set_selected(_joypadManualButtonDropdowns[index],
+    for (size_t index = 0; index < _joypadManualResistiveButtonDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualResistiveButtonDropdowns[index])) {
+            lv_dropdown_set_selected(_joypadManualResistiveButtonDropdowns[index],
+                                     findDropdownIndexForValue(kJoypadResistiveBindingOptions,
+                                                               sizeof(kJoypadResistiveBindingOptions) / sizeof(kJoypadResistiveBindingOptions[0]),
+                                                               config.manual_resistive_button_binding[index]));
+        }
+    }
+
+    for (size_t index = 0; index < _joypadManualMcpDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualMcpDropdowns[index])) {
+            lv_dropdown_set_selected(_joypadManualMcpDropdowns[index],
                                      findDropdownIndexForValue(kJoypadGpioOptions,
                                                                sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
-                                                               config.manual_button_gpio[index]));
+                                                               config.manual_mcp_i2c_gpio[index]));
         }
+    }
+
+    for (size_t index = 0; index < _joypadManualMcpButtonDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualMcpButtonDropdowns[index])) {
+            lv_dropdown_set_selected(_joypadManualMcpButtonDropdowns[index],
+                                     findDropdownIndexForValue(kJoypadMcpPinOptions,
+                                                               sizeof(kJoypadMcpPinOptions) / sizeof(kJoypadMcpPinOptions[0]),
+                                                               config.manual_mcp_button_pin[index]));
+        }
+    }
+
+    const bool spi_mode = config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_SPI;
+    const bool resistive_mode = config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_RESISTIVE;
+    const bool mcp_mode = config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_MCP23017;
+    auto setRowHidden = [](lv_obj_t *control, bool hidden) {
+        if (!lv_obj_ready(control)) {
+            return;
+        }
+        lv_obj_t *row = lv_obj_get_parent(control);
+        if (!lv_obj_ready(row)) {
+            return;
+        }
+        if (hidden) {
+            lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+        }
+    };
+    for (lv_obj_t *dropdown : _joypadManualSpiDropdowns) {
+        setRowHidden(dropdown, !spi_mode);
+    }
+    for (lv_obj_t *dropdown : _joypadManualResistiveDropdowns) {
+        setRowHidden(dropdown, !resistive_mode);
+    }
+    for (lv_obj_t *dropdown : _joypadManualResistiveButtonDropdowns) {
+        setRowHidden(dropdown, !resistive_mode);
+    }
+    for (lv_obj_t *dropdown : _joypadManualMcpDropdowns) {
+        setRowHidden(dropdown, !mcp_mode);
+    }
+    for (lv_obj_t *dropdown : _joypadManualMcpButtonDropdowns) {
+        setRowHidden(dropdown, !mcp_mode);
     }
 
     if (lv_obj_ready(_joypadBleStatusLabel)) {
@@ -1812,9 +1932,13 @@ void AppSettings::refreshJoypadUi(void)
         std::string info = (config.backend == JC4880_JOYPAD_BACKEND_MANUAL)
                                ? std::string("Local controller is the active Sega input source.\n")
                                : std::string("Local controller is configured but not currently selected as the Sega input source.\n");
-        info += (config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_SPI)
-                    ? "Mode: SPI GPIO inputs are live now.\n"
-                    : "Mode: Resistive pins are stored, but the ladder decoder still needs implementation.\n";
+        if (config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_SPI) {
+            info += "Mode: Direct GPIO (legacy) inputs are live now.\n";
+        } else if (config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_RESISTIVE) {
+            info += "Mode: Resistive Keyboard reads GPIO 50/51 ladder inputs and matches configured resistor assignments using the built-in 10 kohm pull-up model.\n";
+        } else {
+            info += "Mode: MCP23017 reads configured expander pins over the selected SDA/SCL wiring. Buttons are treated as active-low inputs with pull-ups enabled.\n";
+        }
         info += "Swipe back when you finish configuring local controls.";
         lv_label_set_text(_joypadInfoLabel, info.c_str());
     }
@@ -1986,16 +2110,30 @@ bool AppSettings::persistJoypadConfigFromUi(void)
     }
     for (size_t index = 0; index < _joypadManualResistiveDropdowns.size(); ++index) {
         if (lv_obj_ready(_joypadManualResistiveDropdowns[index])) {
-            config.manual_resistive_gpio[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadGpioOptions,
-                                                                                                sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+            config.manual_resistive_gpio[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadAnalogGpioOptions,
+                                                                                                sizeof(kJoypadAnalogGpioOptions) / sizeof(kJoypadAnalogGpioOptions[0]),
                                                                                                 lv_dropdown_get_selected(_joypadManualResistiveDropdowns[index])));
         }
     }
-    for (size_t index = 0; index < _joypadManualButtonDropdowns.size(); ++index) {
-        if (lv_obj_ready(_joypadManualButtonDropdowns[index])) {
-            config.manual_button_gpio[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadGpioOptions,
-                                                                                             sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
-                                                                                             lv_dropdown_get_selected(_joypadManualButtonDropdowns[index])));
+    for (size_t index = 0; index < _joypadManualResistiveButtonDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualResistiveButtonDropdowns[index])) {
+            config.manual_resistive_button_binding[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadResistiveBindingOptions,
+                                                                                                           sizeof(kJoypadResistiveBindingOptions) / sizeof(kJoypadResistiveBindingOptions[0]),
+                                                                                                           lv_dropdown_get_selected(_joypadManualResistiveButtonDropdowns[index])));
+        }
+    }
+    for (size_t index = 0; index < _joypadManualMcpDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualMcpDropdowns[index])) {
+            config.manual_mcp_i2c_gpio[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadGpioOptions,
+                                                                                              sizeof(kJoypadGpioOptions) / sizeof(kJoypadGpioOptions[0]),
+                                                                                              lv_dropdown_get_selected(_joypadManualMcpDropdowns[index])));
+        }
+    }
+    for (size_t index = 0; index < _joypadManualMcpButtonDropdowns.size(); ++index) {
+        if (lv_obj_ready(_joypadManualMcpButtonDropdowns[index])) {
+            config.manual_mcp_button_pin[index] = static_cast<int8_t>(getDropdownValueForIndex(kJoypadMcpPinOptions,
+                                                                                                sizeof(kJoypadMcpPinOptions) / sizeof(kJoypadMcpPinOptions[0]),
+                                                                                                lv_dropdown_get_selected(_joypadManualMcpButtonDropdowns[index])));
         }
     }
 

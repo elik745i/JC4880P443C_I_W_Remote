@@ -52,6 +52,9 @@ const fields = {
   xLabel: document.getElementById("fieldXLabelText"),
   y: document.getElementById("fieldY"),
   yLabel: document.getElementById("fieldYLabelText"),
+  offsetX: document.getElementById("fieldOffsetX"),
+  offsetY: document.getElementById("fieldOffsetY"),
+  showOffsetOnCanvas: document.getElementById("fieldShowOffsetOnCanvas"),
   w: document.getElementById("fieldW"),
   wLabel: document.getElementById("fieldWLabelText"),
   h: document.getElementById("fieldH"),
@@ -87,6 +90,24 @@ const collectionSpecs = [
   { name: "faceButtons", mode: "circle", defaultShape: "circle" },
 ];
 
+const LOCAL_STICK_KEY = "sticks:0";
+const LOCAL_DPAD_KEYS = [
+  "dpadButtons:0",
+  "dpadButtons:1",
+  "dpadButtons:2",
+  "dpadButtons:3",
+];
+const LOCAL_RESTOREABLE_KEYS = [
+  "triggerBars:0",
+  "triggerBars:1",
+  "shoulders:0",
+  "shoulders:1",
+  "faceButtons:0",
+  "faceButtons:1",
+  "faceButtons:2",
+  "faceButtons:3",
+];
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -97,6 +118,32 @@ function clamp(value, min, max) {
 
 function currentZoomScale() {
   return state.zoomPercent / 100;
+}
+
+function setZoomPercent(nextZoomPercent) {
+  state.zoomPercent = clamp(nextZoomPercent, 50, 400);
+  render();
+}
+
+function applyZoomAroundViewportPoint(nextZoomPercent, clientX, clientY) {
+  const previousZoomScale = currentZoomScale();
+  const clampedZoomPercent = clamp(nextZoomPercent, 50, 400);
+  if (clampedZoomPercent === state.zoomPercent) {
+    return;
+  }
+
+  const viewportRect = canvasViewport.getBoundingClientRect();
+  const anchorX = clientX - viewportRect.left + canvasViewport.scrollLeft;
+  const anchorY = clientY - viewportRect.top + canvasViewport.scrollTop;
+  const anchorRatioX = anchorX / previousZoomScale;
+  const anchorRatioY = anchorY / previousZoomScale;
+
+  state.zoomPercent = clampedZoomPercent;
+  render();
+
+  const nextZoomScale = currentZoomScale();
+  canvasViewport.scrollLeft = Math.max(0, Math.round((anchorRatioX * nextZoomScale) - (clientX - viewportRect.left)));
+  canvasViewport.scrollTop = Math.max(0, Math.round((anchorRatioY * nextZoomScale) - (clientY - viewportRect.top)));
 }
 
 function isItemEnabled(item) {
@@ -113,7 +160,23 @@ function numericFieldValue(field, fallback = 0) {
 }
 
 function refreshBackgroundPreview() {
-  controllerImage.src = `/controller.png?ts=${Date.now()}`;
+  controllerImage.src = `/controller.png?target=${encodeURIComponent(state.selectedTarget)}&ts=${Date.now()}`;
+}
+
+function itemPreviewOffset(item, axis) {
+  return Number(item.visual?.preview?.[`offset${axis}`] ?? 0);
+}
+
+function showsOffsetOnCanvas(item) {
+  return item.visual?.preview?.showOffsetOnCanvas === true;
+}
+
+function displayedAxisValue(item, axis, fallback = 0) {
+  const rawValue = Number(item[axis] ?? fallback);
+  if (!showsOffsetOnCanvas(item)) {
+    return rawValue;
+  }
+  return rawValue - itemPreviewOffset(item, axis === "x" || axis === "centerX" ? "X" : "Y");
 }
 
 function activeLayout() {
@@ -212,6 +275,29 @@ function deleteSelectedPoint() {
 
 function itemDisplayName(item) {
   return item.visual?.label || item.id;
+}
+
+function isLocalDpadKey(key) {
+  return (state.selectedTarget === "localController") && LOCAL_DPAD_KEYS.includes(key);
+}
+
+function isLocalStickKey(key) {
+  return (state.selectedTarget === "localController") && (key === LOCAL_STICK_KEY);
+}
+
+function displayNameForKey(key, item) {
+  if (isLocalDpadKey(key)) {
+    return "LS - d-pad";
+  }
+  return itemDisplayName(item);
+}
+
+function localDpadItems() {
+  return LOCAL_DPAD_KEYS.map((key) => getItemMeta(key).item);
+}
+
+function allLocalDpadDisabled() {
+  return localDpadItems().every((item) => !isItemEnabled(item));
 }
 
 function disabledItemsForActiveLayout() {
@@ -339,6 +425,24 @@ function unscaleY(value) {
 
 function scaleText(value) {
   return Math.max(10, Math.round((value * activeLayout().previewFrame.width) / activeLayout().controllerSource.width));
+}
+
+function previewImageMetrics() {
+  const layout = activeLayout();
+  const stageWidth = layout.previewFrame.width;
+  const stageHeight = layout.previewFrame.height;
+  const sourceWidth = Math.max(1, layout.controllerSource.width);
+  const sourceHeight = Math.max(1, layout.controllerSource.height);
+  const zoom256 = Math.max(1, Math.floor((256 * stageWidth) / sourceWidth));
+  const renderedWidth = Math.max(1, Math.round((sourceWidth * zoom256) / 256));
+  const renderedHeight = Math.max(1, Math.round((sourceHeight * zoom256) / 256));
+  return {
+    zoom256,
+    renderedWidth,
+    renderedHeight,
+    offsetX: Math.round((stageWidth - renderedWidth) / 2),
+    offsetY: Math.round((stageHeight - renderedHeight) / 2),
+  };
 }
 
 function svg(tagName, attrs = {}) {
@@ -496,6 +600,9 @@ function normalizeSingleLayout(layout) {
       item.visual.preview.analogLevel = Number(item.visual.preview.analogLevel ?? (spec.name === "triggerBars" ? 72 : 50));
       item.visual.preview.dpadX = Number(item.visual.preview.dpadX ?? 0);
       item.visual.preview.dpadY = Number(item.visual.preview.dpadY ?? 0);
+      item.visual.preview.offsetX = Number(item.visual.preview.offsetX ?? 0);
+      item.visual.preview.offsetY = Number(item.visual.preview.offsetY ?? 0);
+      item.visual.preview.showOffsetOnCanvas = item.visual.preview.showOffsetOnCanvas === true;
       item.visual.shape = item.visual.shape || {
         type: spec.defaultShape,
         cornerRadius: spec.defaultShape === "roundedRect" ? 18 : 999,
@@ -549,28 +656,27 @@ function normalizeLayoutDocument(layoutDocument) {
 
 function geometryForItem(item, spec) {
   if (spec.mode === "circle") {
-    const width = scaleX(getItemWidth(item, spec));
-    const height = scaleY(getItemHeight(item, spec));
+    const size = scaleX(item.size ?? getItemWidth(item, spec));
     return {
-      left: scaleX(item.centerX) - width / 2,
-      top: scaleY(item.centerY) - height / 2,
-      width,
-      height,
+      left: scaleX(displayedAxisValue(item, "centerX", item.centerX)) - size / 2,
+      top: scaleY(displayedAxisValue(item, "centerY", item.centerY)) - size / 2,
+      width: size,
+      height: size,
     };
   }
   if (spec.mode === "square") {
     const width = scaleX(getItemWidth(item, spec));
     const height = scaleY(getItemHeight(item, spec));
     return {
-      left: scaleX(item.x),
-      top: scaleY(item.y),
+      left: scaleX(displayedAxisValue(item, "x", item.x)),
+      top: scaleY(displayedAxisValue(item, "y", item.y)),
       width,
       height,
     };
   }
   return {
-    left: scaleX(item.x),
-    top: scaleY(item.y),
+    left: scaleX(displayedAxisValue(item, "x", item.x)),
+    top: scaleY(displayedAxisValue(item, "y", item.y)),
     width: scaleX(item.width),
     height: scaleY(item.height),
   };
@@ -809,9 +915,13 @@ function renderOverlayItem(collectionName, item, index, spec) {
   element.type = "button";
   element.className = "overlay-item";
   const key = itemKey(collectionName, index);
+  const localDpadItem = isLocalDpadKey(key);
   const isPressedPreview = state.previewPressKey === key;
   if (state.selectedKey === key) {
     element.classList.add("selected");
+  }
+  if (localDpadItem) {
+    element.classList.add("overlay-local-dpad-segment");
   }
 
   const geometry = geometryForItem(item, spec);
@@ -845,9 +955,11 @@ function renderOverlayItem(collectionName, item, index, spec) {
   content.className = "overlay-content";
   const label = document.createElement("span");
   label.className = "overlay-label";
-  label.textContent = item.visual.label;
+  label.textContent = localDpadItem ? "" : item.visual.label;
   label.style.color = item.visual.textColor;
-  const metaText = item.visual.functionType === "analog"
+  const metaText = localDpadItem
+    ? ""
+    : item.visual.functionType === "analog"
     ? `${clamp(Number(item.visual.preview.analogLevel ?? 50), 0, 100)}%`
     : item.visual.functionType === "dpad"
       ? `X ${clamp(Number(item.visual.preview.dpadX ?? 0), -100, 100)}  Y ${clamp(Number(item.visual.preview.dpadY ?? 0), -100, 100)}`
@@ -859,7 +971,9 @@ function renderOverlayItem(collectionName, item, index, spec) {
   );
   label.style.fontSize = `${Math.min(scaleText(item.visual.textSize), fittedLabelSize)}px`;
   Object.assign(label.style, fontStyleCss(item.visual.textStyle));
-  content.appendChild(label);
+  if (label.textContent) {
+    content.appendChild(label);
+  }
 
   const meta = document.createElement("span");
   meta.className = "overlay-meta";
@@ -933,6 +1047,50 @@ function renderAddButtonToolbar() {
   const disabledItems = state.layoutDocument ? disabledItemsForActiveLayout() : [];
   addButtonSelect.replaceChildren();
 
+  if (!state.layoutDocument) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No hidden buttons";
+    addButtonSelect.appendChild(option);
+    addButtonSelect.disabled = true;
+    addButtonButton.disabled = true;
+    return;
+  }
+
+  if (state.selectedTarget === "localController") {
+    const localItems = [];
+    const { item: localStickItem } = getItemMeta(LOCAL_STICK_KEY);
+    if (!isItemEnabled(localStickItem)) {
+      localItems.push({ key: LOCAL_STICK_KEY, label: "LS - d-pad" });
+    }
+    for (const key of LOCAL_RESTOREABLE_KEYS) {
+      const { item } = getItemMeta(key);
+      if (!isItemEnabled(item)) {
+        localItems.push({ key, label: itemDisplayName(item) });
+      }
+    }
+
+    if (localItems.length === 0) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No hidden buttons";
+      addButtonSelect.appendChild(option);
+      addButtonSelect.disabled = true;
+      addButtonButton.disabled = true;
+      return;
+    }
+
+    localItems.forEach(({ key, label }) => {
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = label;
+      addButtonSelect.appendChild(option);
+    });
+    addButtonSelect.disabled = false;
+    addButtonButton.disabled = false;
+    return;
+  }
+
   if (disabledItems.length === 0) {
     const option = document.createElement("option");
     option.value = "";
@@ -946,7 +1104,7 @@ function renderAddButtonToolbar() {
   disabledItems.forEach(({ key, item, spec }) => {
     const option = document.createElement("option");
     option.value = key;
-    option.textContent = `${itemDisplayName(item)} (${spec.name})`;
+    option.textContent = `${displayNameForKey(key, item)} (${spec.name})`;
     addButtonSelect.appendChild(option);
   });
   addButtonSelect.disabled = false;
@@ -957,19 +1115,47 @@ function restoreSelectedButton() {
   if (!state.layoutDocument || !addButtonSelect.value) {
     return;
   }
+  if ((state.selectedTarget === "localController") && (addButtonSelect.value === LOCAL_STICK_KEY)) {
+    const { item: stickItem } = getItemMeta(LOCAL_STICK_KEY);
+    stickItem.visual.enabled = true;
+    for (const key of LOCAL_DPAD_KEYS) {
+      const { item } = getItemMeta(key);
+      item.visual.enabled = true;
+    }
+    state.selectedKey = LOCAL_STICK_KEY;
+    render();
+    setStatus("Restored LS - d-pad to the canvas.");
+    return;
+  }
   const { item } = getItemMeta(addButtonSelect.value);
   item.visual.enabled = true;
   state.selectedKey = addButtonSelect.value;
   render();
-  setStatus(`Restored ${itemDisplayName(item)} to the canvas.`);
+  setStatus(`Restored ${displayNameForKey(addButtonSelect.value, item)} to the canvas.`);
 }
 
 function deleteSelectedButton() {
   if (!state.selectedKey) {
     return;
   }
+  if ((state.selectedTarget === "localController") && (state.selectedKey === LOCAL_STICK_KEY || state.selectedKey.startsWith("dpadButtons:"))) {
+    const { item: stickItem } = getItemMeta(LOCAL_STICK_KEY);
+    stickItem.visual.enabled = false;
+    for (const key of LOCAL_DPAD_KEYS) {
+      const { item } = getItemMeta(key);
+      item.visual.enabled = false;
+    }
+    state.selectedKey = null;
+    state.pointerDrag = null;
+    state.previewPressKey = null;
+    state.shapeEditMode = false;
+    state.shapeSelectedPointIndex = null;
+    render();
+    setStatus("Removed LS - d-pad from the canvas. Apply will persist it as disabled in code.");
+    return;
+  }
   const { item } = getItemMeta(state.selectedKey);
-  const removedLabel = itemDisplayName(item);
+  const removedLabel = displayNameForKey(state.selectedKey, item);
   item.visual.enabled = false;
   state.selectedKey = null;
   state.pointerDrag = null;
@@ -981,6 +1167,9 @@ function deleteSelectedButton() {
 }
 
 function selectItem(key) {
+  if (isLocalDpadKey(key)) {
+    key = LOCAL_STICK_KEY;
+  }
   const { item } = getItemMeta(key);
   if (!isItemEnabled(item)) {
     return;
@@ -1041,6 +1230,10 @@ function updateInspector() {
     fields.h.value = item.height;
     fields.hWrapper.classList.remove("hidden");
   }
+
+  fields.offsetX.value = item.visual.preview.offsetX;
+  fields.offsetY.value = item.visual.preview.offsetY;
+  fields.showOffsetOnCanvas.checked = showsOffsetOnCanvas(item);
 
   fields.label.value = item.visual.label;
   fields.textSize.value = item.visual.textSize;
@@ -1220,22 +1413,34 @@ function render() {
   layoutTargetSelect.value = state.selectedTarget;
   const layout = activeLayout();
   const zoomScale = currentZoomScale();
-  deviceCanvas.style.width = `${layout.deviceCanvas.width}px`;
-  deviceCanvas.style.height = `${layout.deviceCanvas.height}px`;
+  const controllerPadInset = 12;
+  const stageContainerWidth = layout.previewFrame.width + (controllerPadInset * 2);
+  const stageContainerHeight = layout.previewFrame.height + (controllerPadInset * 2);
+  deviceCanvas.style.width = `${stageContainerWidth}px`;
+  deviceCanvas.style.height = `${stageContainerHeight}px`;
   deviceCanvas.style.transform = `scale(${zoomScale})`;
-  deviceCanvas.dataset.canvasLabel = `${TARGETS[state.selectedTarget].label} · ${layout.deviceCanvas.width} x ${layout.deviceCanvas.height}`;
-  canvasZoomLayer.style.width = `${layout.deviceCanvas.width * zoomScale}px`;
-  canvasZoomLayer.style.height = `${layout.deviceCanvas.height * zoomScale}px`;
-  previewFrame.style.left = `${layout.previewFrame.x}px`;
-  previewFrame.style.top = `${layout.previewFrame.y}px`;
+  deviceCanvas.dataset.canvasLabel = "";
+  canvasZoomLayer.style.width = `${stageContainerWidth * zoomScale}px`;
+  canvasZoomLayer.style.height = `${stageContainerHeight * zoomScale}px`;
+  previewFrame.style.left = `${controllerPadInset}px`;
+  previewFrame.style.top = `${controllerPadInset}px`;
   previewFrame.style.width = `${layout.previewFrame.width}px`;
   previewFrame.style.height = `${layout.previewFrame.height}px`;
+  const imageMetrics = previewImageMetrics();
+  controllerImage.style.width = `${imageMetrics.renderedWidth}px`;
+  controllerImage.style.height = `${imageMetrics.renderedHeight}px`;
+  controllerImage.style.left = `${imageMetrics.offsetX}px`;
+  controllerImage.style.top = `${imageMetrics.offsetY}px`;
   zoomRange.value = String(state.zoomPercent);
   zoomValue.textContent = `${state.zoomPercent}%`;
 
   overlayLayer.replaceChildren();
   for (const spec of collectionSpecs) {
     layout[spec.name].forEach((item, index) => {
+      const key = itemKey(spec.name, index);
+      if (isLocalDpadKey(key)) {
+        return;
+      }
       if (isItemEnabled(item)) {
         overlayLayer.appendChild(renderOverlayItem(spec.name, item, index, spec));
       }
@@ -1270,6 +1475,7 @@ async function loadLayout() {
   state.shapeEditMode = false;
   state.shapeSelectedPointIndex = null;
   state.shapeHandleDrag = null;
+  refreshBackgroundPreview();
   render();
   setStatus(`Loaded ${TARGETS[state.selectedTarget].label} from the generated header currently used by the codebase.`);
 }
@@ -1290,6 +1496,7 @@ async function refreshLayoutFromCode() {
   state.shapeEditMode = false;
   state.shapeSelectedPointIndex = null;
   state.shapeHandleDrag = null;
+  refreshBackgroundPreview();
   render();
   setStatus(`Refreshed BLE and Local controller layouts from ${result.headerPath}`);
 }
@@ -1314,11 +1521,12 @@ async function uploadBackgroundImage() {
     return;
   }
 
-  setStatus("Replacing the background PNG and regenerating the firmware asset...");
+  setStatus(`Creating a ${TARGETS[state.selectedTarget].label} background PNG override and regenerating its firmware asset...`);
   const response = await fetch("/api/background", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
+      target: state.selectedTarget,
       name: file.name,
       data: await readFileAsDataUrl(file),
     }),
@@ -1331,7 +1539,7 @@ async function uploadBackgroundImage() {
 
   refreshBackgroundPreview();
   backgroundFile.value = "";
-  setStatus(`Background updated at ${result.imagePath} and regenerated at ${result.assetPath}`);
+  setStatus(`${TARGETS[state.selectedTarget].label} background override saved at ${result.imagePath} and regenerated at ${result.assetPath}`);
 }
 
 async function applyLayout() {
@@ -1412,6 +1620,10 @@ function onInspectorChange(event) {
     item.height = requestedHeight;
   }
 
+  item.visual.preview.offsetX = numericFieldValue(fields.offsetX, item.visual.preview.offsetX);
+  item.visual.preview.offsetY = numericFieldValue(fields.offsetY, item.visual.preview.offsetY);
+  item.visual.preview.showOffsetOnCanvas = fields.showOffsetOnCanvas.checked;
+
   item.visual.label = fields.label.value;
   item.visual.textSize = numericFieldValue(fields.textSize, item.visual.textSize);
   item.visual.textStyle = fields.textStyle.value;
@@ -1453,6 +1665,7 @@ layoutTargetSelect.addEventListener("change", () => {
   state.previewPressKey = null;
   state.shapeEditMode = false;
   state.shapeSelectedPointIndex = null;
+  refreshBackgroundPreview();
   render();
   setStatus(`Now editing ${TARGETS[state.selectedTarget].label}. Apply will update ${TARGETS[state.selectedTarget].symbol} in code.`);
 });
@@ -1527,15 +1740,27 @@ resetShapeButton.addEventListener("click", () => {
 });
 
 zoomRange.addEventListener("input", () => {
-  state.zoomPercent = clamp(Number(zoomRange.value) || 100, 50, 400);
-  render();
+  setZoomPercent(Number(zoomRange.value) || 100);
 });
+
+canvasViewport.addEventListener("wheel", (event) => {
+  if (!state.layoutDocument) {
+    return;
+  }
+  event.preventDefault();
+  const wheelDirection = Math.sign(event.deltaY);
+  const step = event.shiftKey ? 20 : 10;
+  const nextZoomPercent = state.zoomPercent - (wheelDirection * step);
+  applyZoomAroundViewportPoint(nextZoomPercent, event.clientX, event.clientY);
+}, { passive: false });
 
 [
   fields.x,
   fields.y,
   fields.w,
   fields.h,
+  fields.offsetX,
+  fields.offsetY,
   fields.label,
   fields.textSize,
   fields.textStyle,
@@ -1553,6 +1778,8 @@ zoomRange.addEventListener("input", () => {
   field.addEventListener("input", onInspectorChange);
   field.addEventListener("change", onInspectorChange);
 });
+
+fields.showOffsetOnCanvas.addEventListener("change", onInspectorChange);
 
 fields.cornerRadius.addEventListener("input", onCornerRadiusChange);
 fields.cornerRadius.addEventListener("change", onCornerRadiusChange);

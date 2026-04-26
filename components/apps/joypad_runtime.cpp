@@ -2,14 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <mutex>
 
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_err.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "soc/adc_channel.h"
 
 namespace {
 constexpr const char *kTag = "JoypadRuntime";
@@ -22,12 +27,32 @@ constexpr const char *kBleRemapKey = "joy_ble_map";
 constexpr const char *kManualModeKey = "joy_man_mode";
 constexpr const char *kManualSpiKey = "joy_man_spi";
 constexpr const char *kManualResistiveKey = "joy_man_res";
-constexpr const char *kManualButtonsKey = "joy_man_btn";
+constexpr const char *kManualResistiveButtonsKey = "joy_man_resb";
+constexpr const char *kManualMcpGpioKey = "joy_man_mcpi";
+constexpr const char *kManualMcpButtonsKey = "joy_man_mcpb";
 constexpr const char *kBleCalibrationSlotsKey = "joy_ble_cal";
 constexpr const char *kBleCalibrationCounterKey = "joy_ble_caln";
 constexpr size_t kBleCalibrationSlotCount = 20;
 constexpr int32_t kAxisNormalizeRange = 1024;
 constexpr int32_t kAxisNormalizeHalfRange = kAxisNormalizeRange / 2;
+constexpr size_t kManualInterfaceGpioCount = 2;
+constexpr size_t kMcpPinCount = 16;
+constexpr uint8_t kMcp23017Address = 0x20;
+constexpr uint32_t kMcpClockHz = 100000;
+constexpr uint32_t kI2cTimeoutMs = 25;
+constexpr int kAdcSampleCount = 4;
+constexpr int kResistivePullupOhms = 10000;
+constexpr int kResistiveIdleThreshold = 3800;
+
+enum : uint8_t {
+    kMcpIodirA = 0x00,
+    kMcpIodirB = 0x01,
+    kMcpGppuA = 0x0C,
+    kMcpGppuB = 0x0D,
+    kMcpGpioA = 0x12,
+};
+
+constexpr std::array<int32_t, 8> kResistiveButtonOhms = {330, 680, 1000, 2200, 3300, 4700, 6800, 10000};
 
 struct BleCalibrationCapture {
     bool active = false;
@@ -71,7 +96,12 @@ int s_bleCalibrationSlotIndex = -1;
 BleCalibrationCapture s_bleCalibrationCapture = {};
 jc4880_joypad_config_changed_callback_t s_configChangedCallback = nullptr;
 void *s_configChangedCallbackContext = nullptr;
-std::array<int8_t, JC4880_JOYPAD_SPI_CONTROL_COUNT + 2 + JC4880_JOYPAD_BUTTON_CONTROL_COUNT> s_lastConfiguredPins = {};
+std::array<int8_t, JC4880_JOYPAD_SPI_CONTROL_COUNT + kManualInterfaceGpioCount> s_lastConfiguredPins = {};
+adc_oneshot_unit_handle_t s_manualAdcHandle = nullptr;
+std::array<bool, 8> s_manualAdcChannelConfigured = {};
+i2c_master_bus_handle_t s_manualMcpBus = nullptr;
+i2c_master_dev_handle_t s_manualMcpDevice = nullptr;
+std::array<int8_t, kManualInterfaceGpioCount> s_lastMcpI2cPins = {-1, -1};
 
 constexpr jc4880_joypad_config_t makeDefaultConfig()
 {
@@ -88,7 +118,11 @@ constexpr jc4880_joypad_config_t makeDefaultConfig()
         config.manual_resistive_gpio[index] = -1;
     }
     for (size_t index = 0; index < JC4880_JOYPAD_BUTTON_CONTROL_COUNT; ++index) {
-        config.manual_button_gpio[index] = -1;
+        config.manual_resistive_button_binding[index] = -1;
+        config.manual_mcp_button_pin[index] = -1;
+    }
+    for (size_t index = 0; index < kManualInterfaceGpioCount; ++index) {
+        config.manual_mcp_i2c_gpio[index] = -1;
     }
     config.ble_device_addr[0] = '\0';
     return config;
@@ -101,6 +135,84 @@ bool isAllowedPin(int8_t pin)
     return std::find(kAllowedPins.begin(), kAllowedPins.end(), pin) != kAllowedPins.end();
 }
 
+bool isAnalogCapablePin(int8_t pin)
+{
+    return (pin == 50) || (pin == 51);
+}
+
+bool isResistiveBindingValid(int8_t binding)
+{
+    return (binding >= -1) && (binding < static_cast<int8_t>(kResistiveButtonOhms.size() * kManualInterfaceGpioCount));
+}
+
+bool isMcpPinValid(int8_t pin)
+{
+    return (pin >= -1) && (pin < static_cast<int8_t>(kMcpPinCount));
+}
+
+int resistiveLadderIndex(int8_t binding)
+{
+    return binding / static_cast<int8_t>(kResistiveButtonOhms.size());
+}
+
+int resistiveResistorIndex(int8_t binding)
+{
+    return binding % static_cast<int8_t>(kResistiveButtonOhms.size());
+}
+
+adc_channel_t adcChannelForPin(int8_t pin)
+{
+    switch (pin) {
+        case 50:
+            return static_cast<adc_channel_t>(ADC2_GPIO50_CHANNEL);
+        case 51:
+            return static_cast<adc_channel_t>(ADC2_GPIO51_CHANNEL);
+        default:
+            return ADC_CHANNEL_0;
+    }
+}
+
+uint32_t gameplayMaskForButtonControl(size_t index)
+{
+    switch (index) {
+        case JC4880_JOYPAD_BUTTON_CONTROL_START:
+            return JC4880_JOYPAD_MASK_START;
+        case JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_A:
+            return JC4880_JOYPAD_MASK_BUTTON_A;
+        case JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_B:
+            return JC4880_JOYPAD_MASK_BUTTON_B;
+        case JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_C:
+            return JC4880_JOYPAD_MASK_BUTTON_C;
+        default:
+            return 0;
+    }
+}
+
+uint32_t actionMaskForButtonControl(size_t index)
+{
+    switch (index) {
+        case JC4880_JOYPAD_BUTTON_CONTROL_EXIT:
+            return JC4880_JOYPAD_ACTION_EXIT;
+        case JC4880_JOYPAD_BUTTON_CONTROL_SAVE:
+            return JC4880_JOYPAD_ACTION_SAVE;
+        case JC4880_JOYPAD_BUTTON_CONTROL_LOAD:
+            return JC4880_JOYPAD_ACTION_LOAD;
+        default:
+            return 0;
+    }
+}
+
+int expectedResistiveRawForBinding(int8_t binding)
+{
+    if (!isResistiveBindingValid(binding) || (binding < 0)) {
+        return kAxisNormalizeRange;
+    }
+
+    const int resistor_index = resistiveResistorIndex(binding);
+    const int32_t resistor_ohms = kResistiveButtonOhms[static_cast<size_t>(resistor_index)];
+    return static_cast<int>(std::lround((4095.0 * resistor_ohms) / static_cast<double>(kResistivePullupOhms + resistor_ohms)));
+}
+
 void sanitizeConfig(jc4880_joypad_config_t &config)
 {
     if ((config.backend != JC4880_JOYPAD_BACKEND_DISABLED) &&
@@ -110,7 +222,8 @@ void sanitizeConfig(jc4880_joypad_config_t &config)
     }
 
     if ((config.manual_mode != JC4880_JOYPAD_MANUAL_MODE_SPI) &&
-        (config.manual_mode != JC4880_JOYPAD_MANUAL_MODE_RESISTIVE)) {
+        (config.manual_mode != JC4880_JOYPAD_MANUAL_MODE_RESISTIVE) &&
+        (config.manual_mode != JC4880_JOYPAD_MANUAL_MODE_MCP23017)) {
         config.manual_mode = JC4880_JOYPAD_MANUAL_MODE_SPI;
     }
 
@@ -126,13 +239,19 @@ void sanitizeConfig(jc4880_joypad_config_t &config)
         }
     }
     for (size_t index = 0; index < 2; ++index) {
-        if (!isAllowedPin(config.manual_resistive_gpio[index])) {
+        if (!isAnalogCapablePin(config.manual_resistive_gpio[index]) && (config.manual_resistive_gpio[index] != -1)) {
             config.manual_resistive_gpio[index] = -1;
+        }
+        if (!isAllowedPin(config.manual_mcp_i2c_gpio[index])) {
+            config.manual_mcp_i2c_gpio[index] = -1;
         }
     }
     for (size_t index = 0; index < JC4880_JOYPAD_BUTTON_CONTROL_COUNT; ++index) {
-        if (!isAllowedPin(config.manual_button_gpio[index])) {
-            config.manual_button_gpio[index] = -1;
+        if (!isResistiveBindingValid(config.manual_resistive_button_binding[index])) {
+            config.manual_resistive_button_binding[index] = -1;
+        }
+        if (!isMcpPinValid(config.manual_mcp_button_pin[index])) {
+            config.manual_mcp_button_pin[index] = -1;
         }
     }
 
@@ -321,9 +440,188 @@ void configurePinInput(int8_t pin)
     }
 }
 
+void configureAnalogInput(int8_t pin)
+{
+    if (!isAnalogCapablePin(pin)) {
+        return;
+    }
+
+    gpio_config_t config = {};
+    config.pin_bit_mask = 1ULL << pin;
+    config.mode = GPIO_MODE_INPUT;
+    config.pull_up_en = GPIO_PULLUP_DISABLE;
+    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    config.intr_type = GPIO_INTR_DISABLE;
+    const esp_err_t err = gpio_config(&config);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "Failed to configure GPIO %d for resistive input: %s", static_cast<int>(pin), esp_err_to_name(err));
+    }
+}
+
+void resetManualAdcLocked()
+{
+    if (s_manualAdcHandle != nullptr) {
+        adc_oneshot_del_unit(s_manualAdcHandle);
+        s_manualAdcHandle = nullptr;
+    }
+    s_manualAdcChannelConfigured.fill(false);
+}
+
+bool ensureManualAdcLocked()
+{
+    if (s_manualAdcHandle != nullptr) {
+        return true;
+    }
+
+    adc_oneshot_unit_init_cfg_t unit_config = {};
+    unit_config.unit_id = ADC_UNIT_2;
+    const esp_err_t err = adc_oneshot_new_unit(&unit_config, &s_manualAdcHandle);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "Failed to init ADC2 for resistive keyboard: %s", esp_err_to_name(err));
+        s_manualAdcHandle = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
+bool readAnalogPinLocked(int8_t pin, int &raw_value)
+{
+    if (!isAnalogCapablePin(pin) || !ensureManualAdcLocked()) {
+        return false;
+    }
+
+    const adc_channel_t channel = adcChannelForPin(pin);
+    const size_t channel_index = static_cast<size_t>(channel);
+    if (channel_index >= s_manualAdcChannelConfigured.size()) {
+        return false;
+    }
+
+    if (!s_manualAdcChannelConfigured[channel_index]) {
+        adc_oneshot_chan_cfg_t channel_config = {};
+        channel_config.atten = ADC_ATTEN_DB_12;
+        channel_config.bitwidth = ADC_BITWIDTH_DEFAULT;
+        const esp_err_t err = adc_oneshot_config_channel(s_manualAdcHandle, channel, &channel_config);
+        if (err != ESP_OK) {
+            ESP_LOGW(kTag, "Failed to configure ADC channel %d: %s", static_cast<int>(channel), esp_err_to_name(err));
+            return false;
+        }
+        s_manualAdcChannelConfigured[channel_index] = true;
+    }
+
+    int accumulator = 0;
+    for (int sample_index = 0; sample_index < kAdcSampleCount; ++sample_index) {
+        int sample = 0;
+        const esp_err_t err = adc_oneshot_read(s_manualAdcHandle, channel, &sample);
+        if (err != ESP_OK) {
+            ESP_LOGW(kTag, "Failed to read ADC channel %d: %s", static_cast<int>(channel), esp_err_to_name(err));
+            return false;
+        }
+        accumulator += sample;
+    }
+
+    raw_value = accumulator / kAdcSampleCount;
+    return true;
+}
+
+void resetManualMcpLocked()
+{
+    if (s_manualMcpDevice != nullptr) {
+        i2c_master_bus_rm_device(s_manualMcpDevice);
+        s_manualMcpDevice = nullptr;
+    }
+    if (s_manualMcpBus != nullptr) {
+        i2c_del_master_bus(s_manualMcpBus);
+        s_manualMcpBus = nullptr;
+    }
+    s_lastMcpI2cPins = {-1, -1};
+}
+
+bool writeMcpRegisterLocked(uint8_t reg, uint8_t value)
+{
+    if (s_manualMcpDevice == nullptr) {
+        return false;
+    }
+
+    const uint8_t payload[] = {reg, value};
+    const esp_err_t err = i2c_master_transmit(s_manualMcpDevice, payload, sizeof(payload), kI2cTimeoutMs);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "Failed to write MCP23017 reg 0x%02X: %s", reg, esp_err_to_name(err));
+        return false;
+    }
+
+    return true;
+}
+
+bool ensureManualMcpLocked()
+{
+    const std::array<int8_t, kManualInterfaceGpioCount> current_pins = {
+        s_config.manual_mcp_i2c_gpio[0],
+        s_config.manual_mcp_i2c_gpio[1],
+    };
+    if ((current_pins[0] < 0) || (current_pins[1] < 0)) {
+        return false;
+    }
+
+    if ((s_manualMcpDevice != nullptr) && (current_pins == s_lastMcpI2cPins)) {
+        return true;
+    }
+
+    resetManualMcpLocked();
+
+    i2c_master_bus_config_t bus_config = {};
+    bus_config.i2c_port = 0;
+    bus_config.sda_io_num = static_cast<gpio_num_t>(current_pins[0]);
+    bus_config.scl_io_num = static_cast<gpio_num_t>(current_pins[1]);
+    bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+    bus_config.glitch_ignore_cnt = 7;
+    bus_config.flags.enable_internal_pullup = true;
+    if (i2c_new_master_bus(&bus_config, &s_manualMcpBus) != ESP_OK) {
+        s_manualMcpBus = nullptr;
+        return false;
+    }
+
+    i2c_device_config_t device_config = {};
+    device_config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+    device_config.device_address = kMcp23017Address;
+    device_config.scl_speed_hz = kMcpClockHz;
+    if (i2c_master_bus_add_device(s_manualMcpBus, &device_config, &s_manualMcpDevice) != ESP_OK) {
+        resetManualMcpLocked();
+        return false;
+    }
+
+    if (!writeMcpRegisterLocked(kMcpIodirA, 0xFF) || !writeMcpRegisterLocked(kMcpIodirB, 0xFF) ||
+        !writeMcpRegisterLocked(kMcpGppuA, 0xFF) || !writeMcpRegisterLocked(kMcpGppuB, 0xFF)) {
+        resetManualMcpLocked();
+        return false;
+    }
+
+    s_lastMcpI2cPins = current_pins;
+    return true;
+}
+
+bool readMcpStateLocked(uint16_t &state)
+{
+    if (!ensureManualMcpLocked()) {
+        return false;
+    }
+
+    const uint8_t start_reg = kMcpGpioA;
+    uint8_t gpio_state[2] = {};
+    const esp_err_t err = i2c_master_transmit_receive(s_manualMcpDevice, &start_reg, sizeof(start_reg), gpio_state, sizeof(gpio_state), kI2cTimeoutMs);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "Failed to read MCP23017 GPIO state: %s", esp_err_to_name(err));
+        resetManualMcpLocked();
+        return false;
+    }
+
+    state = static_cast<uint16_t>(gpio_state[0]) | (static_cast<uint16_t>(gpio_state[1]) << 8);
+    return true;
+}
+
 void configureManualPinsLocked()
 {
-    std::array<int8_t, JC4880_JOYPAD_SPI_CONTROL_COUNT + 2 + JC4880_JOYPAD_BUTTON_CONTROL_COUNT> currentPins = {};
+    std::array<int8_t, JC4880_JOYPAD_SPI_CONTROL_COUNT + kManualInterfaceGpioCount> currentPins = {};
     size_t nextIndex = 0;
     for (int8_t pin : s_config.manual_spi_gpio) {
         currentPins[nextIndex++] = pin;
@@ -331,18 +629,20 @@ void configureManualPinsLocked()
     for (int8_t pin : s_config.manual_resistive_gpio) {
         currentPins[nextIndex++] = pin;
     }
-    for (int8_t pin : s_config.manual_button_gpio) {
-        currentPins[nextIndex++] = pin;
-    }
 
     if (currentPins == s_lastConfiguredPins) {
         return;
     }
 
-    for (int8_t pin : currentPins) {
-        configurePinInput(pin);
+    for (size_t index = 0; index < JC4880_JOYPAD_SPI_CONTROL_COUNT; ++index) {
+        configurePinInput(currentPins[index]);
+    }
+    for (size_t index = JC4880_JOYPAD_SPI_CONTROL_COUNT; index < currentPins.size(); ++index) {
+        configureAnalogInput(currentPins[index]);
     }
     s_lastConfiguredPins = currentPins;
+    resetManualAdcLocked();
+    resetManualMcpLocked();
 }
 
 uint32_t mapTargetToGameplayMask(uint8_t target)
@@ -386,6 +686,75 @@ uint32_t mapTargetToActionMask(uint8_t target)
 bool isPressed(int8_t pin)
 {
     return isAllowedPin(pin) && (gpio_get_level(static_cast<gpio_num_t>(pin)) == 0);
+}
+
+void applyManualButtonControl(size_t control_index, uint32_t &gameplayMask, uint32_t &actionMask)
+{
+    gameplayMask |= gameplayMaskForButtonControl(control_index);
+    actionMask |= actionMaskForButtonControl(control_index);
+}
+
+void sampleResistiveStateLocked(uint32_t &gameplayMask, uint32_t &actionMask)
+{
+    std::array<int, kManualInterfaceGpioCount> raw_values = {4095, 4095};
+    for (size_t ladder_index = 0; ladder_index < kManualInterfaceGpioCount; ++ladder_index) {
+        const int8_t pin = s_config.manual_resistive_gpio[ladder_index];
+        if (pin < 0) {
+            continue;
+        }
+        readAnalogPinLocked(pin, raw_values[ladder_index]);
+    }
+
+    for (size_t ladder_index = 0; ladder_index < kManualInterfaceGpioCount; ++ladder_index) {
+        const int raw_value = raw_values[ladder_index];
+        if (raw_value >= kResistiveIdleThreshold) {
+            continue;
+        }
+
+        int best_control = -1;
+        int best_delta = std::numeric_limits<int>::max();
+        int second_best_delta = std::numeric_limits<int>::max();
+        for (size_t control_index = 0; control_index < JC4880_JOYPAD_BUTTON_CONTROL_COUNT; ++control_index) {
+            const int8_t binding = s_config.manual_resistive_button_binding[control_index];
+            if ((binding < 0) || (resistiveLadderIndex(binding) != static_cast<int>(ladder_index))) {
+                continue;
+            }
+
+            const int expected_raw = expectedResistiveRawForBinding(binding);
+            const int delta = std::abs(raw_value - expected_raw);
+            if (delta < best_delta) {
+                second_best_delta = best_delta;
+                best_delta = delta;
+                best_control = static_cast<int>(control_index);
+            } else if (delta < second_best_delta) {
+                second_best_delta = delta;
+            }
+        }
+
+        const int acceptance_window = std::max(120, second_best_delta / 2);
+        if ((best_control >= 0) && (best_delta <= acceptance_window)) {
+            applyManualButtonControl(static_cast<size_t>(best_control), gameplayMask, actionMask);
+        }
+    }
+}
+
+void sampleMcpStateLocked(uint32_t &gameplayMask, uint32_t &actionMask)
+{
+    uint16_t mcp_state = 0xFFFF;
+    if (!readMcpStateLocked(mcp_state)) {
+        return;
+    }
+
+    for (size_t control_index = 0; control_index < JC4880_JOYPAD_BUTTON_CONTROL_COUNT; ++control_index) {
+        const int8_t pin = s_config.manual_mcp_button_pin[control_index];
+        if ((pin < 0) || (pin >= static_cast<int8_t>(kMcpPinCount))) {
+            continue;
+        }
+
+        if ((mcp_state & (1u << pin)) == 0) {
+            applyManualButtonControl(control_index, gameplayMask, actionMask);
+        }
+    }
 }
 
 void sampleManualStateLocked(uint32_t &gameplayMask, uint32_t &actionMask)
@@ -434,27 +803,12 @@ void sampleManualStateLocked(uint32_t &gameplayMask, uint32_t &actionMask)
         return;
     }
 
-    if (isPressed(s_config.manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_START])) {
-        gameplayMask |= JC4880_JOYPAD_MASK_START;
+    if (s_config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_RESISTIVE) {
+        sampleResistiveStateLocked(gameplayMask, actionMask);
+        return;
     }
-    if (isPressed(s_config.manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_A])) {
-        gameplayMask |= JC4880_JOYPAD_MASK_BUTTON_A;
-    }
-    if (isPressed(s_config.manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_B])) {
-        gameplayMask |= JC4880_JOYPAD_MASK_BUTTON_B;
-    }
-    if (isPressed(s_config.manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_C])) {
-        gameplayMask |= JC4880_JOYPAD_MASK_BUTTON_C;
-    }
-    if (isPressed(s_config.manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_EXIT])) {
-        actionMask |= JC4880_JOYPAD_ACTION_EXIT;
-    }
-    if (isPressed(s_config.manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_SAVE])) {
-        actionMask |= JC4880_JOYPAD_ACTION_SAVE;
-    }
-    if (isPressed(s_config.manual_button_gpio[JC4880_JOYPAD_BUTTON_CONTROL_LOAD])) {
-        actionMask |= JC4880_JOYPAD_ACTION_LOAD;
-    }
+
+    sampleMcpStateLocked(gameplayMask, actionMask);
 }
 
 void loadConfigLocked()
@@ -487,7 +841,9 @@ void loadConfigLocked()
     loadBlob(handle, kBleRemapKey, s_config.ble_remap, sizeof(s_config.ble_remap));
     loadBlob(handle, kManualSpiKey, s_config.manual_spi_gpio, sizeof(s_config.manual_spi_gpio));
     loadBlob(handle, kManualResistiveKey, s_config.manual_resistive_gpio, sizeof(s_config.manual_resistive_gpio));
-    loadBlob(handle, kManualButtonsKey, s_config.manual_button_gpio, sizeof(s_config.manual_button_gpio));
+    loadBlob(handle, kManualResistiveButtonsKey, s_config.manual_resistive_button_binding, sizeof(s_config.manual_resistive_button_binding));
+    loadBlob(handle, kManualMcpGpioKey, s_config.manual_mcp_i2c_gpio, sizeof(s_config.manual_mcp_i2c_gpio));
+    loadBlob(handle, kManualMcpButtonsKey, s_config.manual_mcp_button_pin, sizeof(s_config.manual_mcp_button_pin));
     loadCalibrationSlotsLocked(handle);
 
     nvs_close(handle);
@@ -513,7 +869,9 @@ bool saveConfigLocked()
     ok = ok && (nvs_set_blob(handle, kBleRemapKey, s_config.ble_remap, sizeof(s_config.ble_remap)) == ESP_OK);
     ok = ok && (nvs_set_blob(handle, kManualSpiKey, s_config.manual_spi_gpio, sizeof(s_config.manual_spi_gpio)) == ESP_OK);
     ok = ok && (nvs_set_blob(handle, kManualResistiveKey, s_config.manual_resistive_gpio, sizeof(s_config.manual_resistive_gpio)) == ESP_OK);
-    ok = ok && (nvs_set_blob(handle, kManualButtonsKey, s_config.manual_button_gpio, sizeof(s_config.manual_button_gpio)) == ESP_OK);
+    ok = ok && (nvs_set_blob(handle, kManualResistiveButtonsKey, s_config.manual_resistive_button_binding, sizeof(s_config.manual_resistive_button_binding)) == ESP_OK);
+    ok = ok && (nvs_set_blob(handle, kManualMcpGpioKey, s_config.manual_mcp_i2c_gpio, sizeof(s_config.manual_mcp_i2c_gpio)) == ESP_OK);
+    ok = ok && (nvs_set_blob(handle, kManualMcpButtonsKey, s_config.manual_mcp_button_pin, sizeof(s_config.manual_mcp_button_pin)) == ESP_OK);
     ok = ok && saveCalibrationSlotsLocked(handle);
     ok = ok && (nvs_commit(handle) == ESP_OK);
 

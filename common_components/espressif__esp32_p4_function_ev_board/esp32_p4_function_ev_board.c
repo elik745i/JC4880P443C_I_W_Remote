@@ -134,6 +134,59 @@ i2c_master_bus_handle_t bsp_i2c_get_handle(void)
     return i2c_handle;
 }
 
+static esp_err_t bsp_sdcard_mount_with_profile(const esp_vfs_fat_sdmmc_mount_config_t *mount_config,
+                                               const char *profile_name,
+                                               int width,
+                                               int max_freq_khz,
+                                               bool use_ldo)
+{
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = max_freq_khz;
+
+    if (use_ldo) {
+        sd_pwr_ctrl_ldo_config_t ldo_config = {
+            .ldo_chan_id = 4,
+        };
+        if (s_sd_pwr_ctrl_handle == NULL) {
+            esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &s_sd_pwr_ctrl_handle);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to create on-chip SD LDO power control driver: %s", esp_err_to_name(ret));
+                return ret;
+            }
+        }
+        host.pwr_ctrl_handle = s_sd_pwr_ctrl_handle;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.cd = SDMMC_SLOT_NO_CD;
+    slot_config.wp = SDMMC_SLOT_NO_WP;
+    slot_config.width = width;
+    slot_config.flags = SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+
+    ESP_LOGI(TAG, "Trying SD mount profile '%s' (width=%d freq=%dkHz ldo=%s)",
+             profile_name,
+             width,
+             max_freq_khz,
+             use_ldo ? "on" : "off");
+
+    esp_err_t ret = esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config, mount_config, &bsp_sdcard);
+    if (ret != ESP_OK) {
+        bsp_sdcard = NULL;
+        s_sdcard_mounted = false;
+        esp_err_t deinit_ret = sdmmc_host_deinit_slot(host.slot);
+        if ((deinit_ret != ESP_OK) && (deinit_ret != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "Failed to deinit SD host slot after '%s': %s", profile_name, esp_err_to_name(deinit_ret));
+        }
+        ESP_LOGW(TAG, "SD mount profile '%s' failed: %s", profile_name, esp_err_to_name(ret));
+        return ret;
+    }
+
+    s_sdcard_mounted = true;
+    return ESP_OK;
+}
+
 esp_err_t bsp_sdcard_mount(void)
 {
     if (s_sdcard_mounted && (bsp_sdcard != NULL)) {
@@ -150,39 +203,31 @@ esp_err_t bsp_sdcard_mount(void)
         .allocation_unit_size = 64 * 1024
     };
 
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.slot = SDMMC_HOST_SLOT_0;
-    host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
-
-    sd_pwr_ctrl_ldo_config_t ldo_config = {
-        .ldo_chan_id = 4,
+    const struct {
+        const char *name;
+        int width;
+        int max_freq_khz;
+        bool use_ldo;
+    } profiles[] = {
+        {"4bit-20mhz-ldo", 4, SDMMC_FREQ_DEFAULT, true},
+        {"4bit-20mhz", 4, SDMMC_FREQ_DEFAULT, false},
+        {"1bit-10mhz", 1, 10000, false},
     };
-    if (s_sd_pwr_ctrl_handle == NULL) {
-        esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &s_sd_pwr_ctrl_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to create a new on-chip LDO power control driver");
-            return ret;
+
+    esp_err_t last_error = ESP_FAIL;
+    for (size_t index = 0; index < (sizeof(profiles) / sizeof(profiles[0])); ++index) {
+        last_error = bsp_sdcard_mount_with_profile(&mount_config,
+                                                   profiles[index].name,
+                                                   profiles[index].width,
+                                                   profiles[index].max_freq_khz,
+                                                   profiles[index].use_ldo);
+        if (last_error == ESP_OK) {
+            return ESP_OK;
         }
-    }
-    host.pwr_ctrl_handle = s_sd_pwr_ctrl_handle;
-
-    const sdmmc_slot_config_t slot_config = {
-        /* SD card is connected to Slot 0 pins. Slot 0 uses IO MUX, so not specifying the pins here */
-        .cd = SDMMC_SLOT_NO_CD,
-        .wp = SDMMC_SLOT_NO_WP,
-        .width = 4,
-        .flags = 0,
-    };
-
-    esp_err_t ret = esp_vfs_fat_sdmmc_mount(BSP_SD_MOUNT_POINT, &host, &slot_config, &mount_config, &bsp_sdcard);
-    if (ret == ESP_OK) {
-        s_sdcard_mounted = true;
-    } else {
-        bsp_sdcard = NULL;
-        s_sdcard_mounted = false;
+        vTaskDelay(pdMS_TO_TICKS(30));
     }
 
-    return ret;
+    return last_error;
 }
 
 esp_err_t bsp_sdcard_unmount(void)

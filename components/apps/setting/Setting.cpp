@@ -93,7 +93,7 @@
 #define APP_SETTINGS_FEATURE_HARDWARE_MENU 0
 #endif
 
-#define HOME_REFRESH_TASK_STACK_SIZE    (1024 * 4)
+#define HOME_REFRESH_TASK_STACK_SIZE    (1024 * 8)
 #define HOME_REFRESH_TASK_PRIORITY      (1)
 #define HOME_REFRESH_TASK_PERIOD_MS     (2000)
 #define JOYPAD_BLE_LIVE_REFRESH_MS      (33)
@@ -5728,7 +5728,7 @@ void AppSettings::refreshHardwareMonitorUi(void)
 
     uint64_t sd_total = 0;
     uint64_t sd_used = 0;
-    const bool sd_mounted = app_storage_ensure_sdcard_available();
+    const bool sd_mounted = app_storage_is_sdcard_mounted();
     bool sd_capacity_ready = false;
     uint64_t sd_total_bytes = 0;
     uint64_t sd_free_bytes = 0;

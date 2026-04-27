@@ -46,6 +46,9 @@
  
 static const char *TAG = "main";
 static constexpr TickType_t kSdcardMountRetryPeriod = pdMS_TO_TICKS(2000);
+static constexpr TickType_t kSdcardStartupDelay = pdMS_TO_TICKS(1000);
+static constexpr uint32_t kSdcardStartupTaskStack = 4096;
+static constexpr uint32_t kSdcardStartupMountAttempts = 5;
 static constexpr uint32_t kSerialCommandTaskStack = 6144;
 static constexpr uint32_t kCrashReportUploadTaskStack = 6144;
 static constexpr const char *kNvsStorageNamespace = "storage";
@@ -100,6 +103,8 @@ static uint32_t s_lastTapSoundTick = 0;
 static ESP_Brookesia_Phone *s_phone = nullptr;
 static std::vector<std::unique_ptr<lv_indev_drv_t>> s_tapSoundDriverCopies;
 static esp_timer_handle_t s_hapticPulseTimer = nullptr;
+
+static bool sync_sdcard_mount_state(bool try_mount);
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
@@ -882,6 +887,28 @@ static bool probe_sdcard_health(void)
     return (bsp_sdcard != nullptr) && (sdmmc_get_status(bsp_sdcard) == ESP_OK);
 }
 
+static void sdcard_startup_mount_task(void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(kSdcardStartupDelay);
+
+    for (uint32_t attempt = 0; attempt < kSdcardStartupMountAttempts; ++attempt) {
+        const bool mounted = sync_sdcard_mount_state(true);
+        if (mounted) {
+            ESP_LOGI(TAG, "SD card mounted by background startup task");
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        vTaskDelay(kSdcardMountRetryPeriod);
+    }
+
+    ESP_LOGI(TAG, "SD card not mounted during startup probe window");
+
+    vTaskDelete(nullptr);
+}
+
 static bool sync_sdcard_mount_state(bool try_mount)
 {
     if (s_sdcardMutex == nullptr) {
@@ -902,9 +929,13 @@ static bool sync_sdcard_mount_state(bool try_mount)
     if (!s_sdcardMounted && try_mount) {
         const TickType_t now = xTaskGetTickCount();
         if ((s_nextSdcardMountAttempt == 0) || (now >= s_nextSdcardMountAttempt)) {
-            set_sdcard_probe_log_levels(ESP_LOG_NONE, ESP_LOG_NONE, ESP_LOG_NONE);
+            set_sdcard_probe_log_levels(ESP_LOG_NONE, ESP_LOG_ERROR, ESP_LOG_ERROR);
             const esp_err_t mount_ret = bsp_sdcard_mount();
             set_sdcard_probe_log_levels(ESP_LOG_INFO, ESP_LOG_ERROR, ESP_LOG_ERROR);
+
+            if (mount_ret != ESP_OK) {
+                ESP_LOGW(TAG, "SD card mount failed: %s", esp_err_to_name(mount_ret));
+            }
 
             s_sdcardMounted = (mount_ret == ESP_OK) && probe_sdcard_health();
             if (!s_sdcardMounted) {
@@ -1150,6 +1181,15 @@ extern "C" void app_main(void)
 
     s_sdcardMutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_sdcardMutex != nullptr ? ESP_OK : ESP_ERR_NO_MEM);
+
+    if (create_background_task_prefer_psram(sdcard_startup_mount_task,
+                                            "sdcard_startup",
+                                            kSdcardStartupTaskStack,
+                                            nullptr,
+                                            1,
+                                            1) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to start SD card startup mount task");
+    }
 
     ESP_ERROR_CHECK(bsp_spiffs_mount());
     ESP_LOGI(TAG, "SPIFFS mount successfully");

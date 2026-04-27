@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.11 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.2.12 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -72,6 +72,9 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - The BLE controller settings page now includes a live controller visualizer, persistent per-controller calibration storage, and calibration profile reuse across reconnects.
 - Joypad layout editing now uses a dedicated local configurator that reads and regenerates the firmware layout header directly, supports BLE and Local controller targets, and lets controller artwork be refreshed alongside the generated LVGL asset.
 - The BLE controller preview now follows the generated Joypad layout live on-device, including layout-driven buttons, triggers, and calibration-centered stick movement instead of the old split preview path.
+- The Local Controller path now supports analog X/Y inputs plus MCP23017-backed buttons with a live on-device preview, serial input diagnostics, and the additional `Key` action on the default MCP `B4` mapping.
+- The Local Controller settings page now includes integrated WS2812 / Neopixel controls, configurable haptic GPIO and strength, and live test feedback for motor changes without blocking the rest of the UI.
+- Battery sampling now detaches from ADC2 while the Local Controller is active so analog local inputs can run without the previous ADC2 ownership conflict.
 - The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
 - Hardware Monitor now keeps one hour of background history in PSRAM for CPU load, SRAM, PSRAM, Wi-Fi, battery, and CPU temperature instead of sampling only while the page is open.
@@ -155,6 +158,9 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Controller manual: [TOBO BSP-D9 manual](User_Manual/Tobo%20BSP%20D9.pdf).
 - To pair the TOBO BSP-D9 with the unit, turn on `BLE Controller` in Settings, then press `HOME+X` on the controller.
 - Reflash the ESP32-C6 first with the coprocessor binary from the [latest release](https://github.com/elik745i/JC4880P443C_I_W_Remote/releases/latest), otherwise controller pairing on the P4 side is not expected to work correctly.
+- Local Controller mode also supports a directly wired handheld setup with analog `Y Axis` / `X Axis` inputs on the P4 and MCP23017 button expansion over I2C.
+- The Local Controller preview is live on-device and reflects analog movement plus MCP-backed face and action buttons, including `Save`, `Load`, `Exit`, and `Key`.
+- Local Controller settings also expose non-blocking Neopixel and haptic feedback controls, including effect selection, brightness, GPIO routing, and haptic strength test pulses.
 
 ### Emulator Support
 
@@ -177,7 +183,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.11 validates at `0x6E2FA0`, leaving `0x0AD060` bytes free in the smaller OTA app slot.
+- Version 1.2.12 validates at `0x6ECD10`, leaving `0x0A32F0` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

@@ -25,6 +25,7 @@ struct Status {
 };
 
 bool initialize();
+bool set_adc_attached(bool attached);
 bool get_status(Status &status);
 std::size_t copy_samples(HistorySample *destination, std::size_t max_samples);
 

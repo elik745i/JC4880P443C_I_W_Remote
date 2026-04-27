@@ -13,6 +13,23 @@
 
 namespace {
 
+constexpr int8_t kDefaultResistiveAxisPins[2] = {50, 51};
+constexpr int8_t kDefaultMcpI2cPins[2] = {30, 31};
+constexpr int8_t kDefaultMcpControlPins[JC4880_JOYPAD_SPI_CONTROL_COUNT] = {
+    -1,
+    -1,
+    -1,
+    -1,
+    12,
+    11,
+    15,
+    14,
+    10,
+    9,
+    8,
+    12,
+};
+
 constexpr uint32_t kSettingScreenAnimTimeMs = 220;
 
 constexpr int32_t kJoypadManualModeOptions[] = {
@@ -146,6 +163,7 @@ constexpr const char *kJoypadSpiLabels[JC4880_JOYPAD_SPI_CONTROL_COUNT] = {
     "A Button",
     "B Button",
     "C Button",
+    "Key Button",
 };
 
 constexpr const char *kJoypadResistiveLabels[2] = {
@@ -153,10 +171,76 @@ constexpr const char *kJoypadResistiveLabels[2] = {
     "Resistive Ladder 2 GPIO",
 };
 
+constexpr const char *kJoypadAxisLabels[2] = {
+    "Y Axis GPIO",
+    "X Axis GPIO",
+};
+
 constexpr const char *kJoypadMcpLabels[2] = {
     "MCP SDA GPIO",
     "MCP SCL GPIO",
 };
+
+constexpr const char *kJoypadMcpControlLabels[JC4880_JOYPAD_SPI_CONTROL_COUNT] = {
+    "D-pad Up",
+    "D-pad Down",
+    "D-pad Left",
+    "D-pad Right",
+    "Start Button",
+    "Exit Button",
+    "Save Button",
+    "Load Button",
+    "A Button",
+    "B Button",
+    "C Button",
+    "Key Button",
+};
+
+constexpr int32_t kJoypadPeripheralGpioOptions[] = {
+    -1,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    49,
+    50,
+    51,
+    52,
+};
+
+constexpr int32_t kJoypadHapticLevelOptions[] = {
+    0,
+    1,
+    2,
+    3,
+};
+
+constexpr int32_t kJoypadNeopixelPaletteOptions[] = {
+    0, 1, 2, 3, 4, 5,
+};
+
+constexpr int32_t kJoypadNeopixelEffectOptions[] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+};
+
+constexpr const char *kJoypadPeripheralGpioOptionsText = "Disabled\nGPIO 28\nGPIO 29\nGPIO 30\nGPIO 31\nGPIO 32\nGPIO 33\nGPIO 34\nGPIO 35\nGPIO 49\nGPIO 50\nGPIO 51\nGPIO 52";
+constexpr const char *kJoypadHapticLevelOptionsText = "None\nLow\nMedium\nHigh";
+constexpr const char *kJoypadNeopixelPaletteOptionsText = "Rainbow\nOcean\nSunset\nForest\nIce\nArcade";
+constexpr const char *kJoypadNeopixelEffectOptionsText =
+    "Solid\nBreathing\nColor Wipe\nTheater Chase\nRainbow\nRainbow Cycle\nSparkle\nPulse\nComet\nScanner\nTwinkle\nFire\nLava\nAurora\nPolice\nMeteor\nConfetti\nPlasma\nWave\nParty";
+
+constexpr const char *kNvsKeyAudioHapticGpio = "haptic_gpio";
+constexpr const char *kNvsKeyAudioHapticLevel = "haptic_lvl";
+constexpr const char *kNvsKeyNeopixelPower = "neo_en";
+constexpr const char *kNvsKeyNeopixelGpio = "neo_gpio";
+constexpr const char *kNvsKeyNeopixelBrightness = "neo_bri";
+constexpr const char *kNvsKeyNeopixelPalette = "neo_pal";
+constexpr const char *kNvsKeyNeopixelEffect = "neo_fx";
 
 constexpr const char *kJoypadButtonLabels[JC4880_JOYPAD_BUTTON_CONTROL_COUNT] = {
     "Start Button",
@@ -166,6 +250,7 @@ constexpr const char *kJoypadButtonLabels[JC4880_JOYPAD_BUTTON_CONTROL_COUNT] = 
     "A Button",
     "B Button",
     "C Button",
+    "Key Button",
 };
 
 lv_color_t parseJoypadColor(const char *hex, lv_color_t fallback)
@@ -342,6 +427,33 @@ uint16_t clipJoypadPolygonToMaxX(const lv_point_t *input, uint16_t input_count, 
     return output_count;
 }
 
+void applyRequestedLocalDefaults(jc4880_joypad_config_t &config)
+{
+    if (config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_RESISTIVE) {
+        for (size_t index = 0; index < 2; ++index) {
+            if (config.manual_resistive_gpio[index] < 0) {
+                config.manual_resistive_gpio[index] = kDefaultResistiveAxisPins[index];
+            }
+        }
+    }
+
+    if (config.manual_mode != JC4880_JOYPAD_MANUAL_MODE_MCP23017) {
+        return;
+    }
+
+    for (size_t index = 0; index < 2; ++index) {
+        if (config.manual_mcp_i2c_gpio[index] < 0) {
+            config.manual_mcp_i2c_gpio[index] = kDefaultMcpI2cPins[index];
+        }
+    }
+
+    for (size_t index = 0; index < JC4880_JOYPAD_SPI_CONTROL_COUNT; ++index) {
+        if ((config.manual_mcp_button_pin[index] < 0) && (kDefaultMcpControlPins[index] >= 0)) {
+            config.manual_mcp_button_pin[index] = kDefaultMcpControlPins[index];
+        }
+    }
+}
+
 void translateJoypadPointsToObject(const lv_area_t &coords, lv_point_t *points, uint16_t point_count)
 {
     for (uint16_t index = 0; index < point_count; ++index) {
@@ -400,15 +512,44 @@ void centerJoypadPreviewKnob(lv_obj_t *base, lv_obj_t *knob)
                    std::max<lv_coord_t>(0, ((base_height - knob_height) / 2) - center_offset_y));
 }
 
-int16_t normalizeJoypadPreviewAxis(int16_t axis_value)
+void updateJoypadPreviewStickKnob(lv_obj_t *base, lv_obj_t *knob, int16_t axis_x, int16_t axis_y)
 {
-    return static_cast<int16_t>(std::max<int32_t>(-512, std::min<int32_t>(512, axis_value)));
-}
+    if (!lv_obj_ready(base) || !lv_obj_ready(knob)) {
+        return;
+    }
 
-int16_t applyJoypadPreviewDeadzone(int16_t axis_value)
-{
     constexpr int16_t kPreviewDeadzone = 18;
-    return (std::abs(axis_value) <= kPreviewDeadzone) ? 0 : axis_value;
+    const auto normalizeAxis = [](int16_t axis_value) {
+        return static_cast<int16_t>(std::max<int32_t>(-512, std::min<int32_t>(512, axis_value)));
+    };
+    const auto applyDeadzone = [](int16_t axis_value) {
+        return (std::abs(axis_value) <= kPreviewDeadzone) ? static_cast<int16_t>(0) : axis_value;
+    };
+
+    const lv_coord_t base_width = lv_obj_get_width(base);
+    const lv_coord_t base_height = lv_obj_get_height(base);
+    const lv_coord_t knob_width = lv_obj_get_width(knob);
+    const lv_coord_t knob_height = lv_obj_get_height(knob);
+    const int16_t normalized_axis_x = applyDeadzone(normalizeAxis(axis_x));
+    const int16_t normalized_axis_y = applyDeadzone(normalizeAxis(axis_y));
+    const float travel_radius_x = static_cast<float>(base_width - knob_width) * 0.5f;
+    const float travel_radius_y = static_cast<float>(base_height - knob_height) * 0.5f;
+    const float offset_x = (static_cast<float>(normalized_axis_x) / 512.0f) * travel_radius_x;
+    const float offset_y = (static_cast<float>(normalized_axis_y) / 512.0f) * travel_radius_y;
+
+    const float center_x = (static_cast<float>(base_width) - static_cast<float>(knob_width)) * 0.5f;
+    const float center_y = (static_cast<float>(base_height) - static_cast<float>(knob_height)) * 0.5f;
+    const float center_offset_x = static_cast<float>(knob_width);
+    const float center_offset_y = static_cast<float>(knob_height);
+    const lv_coord_t knob_x = static_cast<lv_coord_t>(std::lround((center_x + offset_x) - center_offset_x));
+    const lv_coord_t knob_y = static_cast<lv_coord_t>(std::lround((center_y + offset_y) - center_offset_y));
+    const lv_coord_t min_knob_x = static_cast<lv_coord_t>(-std::lround(center_offset_x));
+    const lv_coord_t max_knob_x = static_cast<lv_coord_t>(std::lround(static_cast<float>(base_width - knob_width) - center_offset_x));
+    const lv_coord_t min_knob_y = static_cast<lv_coord_t>(-std::lround(center_offset_y));
+    const lv_coord_t max_knob_y = static_cast<lv_coord_t>(std::lround(static_cast<float>(base_height - knob_height) - center_offset_y));
+    lv_obj_set_pos(knob,
+                   std::max<lv_coord_t>(min_knob_x, std::min<lv_coord_t>(max_knob_x, knob_x)),
+                   std::max<lv_coord_t>(min_knob_y, std::min<lv_coord_t>(max_knob_y, knob_y)));
 }
 
 std::string formatJoypadCalibrationSlotSummary(const jc4880_joypad_ble_calibration_slot_t &slot)
@@ -641,7 +782,7 @@ void setJoypadPreviewAnalogActivity(lv_obj_t *object, uint16_t value, lv_color_t
     updateJoypadPreviewAnalogLabel(object, clamped_value);
 }
 
-void appendJoypadLayoutPreview(lv_obj_t *section, const jc4880::joypad_layout::Layout &layout, const lv_img_dsc_t *controller_asset = &ui_img_controller_png)
+[[maybe_unused]] void appendJoypadLayoutPreview(lv_obj_t *section, const jc4880::joypad_layout::Layout &layout, const lv_img_dsc_t *controller_asset = &ui_img_controller_png)
 {
     lv_obj_t *controllerPad = lv_obj_create(section);
     lv_obj_set_width(controllerPad, lv_pct(100));
@@ -1217,6 +1358,18 @@ void AppSettings::ensureJoypadBleScreen(void)
         }
     };
 
+    auto createSliderRow = [this, &createJoypadSettingsToggleRow](lv_obj_t *parent, const char *title, int32_t min_value, int32_t max_value, lv_event_cb_t callback, lv_obj_t **out_slider) {
+        lv_obj_t *row = createJoypadSettingsToggleRow(parent, title);
+        lv_obj_t *slider = lv_slider_create(row);
+        lv_slider_set_range(slider, min_value, max_value);
+        lv_obj_set_width(slider, 210);
+        lv_obj_align(slider, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(slider, callback, LV_EVENT_VALUE_CHANGED, this);
+        if (out_slider != nullptr) {
+            *out_slider = slider;
+        }
+    };
+
     auto createIndicatorButton = [](lv_obj_t *parent, const char *label, lv_coord_t size) {
         lv_obj_t *button = lv_obj_create(parent);
         lv_obj_set_size(button, size, size);
@@ -1635,6 +1788,18 @@ void AppSettings::ensureJoypadLocalScreen(void)
         }
     };
 
+    auto createSliderRow = [this, &createJoypadSettingsToggleRow](lv_obj_t *parent, const char *title, int32_t min_value, int32_t max_value, lv_event_cb_t callback, lv_obj_t **out_slider) {
+        lv_obj_t *row = createJoypadSettingsToggleRow(parent, title);
+        lv_obj_t *slider = lv_slider_create(row);
+        lv_slider_set_range(slider, min_value, max_value);
+        lv_obj_set_width(slider, 210);
+        lv_obj_align(slider, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(slider, callback, LV_EVENT_VALUE_CHANGED, this);
+        if (out_slider != nullptr) {
+            *out_slider = slider;
+        }
+    };
+
     auto addRefreshOnLoad = [this](lv_obj_t *screen) {
         lv_obj_add_event_cb(screen, [](lv_event_t *e) {
             AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
@@ -1667,11 +1832,117 @@ void AppSettings::ensureJoypadLocalScreen(void)
         lv_obj_t *previewSection = createSection(joypadPanel,
                                                  "Layout Preview",
                                                  "This preview is built from Joypad Layout Configuration and should match the configured Local canvas in firmware.");
-        appendJoypadLayoutPreview(previewSection, kLocalLayout, &ui_img_local_controller_png);
+        {
+            lv_obj_t *controllerPad = lv_obj_create(previewSection);
+            lv_obj_set_width(controllerPad, lv_pct(100));
+            lv_obj_set_height(controllerPad, LV_SIZE_CONTENT);
+            lv_obj_clear_flag(controllerPad, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(controllerPad, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_radius(controllerPad, 22, 0);
+            lv_obj_set_style_border_width(controllerPad, 0, 0);
+            lv_obj_set_style_bg_color(controllerPad, lv_color_hex(0xEFF6FF), 0);
+            lv_obj_set_style_bg_opa(controllerPad, LV_OPA_COVER, 0);
+            lv_obj_set_style_pad_all(controllerPad, 12, 0);
+            lv_obj_set_style_pad_row(controllerPad, 0, 0);
+            lv_obj_set_flex_flow(controllerPad, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_flex_align(controllerPad, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+            const auto scaleX = [&kLocalLayout](int coordinate) {
+                return scaleJoypadCoordinate(coordinate,
+                                             static_cast<lv_coord_t>(kLocalLayout.preview_frame.width),
+                                             static_cast<lv_coord_t>(kLocalLayout.controller_source_width));
+            };
+            const auto scaleY = [&kLocalLayout](int coordinate) {
+                return scaleJoypadCoordinate(coordinate,
+                                             static_cast<lv_coord_t>(kLocalLayout.preview_frame.height),
+                                             static_cast<lv_coord_t>(kLocalLayout.controller_source_height));
+            };
+
+            lv_obj_t *controllerStage = lv_obj_create(controllerPad);
+            lv_obj_set_size(controllerStage,
+                            static_cast<lv_coord_t>(kLocalLayout.preview_frame.width),
+                            static_cast<lv_coord_t>(kLocalLayout.preview_frame.height));
+            lv_obj_clear_flag(controllerStage, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(controllerStage, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_bg_opa(controllerStage, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(controllerStage, 0, 0);
+            lv_obj_set_style_pad_all(controllerStage, 0, 0);
+
+            lv_obj_t *controllerImage = lv_img_create(controllerStage);
+            lv_img_set_src(controllerImage, &ui_img_local_controller_png);
+            lv_img_set_size_mode(controllerImage, LV_IMG_SIZE_MODE_REAL);
+            lv_img_set_zoom(controllerImage, static_cast<uint16_t>((256 * kLocalLayout.preview_frame.width) / kLocalLayout.controller_source_width));
+            lv_obj_center(controllerImage);
+
+            for (size_t index = 0; index < 2; ++index) {
+                _joypadLocalTriggerBars[index] = nullptr;
+                if (kLocalLayout.trigger_bar_visuals[index].enabled) {
+                    _joypadLocalTriggerBars[index] = createJoypadPreviewVisual(controllerStage,
+                                                                               scaleX(kLocalLayout.trigger_bars[index].x),
+                                                                               scaleY(kLocalLayout.trigger_bars[index].y),
+                                                                               scaleX(kLocalLayout.trigger_bars[index].width),
+                                                                               scaleY(kLocalLayout.trigger_bars[index].height),
+                                                                               kLocalLayout.trigger_bar_visuals[index]);
+                }
+
+                _joypadLocalShoulderIndicators[index] = nullptr;
+                if (kLocalLayout.shoulder_visuals[index].enabled) {
+                    _joypadLocalShoulderIndicators[index] = createJoypadPreviewVisual(controllerStage,
+                                                                                      scaleX(kLocalLayout.shoulder_indicators[index].x),
+                                                                                      scaleY(kLocalLayout.shoulder_indicators[index].y),
+                                                                                      scaleX(kLocalLayout.shoulder_indicators[index].width),
+                                                                                      scaleY(kLocalLayout.shoulder_indicators[index].height),
+                                                                                      kLocalLayout.shoulder_visuals[index]);
+                }
+
+                _joypadLocalStickBases[index] = nullptr;
+                _joypadLocalStickKnobs[index] = nullptr;
+                if (!kLocalLayout.stick_visuals[index].enabled) {
+                    continue;
+                }
+
+                _joypadLocalStickBases[index] = createJoypadPreviewVisual(controllerStage,
+                                                                          scaleX(kLocalLayout.stick_bases[index].x),
+                                                                          scaleY(kLocalLayout.stick_bases[index].y),
+                                                                          scaleX(kLocalLayout.stick_bases[index].width),
+                                                                          scaleY(kLocalLayout.stick_bases[index].height),
+                                                                          kLocalLayout.stick_visuals[index]);
+                _joypadLocalStickKnobs[index] = lv_obj_create(_joypadLocalStickBases[index]);
+                const lv_coord_t knob_size = static_cast<lv_coord_t>(std::max<int>(18,
+                    std::min<lv_coord_t>(lv_obj_get_width(_joypadLocalStickBases[index]), lv_obj_get_height(_joypadLocalStickBases[index])) / 3));
+                lv_obj_set_size(_joypadLocalStickKnobs[index], knob_size, knob_size);
+                lv_obj_clear_flag(_joypadLocalStickKnobs[index], LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_clear_flag(_joypadLocalStickKnobs[index], LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_set_style_radius(_joypadLocalStickKnobs[index], LV_RADIUS_CIRCLE, 0);
+                lv_obj_set_style_border_width(_joypadLocalStickKnobs[index], 2, 0);
+                lv_obj_set_style_border_color(_joypadLocalStickKnobs[index], lv_color_hex(0x0284C7), 0);
+                lv_obj_set_style_bg_color(_joypadLocalStickKnobs[index], lv_color_hex(0x38BDF8), 0);
+                lv_obj_set_style_bg_opa(_joypadLocalStickKnobs[index], LV_OPA_COVER, 0);
+                lv_obj_set_style_pad_all(_joypadLocalStickKnobs[index], 0, 0);
+                lv_obj_set_style_shadow_width(_joypadLocalStickKnobs[index], 0, 0);
+                lv_obj_set_style_outline_width(_joypadLocalStickKnobs[index], 0, 0);
+                lv_obj_center(_joypadLocalStickKnobs[index]);
+            }
+
+            for (size_t index = 0; index < 4; ++index) {
+                _joypadLocalDpadIndicators[index] = nullptr;
+
+                _joypadLocalFaceIndicators[index] = nullptr;
+                if (kLocalLayout.face_visuals[index].enabled) {
+                    const lv_coord_t size = scaleX(kLocalLayout.face_buttons[index].size);
+                    _joypadLocalFaceIndicators[index] = createJoypadPreviewVisual(controllerStage,
+                                                                                  static_cast<lv_coord_t>(scaleX(kLocalLayout.face_buttons[index].center_x) - (size / 2)),
+                                                                                  static_cast<lv_coord_t>(scaleY(kLocalLayout.face_buttons[index].center_y) - (size / 2)),
+                                                                                  size,
+                                                                                  size,
+                                                                                  kLocalLayout.face_visuals[index]);
+                }
+            }
+        }
 
         lv_obj_t *manualSection = createSection(joypadPanel,
                                                 "Pin Mapping",
-                                                "Direct GPIO stores per-signal pins, Resistive Keyboard stores ladder GPIO plus resistor assignments, and MCP23017 stores SDA/SCL plus expander pin assignments.");
+                                                "Direct GPIO stores per-signal pins, Resistive Keyboard stores ladder GPIO plus resistor assignments, and MCP23017 stores SDA/SCL plus analog X/Y axis GPIOs on the P4 and button pins on the expander.");
         for (size_t index = 0; index < _joypadManualSpiDropdowns.size(); ++index) {
             createDropdownRow(manualSection,
                               kJoypadSpiLabels[index],
@@ -1702,11 +1973,63 @@ void AppSettings::ensureJoypadLocalScreen(void)
         }
         for (size_t index = 0; index < _joypadManualMcpButtonDropdowns.size(); ++index) {
             createDropdownRow(manualSection,
-                              kJoypadButtonLabels[index],
+                              kJoypadMcpControlLabels[index],
                               kJoypadMcpPinOptionsText,
                               onJoypadConfigChangedEventCallback,
                               &_joypadManualMcpButtonDropdowns[index]);
         }
+
+        lv_obj_t *peripheralSection = createSection(joypadPanel,
+                                                    "Local Peripherals",
+                                                    "These controls stay with the Local Controller profile so wiring, lighting, and haptics can be configured from the same screen.");
+
+        createDropdownRow(peripheralSection,
+                          "Haptics GPIO",
+                          kJoypadPeripheralGpioOptionsText,
+                          onDropdownJoypadLocalHapticGpioValueChangeEventCallback,
+                          &_joypadLocalHapticGpioDropdown);
+
+        createDropdownRow(peripheralSection,
+                  "Haptics Strength",
+                  kJoypadHapticLevelOptionsText,
+                  onDropdownJoypadLocalHapticLevelValueChangeEventCallback,
+                  &_joypadLocalHapticLevelDropdown);
+
+        lv_obj_t *neopixelPowerRow = createJoypadSettingsToggleRow(peripheralSection, "Neopixel Power");
+        _joypadLocalNeopixelPowerSwitch = lv_switch_create(neopixelPowerRow);
+        lv_obj_align(_joypadLocalNeopixelPowerSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+        lv_obj_add_event_cb(_joypadLocalNeopixelPowerSwitch,
+                            onSwitchPanelScreenSettingNeopixelPowerValueChangeEventCallback,
+                            LV_EVENT_VALUE_CHANGED,
+                            this);
+
+        createDropdownRow(peripheralSection,
+                          "Neopixel GPIO",
+                          kJoypadPeripheralGpioOptionsText,
+                          onDropdownPanelScreenSettingNeopixelGpioValueChangeEventCallback,
+                          &_joypadLocalNeopixelGpioDropdown);
+        createDropdownRow(peripheralSection,
+                          "Neopixel Palette",
+                          kJoypadNeopixelPaletteOptionsText,
+                          onDropdownPanelScreenSettingNeopixelPaletteValueChangeEventCallback,
+                          &_joypadLocalNeopixelPaletteDropdown);
+        createDropdownRow(peripheralSection,
+                          "Neopixel Effect",
+                          kJoypadNeopixelEffectOptionsText,
+                          onDropdownPanelScreenSettingNeopixelEffectValueChangeEventCallback,
+                          &_joypadLocalNeopixelEffectDropdown);
+        createSliderRow(peripheralSection,
+                        "Neopixel Brightness",
+                        0,
+                        255,
+                        onSliderPanelScreenSettingNeopixelBrightnessValueChangeEventCallback,
+                        &_joypadLocalNeopixelBrightnessSlider);
+
+        _joypadLocalNeopixelInfoLabel = lv_label_create(peripheralSection);
+        lv_obj_set_width(_joypadLocalNeopixelInfoLabel, lv_pct(100));
+        lv_label_set_long_mode(_joypadLocalNeopixelInfoLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(_joypadLocalNeopixelInfoLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(_joypadLocalNeopixelInfoLabel, lv_color_hex(0x475569), 0);
 
         _joypadInfoLabel = lv_label_create(joypadPanel);
         lv_obj_set_width(_joypadInfoLabel, lv_pct(100));
@@ -1731,6 +2054,8 @@ void AppSettings::refreshJoypadUi(void)
 
     jc4880_joypad_ble_report_state_t report = {};
     jc4880_joypad_get_ble_report_state(&report);
+    jc4880_joypad_manual_report_state_t manual_report = {};
+    jc4880_joypad_get_manual_report_state(&manual_report);
 
     if (lv_obj_ready(_joypadManualModeDropdown)) {
         lv_dropdown_set_selected(_joypadManualModeDropdown,
@@ -1857,6 +2182,53 @@ void AppSettings::refreshJoypadUi(void)
         }
     }
 
+    if (lv_obj_ready(_joypadLocalHapticGpioDropdown)) {
+        lv_dropdown_set_selected(_joypadLocalHapticGpioDropdown,
+                                 findDropdownIndexForValue(kJoypadPeripheralGpioOptions,
+                                                           sizeof(kJoypadPeripheralGpioOptions) / sizeof(kJoypadPeripheralGpioOptions[0]),
+                                                           _nvs_param_map[kNvsKeyAudioHapticGpio]));
+    }
+
+    if (lv_obj_ready(_joypadLocalHapticLevelDropdown)) {
+        lv_dropdown_set_selected(_joypadLocalHapticLevelDropdown,
+                                 findDropdownIndexForValue(kJoypadHapticLevelOptions,
+                                                           sizeof(kJoypadHapticLevelOptions) / sizeof(kJoypadHapticLevelOptions[0]),
+                                                           _nvs_param_map[kNvsKeyAudioHapticLevel]));
+    }
+
+    if (lv_obj_ready(_joypadLocalNeopixelPowerSwitch)) {
+        if (_nvs_param_map[kNvsKeyNeopixelPower] != 0) {
+            lv_obj_add_state(_joypadLocalNeopixelPowerSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_joypadLocalNeopixelPowerSwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (lv_obj_ready(_joypadLocalNeopixelGpioDropdown)) {
+        lv_dropdown_set_selected(_joypadLocalNeopixelGpioDropdown,
+                                 findDropdownIndexForValue(kJoypadPeripheralGpioOptions,
+                                                           sizeof(kJoypadPeripheralGpioOptions) / sizeof(kJoypadPeripheralGpioOptions[0]),
+                                                           _nvs_param_map[kNvsKeyNeopixelGpio]));
+    }
+
+    if (lv_obj_ready(_joypadLocalNeopixelPaletteDropdown)) {
+        lv_dropdown_set_selected(_joypadLocalNeopixelPaletteDropdown,
+                                 findDropdownIndexForValue(kJoypadNeopixelPaletteOptions,
+                                                           sizeof(kJoypadNeopixelPaletteOptions) / sizeof(kJoypadNeopixelPaletteOptions[0]),
+                                                           _nvs_param_map[kNvsKeyNeopixelPalette]));
+    }
+
+    if (lv_obj_ready(_joypadLocalNeopixelEffectDropdown)) {
+        lv_dropdown_set_selected(_joypadLocalNeopixelEffectDropdown,
+                                 findDropdownIndexForValue(kJoypadNeopixelEffectOptions,
+                                                           sizeof(kJoypadNeopixelEffectOptions) / sizeof(kJoypadNeopixelEffectOptions[0]),
+                                                           _nvs_param_map[kNvsKeyNeopixelEffect]));
+    }
+
+    if (lv_obj_ready(_joypadLocalNeopixelBrightnessSlider)) {
+        lv_slider_set_value(_joypadLocalNeopixelBrightnessSlider, _nvs_param_map[kNvsKeyNeopixelBrightness], LV_ANIM_OFF);
+    }
+
     const bool spi_mode = config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_SPI;
     const bool resistive_mode = config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_RESISTIVE;
     const bool mcp_mode = config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_MCP23017;
@@ -1874,11 +2246,26 @@ void AppSettings::refreshJoypadUi(void)
             lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
         }
     };
+    auto setRowLabel = [](lv_obj_t *control, const char *text) {
+        if (!lv_obj_ready(control)) {
+            return;
+        }
+        lv_obj_t *row = lv_obj_get_parent(control);
+        if (!lv_obj_ready(row) || (lv_obj_get_child_cnt(row) == 0)) {
+            return;
+        }
+        lv_obj_t *label = lv_obj_get_child(row, 0);
+        if (lv_obj_ready(label)) {
+            lv_label_set_text(label, text);
+        }
+    };
     for (lv_obj_t *dropdown : _joypadManualSpiDropdowns) {
         setRowHidden(dropdown, !spi_mode);
     }
-    for (lv_obj_t *dropdown : _joypadManualResistiveDropdowns) {
-        setRowHidden(dropdown, !resistive_mode);
+    for (size_t index = 0; index < _joypadManualResistiveDropdowns.size(); ++index) {
+        lv_obj_t *dropdown = _joypadManualResistiveDropdowns[index];
+        setRowLabel(dropdown, mcp_mode ? kJoypadAxisLabels[index] : kJoypadResistiveLabels[index]);
+        setRowHidden(dropdown, !(resistive_mode || mcp_mode));
     }
     for (lv_obj_t *dropdown : _joypadManualResistiveButtonDropdowns) {
         setRowHidden(dropdown, !resistive_mode);
@@ -1886,8 +2273,8 @@ void AppSettings::refreshJoypadUi(void)
     for (lv_obj_t *dropdown : _joypadManualMcpDropdowns) {
         setRowHidden(dropdown, !mcp_mode);
     }
-    for (lv_obj_t *dropdown : _joypadManualMcpButtonDropdowns) {
-        setRowHidden(dropdown, !mcp_mode);
+    for (size_t index = 0; index < _joypadManualMcpButtonDropdowns.size(); ++index) {
+        setRowHidden(_joypadManualMcpButtonDropdowns[index], !mcp_mode || (index < 4));
     }
 
     if (lv_obj_ready(_joypadBleStatusLabel)) {
@@ -1928,6 +2315,27 @@ void AppSettings::refreshJoypadUi(void)
 
     refreshJoypadCalibrationUi(report);
 
+    const auto localPreviewAxis = [](uint16_t raw_value) {
+        const int32_t centered = static_cast<int32_t>(raw_value) - 2048;
+        return static_cast<int16_t>(std::max<int32_t>(-512, std::min<int32_t>(512, centered / 4)));
+    };
+    const bool localAnalogActive = (manual_report.active != 0) &&
+                                   (manual_report.manual_mode == JC4880_JOYPAD_MANUAL_MODE_MCP23017);
+    const int16_t localAxisX = localAnalogActive ? localPreviewAxis(manual_report.axis_x_raw) : 0;
+    const int16_t localAxisY = localAnalogActive ? localPreviewAxis(manual_report.axis_y_raw) : 0;
+    updateJoypadPreviewStickKnob(_joypadLocalStickBases[0], _joypadLocalStickKnobs[0], localAxisX, localAxisY);
+    setJoypadPreviewActivity(_joypadLocalStickBases[0], (localAxisX != 0) || (localAxisY != 0), lv_color_hex(0x0284C7));
+
+    setJoypadPreviewActivity(_joypadLocalTriggerBars[0], (manual_report.action_mask & JC4880_JOYPAD_ACTION_SAVE) != 0, lv_color_hex(0x0F766E));
+    setJoypadPreviewActivity(_joypadLocalTriggerBars[1], (manual_report.action_mask & JC4880_JOYPAD_ACTION_LOAD) != 0, lv_color_hex(0x0F766E));
+    setJoypadPreviewActivity(_joypadLocalShoulderIndicators[0], (manual_report.gameplay_mask & JC4880_JOYPAD_MASK_START) != 0, lv_color_hex(0x2563EB));
+    setJoypadPreviewActivity(_joypadLocalShoulderIndicators[1], (manual_report.action_mask & JC4880_JOYPAD_ACTION_EXIT) != 0, lv_color_hex(0x2563EB));
+
+    setJoypadPreviewActivity(_joypadLocalFaceIndicators[0], (manual_report.gameplay_mask & JC4880_JOYPAD_MASK_BUTTON_Y) != 0, lv_color_hex(0x3B82F6));
+    setJoypadPreviewActivity(_joypadLocalFaceIndicators[1], (manual_report.gameplay_mask & JC4880_JOYPAD_MASK_BUTTON_C) != 0, lv_color_hex(0xF59E0B));
+    setJoypadPreviewActivity(_joypadLocalFaceIndicators[2], (manual_report.gameplay_mask & JC4880_JOYPAD_MASK_BUTTON_B) != 0, lv_color_hex(0xEF4444));
+    setJoypadPreviewActivity(_joypadLocalFaceIndicators[3], (manual_report.gameplay_mask & JC4880_JOYPAD_MASK_BUTTON_A) != 0, lv_color_hex(0x22C55E));
+
     if (lv_obj_ready(_joypadInfoLabel)) {
         std::string info = (config.backend == JC4880_JOYPAD_BACKEND_MANUAL)
                                ? std::string("Local controller is the active Sega input source.\n")
@@ -1937,46 +2345,32 @@ void AppSettings::refreshJoypadUi(void)
         } else if (config.manual_mode == JC4880_JOYPAD_MANUAL_MODE_RESISTIVE) {
             info += "Mode: Resistive Keyboard reads GPIO 50/51 ladder inputs and matches configured resistor assignments using the built-in 10 kohm pull-up model.\n";
         } else {
-            info += "Mode: MCP23017 reads configured expander pins over the selected SDA/SCL wiring. Buttons are treated as active-low inputs with pull-ups enabled.\n";
+            info += "Mode: MCP23017 scans addresses 0x20-0x27 on the selected SDA/SCL wiring, reads Y/X axis potentiometers from the configured P4 GPIOs, and treats configured MCP pins as active-low button inputs with pull-ups enabled.\n";
         }
         info += "Swipe back when you finish configuring local controls.";
         lv_label_set_text(_joypadInfoLabel, info.c_str());
+    }
+
+    if (lv_obj_ready(_joypadLocalNeopixelInfoLabel)) {
+        std::string info = std::string("Neopixel GPIO: ") + std::to_string(_nvs_param_map[kNvsKeyNeopixelGpio]);
+        info += " | Brightness: " + std::to_string(_nvs_param_map[kNvsKeyNeopixelBrightness]);
+        info += (_nvs_param_map[kNvsKeyNeopixelPower] != 0) ? " | Power: On" : " | Power: Off";
+        info += "\nHaptics GPIO: ";
+        if (_nvs_param_map[kNvsKeyAudioHapticGpio] < 0) {
+            info += "Disabled";
+        } else {
+            info += std::to_string(_nvs_param_map[kNvsKeyAudioHapticGpio]);
+        }
+        static constexpr const char *kHapticLevelNames[] = {"None", "Low", "Medium", "High"};
+        const int32_t haptic_level = std::max<int32_t>(0, std::min<int32_t>(3, _nvs_param_map[kNvsKeyAudioHapticLevel]));
+        info += " | Haptics Strength: ";
+        info += kHapticLevelNames[haptic_level];
+        lv_label_set_text(_joypadLocalNeopixelInfoLabel, info.c_str());
     }
 }
 
 void AppSettings::refreshJoypadCalibrationUi(const jc4880_joypad_ble_report_state_t &report)
 {
-    auto updateStickKnob = [](lv_obj_t *base, lv_obj_t *knob, int16_t axis_x, int16_t axis_y) {
-        if (!lv_obj_ready(base) || !lv_obj_ready(knob)) {
-            return;
-        }
-
-        const lv_coord_t base_width = lv_obj_get_width(base);
-        const lv_coord_t base_height = lv_obj_get_height(base);
-        const lv_coord_t knob_width = lv_obj_get_width(knob);
-        const lv_coord_t knob_height = lv_obj_get_height(knob);
-        const int16_t normalized_axis_x = applyJoypadPreviewDeadzone(normalizeJoypadPreviewAxis(axis_x));
-        const int16_t normalized_axis_y = applyJoypadPreviewDeadzone(normalizeJoypadPreviewAxis(axis_y));
-        const float travel_radius_x = static_cast<float>(base_width - knob_width) * 0.5f;
-        const float travel_radius_y = static_cast<float>(base_height - knob_height) * 0.5f;
-        float offset_x = (static_cast<float>(normalized_axis_x) / 512.0f) * travel_radius_x;
-        float offset_y = (static_cast<float>(normalized_axis_y) / 512.0f) * travel_radius_y;
-
-        const float center_x = (static_cast<float>(base_width) - static_cast<float>(knob_width)) * 0.5f;
-        const float center_y = (static_cast<float>(base_height) - static_cast<float>(knob_height)) * 0.5f;
-        const float center_offset_x = static_cast<float>(knob_width);
-        const float center_offset_y = static_cast<float>(knob_height);
-        const lv_coord_t knob_x = static_cast<lv_coord_t>(std::lround((center_x + offset_x) - center_offset_x));
-        const lv_coord_t knob_y = static_cast<lv_coord_t>(std::lround((center_y + offset_y) - center_offset_y));
-        const lv_coord_t min_knob_x = static_cast<lv_coord_t>(-std::lround(center_offset_x));
-        const lv_coord_t max_knob_x = static_cast<lv_coord_t>(std::lround(static_cast<float>(base_width - knob_width) - center_offset_x));
-        const lv_coord_t min_knob_y = static_cast<lv_coord_t>(-std::lround(center_offset_y));
-        const lv_coord_t max_knob_y = static_cast<lv_coord_t>(std::lround(static_cast<float>(base_height - knob_height) - center_offset_y));
-        lv_obj_set_pos(knob,
-                   std::max<lv_coord_t>(min_knob_x, std::min<lv_coord_t>(max_knob_x, knob_x)),
-                   std::max<lv_coord_t>(min_knob_y, std::min<lv_coord_t>(max_knob_y, knob_y)));
-    };
-
     if ((report.connected == 0) || (report.device_addr[0] == '\0')) {
         _joypadBlePreviewCenterValid = false;
         _joypadBlePreviewDeviceAddr.fill('\0');
@@ -2009,8 +2403,8 @@ void AppSettings::refreshJoypadCalibrationUi(const jc4880_joypad_ble_report_stat
     setJoypadPreviewActivity(_joypadBleShoulderIndicators[0], (report.raw_mask & JC4880_JOYPAD_MASK_SHOULDER_L) != 0, lv_color_hex(0x2563EB));
     setJoypadPreviewActivity(_joypadBleShoulderIndicators[1], (report.raw_mask & JC4880_JOYPAD_MASK_SHOULDER_R) != 0, lv_color_hex(0x2563EB));
 
-    updateStickKnob(_joypadBleStickBases[0], _joypadBleStickKnobs[0], display_axis_x, display_axis_y);
-    updateStickKnob(_joypadBleStickBases[1], _joypadBleStickKnobs[1], display_axis_rx, display_axis_ry);
+    updateJoypadPreviewStickKnob(_joypadBleStickBases[0], _joypadBleStickKnobs[0], display_axis_x, display_axis_y);
+    updateJoypadPreviewStickKnob(_joypadBleStickBases[1], _joypadBleStickKnobs[1], display_axis_rx, display_axis_ry);
     setJoypadPreviewActivity(_joypadBleStickBases[0], (display_axis_x != 0) || (display_axis_y != 0), lv_color_hex(0x0284C7));
     setJoypadPreviewActivity(_joypadBleStickBases[1], (display_axis_rx != 0) || (display_axis_ry != 0), lv_color_hex(0x0284C7));
 
@@ -2080,6 +2474,7 @@ bool AppSettings::persistJoypadConfigFromUi(void)
         config.manual_mode = static_cast<uint8_t>(getDropdownValueForIndex(kJoypadManualModeOptions,
                                                                            sizeof(kJoypadManualModeOptions) / sizeof(kJoypadManualModeOptions[0]),
                                                                            lv_dropdown_get_selected(_joypadManualModeDropdown)));
+        applyRequestedLocalDefaults(config);
     }
 
     config.ble_enabled = (lv_obj_ready(_joypadBleEnableSwitch) && lv_obj_has_state(_joypadBleEnableSwitch, LV_STATE_CHECKED)) ? 1 : 0;

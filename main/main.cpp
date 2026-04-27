@@ -58,14 +58,19 @@ static constexpr const char *kNvsKeyOtaPendingShow = "ota_show";
 static constexpr const char *kNvsKeyAudioVolume = "volume";
 static constexpr const char *kNvsKeySystemAudioVolume = "sys_volume";
 static constexpr const char *kNvsKeyTapSound = "tap_sound";
+static constexpr const char *kNvsKeyHapticGpio = "haptic_gpio";
+static constexpr const char *kNvsKeyHapticLevel = "haptic_lvl";
 static constexpr const char *kCrashReportLocalPath = BSP_SPIFFS_MOUNT_POINT "/last_crash_report.txt";
 static constexpr const char *kCrashReportPendingPath = BSP_SPIFFS_MOUNT_POINT "/pending_crash_report.txt";
 static constexpr const char *kCrashReportUploadUrl = "";
 static constexpr TickType_t kCrashReportUploadDelay = pdMS_TO_TICKS(15000);
 static constexpr const char *kSegaEmulatorAppName = "SEGA Emulator";
 static constexpr uint32_t kTapSoundDebounceMs = 80;
-static constexpr gpio_num_t kHapticFeedbackGpio = GPIO_NUM_34;
-static constexpr uint32_t kHapticPulseUs = 20000;
+static constexpr gpio_num_t kDefaultHapticFeedbackGpio = GPIO_NUM_49;
+static constexpr int32_t kDefaultHapticFeedbackLevel = 2;
+static constexpr uint32_t kHapticPulseUsLow = 10000;
+static constexpr uint32_t kHapticPulseUsMedium = 20000;
+static constexpr uint32_t kHapticPulseUsHigh = 35000;
 
 struct PendingReleaseNotesContext {
     std::string version;
@@ -99,6 +104,8 @@ static InternetRadio *s_internetRadioApp = nullptr;
 static bool s_crashReportUploadInFlight = false;
 static bool s_tapSoundEnabled = true;
 static bool s_hapticFeedbackEnabled = true;
+static gpio_num_t s_hapticFeedbackGpio = kDefaultHapticFeedbackGpio;
+static int32_t s_hapticFeedbackLevel = kDefaultHapticFeedbackLevel;
 static uint32_t s_lastTapSoundTick = 0;
 static ESP_Brookesia_Phone *s_phone = nullptr;
 static std::vector<std::unique_ptr<lv_indev_drv_t>> s_tapSoundDriverCopies;
@@ -131,15 +138,53 @@ extern "C" bool jc_ui_haptic_feedback_is_enabled(void)
 extern "C" void jc_ui_haptic_feedback_set_enabled(bool enabled)
 {
     s_hapticFeedbackEnabled = enabled;
-    if (!enabled) {
-        gpio_set_level(kHapticFeedbackGpio, 0);
+    if (!enabled && (s_hapticFeedbackGpio != GPIO_NUM_NC)) {
+        gpio_set_level(s_hapticFeedbackGpio, 0);
+    }
+}
+
+extern "C" void jc_ui_haptic_feedback_set_gpio(int gpio)
+{
+    gpio_num_t next_gpio = (gpio < 0) ? GPIO_NUM_NC : static_cast<gpio_num_t>(gpio);
+
+    if (s_hapticFeedbackGpio != GPIO_NUM_NC) {
+        gpio_set_level(s_hapticFeedbackGpio, 0);
+        gpio_reset_pin(s_hapticFeedbackGpio);
+    }
+
+    s_hapticFeedbackGpio = next_gpio;
+    if (s_hapticFeedbackGpio == GPIO_NUM_NC) {
+        return;
+    }
+
+    gpio_config_t config = {};
+    config.pin_bit_mask = 1ULL << s_hapticFeedbackGpio;
+    config.mode = GPIO_MODE_OUTPUT;
+    config.pull_up_en = GPIO_PULLUP_DISABLE;
+    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    config.intr_type = GPIO_INTR_DISABLE;
+    if (gpio_config(&config) != ESP_OK) {
+        s_hapticFeedbackGpio = GPIO_NUM_NC;
+        return;
+    }
+
+    gpio_set_level(s_hapticFeedbackGpio, 0);
+}
+
+extern "C" void jc_ui_haptic_feedback_set_level(int level)
+{
+    s_hapticFeedbackLevel = std::max<int32_t>(0, std::min<int32_t>(3, level));
+    if (s_hapticFeedbackLevel == 0 && (s_hapticFeedbackGpio != GPIO_NUM_NC)) {
+        gpio_set_level(s_hapticFeedbackGpio, 0);
     }
 }
 
 static void on_haptic_pulse_timer(void *arg)
 {
     (void)arg;
-    gpio_set_level(kHapticFeedbackGpio, 0);
+    if (s_hapticFeedbackGpio != GPIO_NUM_NC) {
+        gpio_set_level(s_hapticFeedbackGpio, 0);
+    }
 }
 
 static bool init_ui_haptic_feedback_output(void)
@@ -149,16 +194,17 @@ static bool init_ui_haptic_feedback_output(void)
         return true;
     }
 
-    gpio_config_t config = {};
-    config.pin_bit_mask = 1ULL << kHapticFeedbackGpio;
-    config.mode = GPIO_MODE_OUTPUT;
-    config.pull_up_en = GPIO_PULLUP_DISABLE;
-    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    config.intr_type = GPIO_INTR_DISABLE;
-    if (gpio_config(&config) != ESP_OK) {
-        return false;
+    int32_t configured_gpio = static_cast<int32_t>(kDefaultHapticFeedbackGpio);
+    int32_t configured_level = kDefaultHapticFeedbackLevel;
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READONLY, &handle) == ESP_OK) {
+        (void)nvs_get_i32(handle, kNvsKeyHapticGpio, &configured_gpio);
+        (void)nvs_get_i32(handle, kNvsKeyHapticLevel, &configured_level);
+        nvs_close(handle);
     }
-    gpio_set_level(kHapticFeedbackGpio, 0);
+
+    jc_ui_haptic_feedback_set_gpio(configured_gpio);
+    jc_ui_haptic_feedback_set_level(configured_level);
 
     esp_timer_create_args_t timer_args = {};
     timer_args.callback = on_haptic_pulse_timer;
@@ -173,15 +219,30 @@ static bool init_ui_haptic_feedback_output(void)
 
 static void trigger_ui_haptic_feedback(void)
 {
-    if (!s_hapticFeedbackEnabled || (s_hapticPulseTimer == nullptr)) {
+    if (!s_hapticFeedbackEnabled ||
+        (s_hapticFeedbackLevel == 0) ||
+        (s_hapticPulseTimer == nullptr) ||
+        (s_hapticFeedbackGpio == GPIO_NUM_NC)) {
         return;
     }
 
-    esp_timer_stop(s_hapticPulseTimer);
-    gpio_set_level(kHapticFeedbackGpio, 1);
-    if (esp_timer_start_once(s_hapticPulseTimer, kHapticPulseUs) != ESP_OK) {
-        gpio_set_level(kHapticFeedbackGpio, 0);
+    uint32_t pulse_us = kHapticPulseUsMedium;
+    if (s_hapticFeedbackLevel == 1) {
+        pulse_us = kHapticPulseUsLow;
+    } else if (s_hapticFeedbackLevel >= 3) {
+        pulse_us = kHapticPulseUsHigh;
     }
+
+    esp_timer_stop(s_hapticPulseTimer);
+    gpio_set_level(s_hapticFeedbackGpio, 1);
+    if (esp_timer_start_once(s_hapticPulseTimer, pulse_us) != ESP_OK) {
+        gpio_set_level(s_hapticFeedbackGpio, 0);
+    }
+}
+
+extern "C" void jc_ui_haptic_feedback_test(void)
+{
+    trigger_ui_haptic_feedback();
 }
 
 static void initialize_power_management(void)

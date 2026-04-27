@@ -108,6 +108,7 @@ typedef enum {
     JC4880_JOYPAD_SPI_CONTROL_BUTTON_A,
     JC4880_JOYPAD_SPI_CONTROL_BUTTON_B,
     JC4880_JOYPAD_SPI_CONTROL_BUTTON_C,
+    JC4880_JOYPAD_SPI_CONTROL_BUTTON_Y,
     JC4880_JOYPAD_SPI_CONTROL_COUNT,
 } jc4880_joypad_spi_control_t;
 
@@ -119,6 +120,7 @@ typedef enum {
     JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_A,
     JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_B,
     JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_C,
+    JC4880_JOYPAD_BUTTON_CONTROL_BUTTON_Y,
     JC4880_JOYPAD_BUTTON_CONTROL_COUNT,
 } jc4880_joypad_button_control_t;
 
@@ -132,7 +134,7 @@ typedef struct {
     int8_t manual_resistive_gpio[2];
     int8_t manual_resistive_button_binding[JC4880_JOYPAD_BUTTON_CONTROL_COUNT];
     int8_t manual_mcp_i2c_gpio[2];
-    int8_t manual_mcp_button_pin[JC4880_JOYPAD_BUTTON_CONTROL_COUNT];
+    int8_t manual_mcp_button_pin[JC4880_JOYPAD_SPI_CONTROL_COUNT];
     char ble_device_addr[18];
 } jc4880_joypad_config_t;
 
@@ -159,6 +161,15 @@ typedef struct {
 } jc4880_joypad_ble_report_state_t;
 
 typedef struct {
+    uint8_t active;
+    uint8_t manual_mode;
+    uint16_t axis_y_raw;
+    uint16_t axis_x_raw;
+    uint32_t gameplay_mask;
+    uint32_t action_mask;
+} jc4880_joypad_manual_report_state_t;
+
+typedef struct {
     uint8_t valid;
     uint8_t reserved[3];
     uint32_t last_used_counter;
@@ -179,6 +190,7 @@ bool jc4880_joypad_set_config(const jc4880_joypad_config_t *config);
 void jc4880_joypad_register_config_changed_callback(jc4880_joypad_config_changed_callback_t callback, void *context);
 bool jc4880_joypad_get_ble_status(bool *connected, char *device_name, size_t device_name_size);
 bool jc4880_joypad_get_ble_report_state(jc4880_joypad_ble_report_state_t *out_report);
+bool jc4880_joypad_get_manual_report_state(jc4880_joypad_manual_report_state_t *out_report);
 bool jc4880_joypad_begin_ble_calibration(void);
 bool jc4880_joypad_finish_ble_calibration(void);
 void jc4880_joypad_cancel_ble_calibration(void);

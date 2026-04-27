@@ -58,6 +58,7 @@
 #include "joypad_runtime.h"
 #include "joypad_transport.h"
 #include "lvgl_input_helper.h"
+#include "neopixel_runtime.h"
 #include "storage_access.h"
 #include "system_ui_service.h"
 
@@ -103,6 +104,8 @@
 
 #define SCREEN_BRIGHTNESS_MIN           (20)
 #define SCREEN_BRIGHTNESS_MAX           (BSP_LCD_BACKLIGHT_BRIGHTNESS_MAX)
+#define NEOPIXEL_BRIGHTNESS_MIN         (0)
+#define NEOPIXEL_BRIGHTNESS_MAX         (100)
 
 #define SPEAKER_VOLUME_MIN              (0)
 #define SPEAKER_VOLUME_MAX              (100)
@@ -118,7 +121,14 @@
 #define NVS_KEY_SYSTEM_AUDIO_VOLUME     "sys_volume"
 #define NVS_KEY_AUDIO_TAP_SOUND         "tap_sound"
 #define NVS_KEY_AUDIO_HAPTIC_FEEDBACK   "haptic_fb"
+#define NVS_KEY_AUDIO_HAPTIC_GPIO       "haptic_gpio"
+#define NVS_KEY_AUDIO_HAPTIC_LEVEL      "haptic_lvl"
 #define NVS_KEY_DISPLAY_BRIGHTNESS      "brightness"
+#define NVS_KEY_NEOPIXEL_POWER          "neo_en"
+#define NVS_KEY_NEOPIXEL_GPIO           "neo_gpio"
+#define NVS_KEY_NEOPIXEL_BRIGHTNESS     "neo_bri"
+#define NVS_KEY_NEOPIXEL_PALETTE        "neo_pal"
+#define NVS_KEY_NEOPIXEL_EFFECT         "neo_fx"
 #define NVS_KEY_DISPLAY_ADAPTIVE        "disp_adapt"
 #define NVS_KEY_DISPLAY_SCREENSAVER     "disp_saver"
 #define NVS_KEY_DISPLAY_TIMEOFF         "disp_off_sec"
@@ -139,6 +149,11 @@
 
 extern "C" void jc_ui_tap_sound_set_enabled(bool enabled);
 extern "C" void jc_ui_haptic_feedback_set_enabled(bool enabled);
+extern "C" void jc_ui_haptic_feedback_set_gpio(int gpio);
+extern "C" void jc_ui_haptic_feedback_set_level(int level);
+extern "C" void jc_ui_haptic_feedback_test(void);
+
+static constexpr int32_t kHapticLevelOptions[] = {0, 1, 2, 3};
  
 #define EXAMPLE_ADC2_CHAN0          ADC_CHANNEL_4
 static int adc_raw[2][10];
@@ -1007,6 +1022,19 @@ static uint8_t base_mac_addr[6] = {0};
 static char mac_str[18] = {0};
 
 static int brightness;
+static constexpr int32_t kNeopixelGpioOptions[] = {-1, 28, 29, 30, 31, 32, 33, 34, 35, 49, 50, 51, 52};
+static constexpr char kNeopixelGpioOptionsText[] = "Disabled\nGPIO 28\nGPIO 29\nGPIO 30\nGPIO 31\nGPIO 32\nGPIO 33\nGPIO 34\nGPIO 35\nGPIO 49\nGPIO 50\nGPIO 51\nGPIO 52";
+static constexpr int32_t kNeopixelPaletteOptions[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+static constexpr char kNeopixelPaletteOptionsText[] = "Ruby\nAmber\nSunflower\nLime\nMint\nCyan\nAzure\nViolet\nPink\nWhite\nTangerine\nAqua";
+static constexpr int32_t kNeopixelEffectOptions[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
+static constexpr char kNeopixelEffectOptionsText[] = "Solid\nBlink\nBreath\nColor Wipe\nTheater Chase\nRainbow Cycle\nScanner\nTwinkle\nTwinkle Fade\nMeteor\nPulse Wave\nDual Spin\nSparkle\nBounce\nFirefly\nComet Tail\nCandy Cane\nPolice\nSunset Drift\nAurora\nRipple";
+static constexpr const char *kNeopixelPaletteLabels[] = {
+    "Ruby", "Amber", "Sunflower", "Lime", "Mint", "Cyan", "Azure", "Violet", "Pink", "White", "Tangerine", "Aqua"
+};
+static constexpr const char *kNeopixelEffectLabels[] = {
+    "Solid", "Blink", "Breath", "Color Wipe", "Theater Chase", "Rainbow Cycle", "Scanner", "Twinkle", "Twinkle Fade", "Meteor",
+    "Pulse Wave", "Dual Spin", "Sparkle", "Bounce", "Firefly", "Comet Tail", "Candy Cane", "Police", "Sunset Drift", "Aurora", "Ripple"
+};
 
 static constexpr int32_t kDisplayTimeoffOptionsSec[] = {0, 15, 30, 60, 120, 300};
 static constexpr char kDisplayTimeoffOptionsText[] = "Off\n15 sec\n30 sec\n1 min\n2 min\n5 min";
@@ -1476,6 +1504,12 @@ AppSettings::AppSettings():
     _suppressDisconnectRecovery(false),
     _aboutWifiValueLabel(nullptr),
     _displayAdaptiveBrightnessSwitch(nullptr),
+    _displayNeopixelPowerSwitch(nullptr),
+    _displayNeopixelGpioDropdown(nullptr),
+    _displayNeopixelPaletteDropdown(nullptr),
+    _displayNeopixelEffectDropdown(nullptr),
+    _displayNeopixelBrightnessSlider(nullptr),
+    _displayNeopixelInfoLabel(nullptr),
     _displayScreensaverSwitch(nullptr),
     _displayTimeoffDropdown(nullptr),
     _displaySleepDropdown(nullptr),
@@ -1526,6 +1560,12 @@ AppSettings::AppSettings():
     _joypadBleStickKnobs{},
     _joypadBleDpadIndicators{},
     _joypadBleFaceIndicators{},
+    _joypadLocalTriggerBars{},
+    _joypadLocalShoulderIndicators{},
+    _joypadLocalStickBases{},
+    _joypadLocalStickKnobs{},
+    _joypadLocalDpadIndicators{},
+    _joypadLocalFaceIndicators{},
     _joypadBlePreviewCenterAxes{},
     _joypadBlePreviewDeviceAddr{},
     _joypadBlePreviewCenterValid(false),
@@ -1535,6 +1575,14 @@ AppSettings::AppSettings():
     _joypadManualResistiveButtonDropdowns{},
     _joypadManualMcpDropdowns{},
     _joypadManualMcpButtonDropdowns{},
+    _joypadLocalHapticGpioDropdown(nullptr),
+    _joypadLocalHapticLevelDropdown(nullptr),
+    _joypadLocalNeopixelPowerSwitch(nullptr),
+    _joypadLocalNeopixelGpioDropdown(nullptr),
+    _joypadLocalNeopixelPaletteDropdown(nullptr),
+    _joypadLocalNeopixelEffectDropdown(nullptr),
+    _joypadLocalNeopixelBrightnessSlider(nullptr),
+    _joypadLocalNeopixelInfoLabel(nullptr),
     _joypadBleDeviceOptions(),
     _zigbeeEnableSwitch(nullptr),
     _zigbeeNameTextArea(nullptr),
@@ -1671,8 +1719,15 @@ void AppSettings::initializeDefaultNvsParams(void)
     _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME] = max(min((int)_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], SPEAKER_VOLUME_MAX), SPEAKER_VOLUME_MIN);
     _nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] = 1;
     _nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] = 1;
+    _nvs_param_map[NVS_KEY_AUDIO_HAPTIC_GPIO] = 49;
+    _nvs_param_map[NVS_KEY_AUDIO_HAPTIC_LEVEL] = 2;
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = brightness;
     _nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = max(min((int)_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], SCREEN_BRIGHTNESS_MAX), SCREEN_BRIGHTNESS_MIN);
+    _nvs_param_map[NVS_KEY_NEOPIXEL_POWER] = 0;
+    _nvs_param_map[NVS_KEY_NEOPIXEL_GPIO] = 52;
+    _nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS] = 60;
+    _nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE] = 0;
+    _nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_SCREENSAVER] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF] = 0;
@@ -1764,6 +1819,8 @@ bool AppSettings::init(void)
     loadNvsParam();
     jc_ui_tap_sound_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] != 0);
     jc_ui_haptic_feedback_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] != 0);
+    jc_ui_haptic_feedback_set_gpio(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_GPIO]);
+    jc_ui_haptic_feedback_set_level(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_LEVEL]);
 #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU && APP_SETTINGS_FEATURE_LEGACY_BLUETOOTH_RUNTIME
     {
         char ble_name[32] = {0};
@@ -1801,6 +1858,7 @@ bool AppSettings::init(void)
     bsp_display_brightness_set(_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
     ESP_ERROR_CHECK(bsp_extra_display_idle_init());
     applyDisplayIdleSettings();
+    applyNeopixelConfig();
 #endif
 
     if (create_background_task_prefer_psram(euiRefresTask, "Home Refresh", HOME_REFRESH_TASK_STACK_SIZE,
@@ -2545,6 +2603,82 @@ void AppSettings::extraUiInit(void)
 
         return row;
     };
+
+    auto createDisplaySliderRow = [](lv_obj_t *parent, const char *title, lv_obj_t **out_slider, int32_t min_value, int32_t max_value) {
+        lv_obj_t *row = lv_obj_create(parent);
+        lv_obj_set_size(row, lv_pct(100), 72);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_style_radius(row, 18, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_pad_left(row, 18, 0);
+        lv_obj_set_style_pad_right(row, 18, 0);
+        lv_obj_set_style_pad_top(row, 10, 0);
+        lv_obj_set_style_pad_bottom(row, 10, 0);
+
+        lv_obj_t *label = lv_label_create(row);
+        lv_obj_set_width(label, 180);
+        lv_label_set_text(label, title);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x111827), 0);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
+
+        lv_obj_t *slider = lv_slider_create(row);
+        lv_slider_set_range(slider, min_value, max_value);
+        lv_obj_set_size(slider, 200, 14);
+        lv_obj_align(slider, LV_ALIGN_RIGHT_MID, 0, 0);
+        if (out_slider != nullptr) {
+            *out_slider = slider;
+        }
+
+        return row;
+    };
+
+    lv_obj_t *neoPowerRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Neopixel Power");
+    _displayNeopixelPowerSwitch = lv_switch_create(neoPowerRow);
+    lv_obj_align(_displayNeopixelPowerSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayNeopixelPowerSwitch, onSwitchPanelScreenSettingNeopixelPowerValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *neoGpioRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Neopixel GPIO");
+    _displayNeopixelGpioDropdown = lv_dropdown_create(neoGpioRow);
+    lv_dropdown_set_options_static(_displayNeopixelGpioDropdown, kNeopixelGpioOptionsText);
+    lv_obj_set_width(_displayNeopixelGpioDropdown, 140);
+    lv_obj_align(_displayNeopixelGpioDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayNeopixelGpioDropdown, onDropdownPanelScreenSettingNeopixelGpioValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    createDisplaySliderRow(ui_PanelScreenSettingLightList,
+                           "Neopixel Brightness",
+                           &_displayNeopixelBrightnessSlider,
+                           NEOPIXEL_BRIGHTNESS_MIN,
+                           NEOPIXEL_BRIGHTNESS_MAX);
+    lv_obj_add_event_cb(_displayNeopixelBrightnessSlider, onSliderPanelScreenSettingNeopixelBrightnessValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *neoPaletteRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Palette");
+    _displayNeopixelPaletteDropdown = lv_dropdown_create(neoPaletteRow);
+    lv_dropdown_set_options_static(_displayNeopixelPaletteDropdown, kNeopixelPaletteOptionsText);
+    lv_obj_set_width(_displayNeopixelPaletteDropdown, 148);
+    lv_obj_align(_displayNeopixelPaletteDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayNeopixelPaletteDropdown, onDropdownPanelScreenSettingNeopixelPaletteValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *neoEffectRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Animation");
+    _displayNeopixelEffectDropdown = lv_dropdown_create(neoEffectRow);
+    lv_dropdown_set_options_static(_displayNeopixelEffectDropdown, kNeopixelEffectOptionsText);
+    lv_obj_set_width(_displayNeopixelEffectDropdown, 168);
+    lv_obj_align(_displayNeopixelEffectDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayNeopixelEffectDropdown, onDropdownPanelScreenSettingNeopixelEffectValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    _displayNeopixelInfoLabel = lv_label_create(ui_PanelScreenSettingLightList);
+    lv_obj_set_width(_displayNeopixelInfoLabel, lv_pct(100));
+    lv_label_set_long_mode(_displayNeopixelInfoLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_displayNeopixelInfoLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_displayNeopixelInfoLabel, lv_color_hex(0x475569), 0);
 
     lv_obj_t *adaptiveRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Adaptive Brightness");
     _displayAdaptiveBrightnessSwitch = lv_switch_create(adaptiveRow);
@@ -3757,11 +3891,14 @@ bool AppSettings::factoryResetPreferences(void)
     ok &= loadNvsParam();
     jc_ui_tap_sound_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] != 0);
     jc_ui_haptic_feedback_set_enabled(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] != 0);
+    jc_ui_haptic_feedback_set_gpio(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_GPIO]);
+    jc_ui_haptic_feedback_set_level(_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_LEVEL]);
     applyManualTimezonePreference();
     bsp_extra_audio_media_volume_set(_nvs_param_map[NVS_KEY_AUDIO_VOLUME]);
     bsp_extra_audio_system_volume_set(_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME]);
     bsp_display_brightness_set(_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
     applyDisplayIdleSettings();
+    applyNeopixelConfig();
     updateUiByNvsParam();
     setFirmwareStatus("Factory reset complete. Saved preferences were cleared.");
 
@@ -3808,9 +3945,73 @@ void AppSettings::refreshDisplayIdleUi(void)
                                                            _nvs_param_map[NVS_KEY_DISPLAY_SLEEP]));
     }
 
+    if (lv_obj_ready(_displayNeopixelPowerSwitch)) {
+        if (_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0) {
+            lv_obj_add_state(_displayNeopixelPowerSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_displayNeopixelPowerSwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (lv_obj_ready(_displayNeopixelGpioDropdown)) {
+        lv_dropdown_set_selected(_displayNeopixelGpioDropdown,
+                                 findDropdownIndexForValue(kNeopixelGpioOptions,
+                                                           sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
+                                                           _nvs_param_map[NVS_KEY_NEOPIXEL_GPIO]));
+    }
+
+    if (lv_obj_ready(_displayNeopixelBrightnessSlider)) {
+        lv_slider_set_value(_displayNeopixelBrightnessSlider,
+                            std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS]), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MIN), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MAX)),
+                            LV_ANIM_OFF);
+    }
+
+    if (lv_obj_ready(_displayNeopixelPaletteDropdown)) {
+        lv_dropdown_set_selected(_displayNeopixelPaletteDropdown,
+                                 findDropdownIndexForValue(kNeopixelPaletteOptions,
+                                                           sizeof(kNeopixelPaletteOptions) / sizeof(kNeopixelPaletteOptions[0]),
+                                                           static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE])));
+    }
+
+    if (lv_obj_ready(_displayNeopixelEffectDropdown)) {
+        lv_dropdown_set_selected(_displayNeopixelEffectDropdown,
+                                 findDropdownIndexForValue(kNeopixelEffectOptions,
+                                                           sizeof(kNeopixelEffectOptions) / sizeof(kNeopixelEffectOptions[0]),
+                                                           static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT])));
+    }
+
+    if (lv_obj_ready(_displayNeopixelInfoLabel)) {
+        const int palette_index = std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE]), 0, 11);
+        const int effect_index = std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT]), 0, 20);
+        std::string label = (_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0) ? "WS2812 output is on. " : "WS2812 output is off. ";
+        if (_nvs_param_map[NVS_KEY_NEOPIXEL_GPIO] >= 0) {
+            label += "GPIO " + std::to_string(_nvs_param_map[NVS_KEY_NEOPIXEL_GPIO]) + ", ";
+        } else {
+            label += "No GPIO selected, ";
+        }
+        label += std::string("palette ") + kNeopixelPaletteLabels[palette_index] + ", ";
+        label += (_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT] == 0)
+                     ? std::string("solid color mode.")
+                     : (std::string("effect ") + kNeopixelEffectLabels[effect_index] + ".");
+        lv_label_set_text(_displayNeopixelInfoLabel, label.c_str());
+    }
+
     #if CONFIG_JC4880_FEATURE_TIME_SYNC
     refreshTimezoneUi();
     #endif
+}
+
+void AppSettings::applyNeopixelConfig(void)
+{
+#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
+    return;
+#else
+    jc4880_neopixel_apply_config(_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0,
+                                 _nvs_param_map[NVS_KEY_NEOPIXEL_GPIO],
+                                 std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS]), NEOPIXEL_BRIGHTNESS_MIN, NEOPIXEL_BRIGHTNESS_MAX),
+                                 std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE]), 0, 11),
+                                 std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT]), 0, 20));
+#endif
 }
 
 void AppSettings::refreshTimezoneUi(void)
@@ -5964,6 +6165,9 @@ void AppSettings::euiRefresTask(void *arg)
             } else if ((lv_scr_act() == app->_joypadScreen) ||
                        (lv_scr_act() == app->_joypadLocalScreen)) {
                 app->refreshJoypadUi();
+                if (lv_scr_act() == app->_joypadLocalScreen) {
+                    refresh_period_ms = JOYPAD_BLE_LIVE_REFRESH_MS;
+                }
             }
             bsp_display_unlock();
         }
@@ -6089,6 +6293,12 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     #if APP_SETTINGS_FEATURE_HARDWARE_MENU
     if (app->_screen_index == UI_HARDWARE_SETTING_INDEX) {
         app->refreshHardwareMonitorUi();
+    }
+    #endif
+
+    #if APP_SETTINGS_FEATURE_DISPLAY_MENU
+    if (app->_screen_index == UI_BRIGHTNESS_SETTING_INDEX) {
+        app->refreshDisplayIdleUi();
     }
     #endif
 
@@ -6744,10 +6954,12 @@ void AppSettings::onSwitchPanelScreenSettingHapticFeedbackValueChangeEventCallba
 {
     AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
     bool enabled = false;
+    lv_obj_t *target = nullptr;
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app->_audioHapticFeedbackSwitch, end, "Invalid haptic feedback switch");
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid haptic feedback switch");
 
-    enabled = (lv_obj_get_state(app->_audioHapticFeedbackSwitch) & LV_STATE_CHECKED) != 0;
+    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
     app->_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] = enabled ? 1 : 0;
     app->setNvsParam(NVS_KEY_AUDIO_HAPTIC_FEEDBACK, enabled ? 1 : 0);
     jc_ui_haptic_feedback_set_enabled(enabled);
@@ -6773,6 +6985,166 @@ void AppSettings::onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t *
         app->setNvsParam(NVS_KEY_DISPLAY_BRIGHTNESS, brightness);
         app->applyDisplayIdleSettings();
     }
+
+end:
+    return;
+}
+
+void AppSettings::onSwitchPanelScreenSettingNeopixelPowerValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    bool enabled = false;
+    lv_obj_t *target = nullptr;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel power switch");
+    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
+    app->_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] = enabled ? 1 : 0;
+    app->setNvsParam(NVS_KEY_NEOPIXEL_POWER, enabled ? 1 : 0);
+    app->applyNeopixelConfig();
+    app->refreshDisplayIdleUi();
+    app->refreshJoypadUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownPanelScreenSettingNeopixelGpioValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    uint16_t selected = 0;
+    int32_t value = -1;
+    lv_obj_t *target = nullptr;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel GPIO dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kNeopixelGpioOptions,
+                                     sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
+                                     selected);
+    app->_nvs_param_map[NVS_KEY_NEOPIXEL_GPIO] = value;
+    app->setNvsParam(NVS_KEY_NEOPIXEL_GPIO, value);
+    app->applyNeopixelConfig();
+    app->refreshDisplayIdleUi();
+    app->refreshJoypadUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownPanelScreenSettingNeopixelPaletteValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    uint16_t selected = 0;
+    int32_t value = 0;
+    lv_obj_t *target = nullptr;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel palette dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kNeopixelPaletteOptions,
+                                     sizeof(kNeopixelPaletteOptions) / sizeof(kNeopixelPaletteOptions[0]),
+                                     selected);
+    app->_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE] = value;
+    app->setNvsParam(NVS_KEY_NEOPIXEL_PALETTE, value);
+    app->applyNeopixelConfig();
+    app->refreshDisplayIdleUi();
+    app->refreshJoypadUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownPanelScreenSettingNeopixelEffectValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    uint16_t selected = 0;
+    int32_t value = 0;
+    lv_obj_t *target = nullptr;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel effect dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kNeopixelEffectOptions,
+                                     sizeof(kNeopixelEffectOptions) / sizeof(kNeopixelEffectOptions[0]),
+                                     selected);
+    app->_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT] = value;
+    app->setNvsParam(NVS_KEY_NEOPIXEL_EFFECT, value);
+    app->applyNeopixelConfig();
+    app->refreshDisplayIdleUi();
+    app->refreshJoypadUi();
+
+end:
+    return;
+}
+
+void AppSettings::onSliderPanelScreenSettingNeopixelBrightnessValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    int32_t brightness_value = 0;
+    lv_obj_t *target = nullptr;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel brightness slider");
+    brightness_value = lv_slider_get_value(target);
+    app->_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS] = brightness_value;
+    app->setNvsParam(NVS_KEY_NEOPIXEL_BRIGHTNESS, brightness_value);
+    app->applyNeopixelConfig();
+    app->refreshDisplayIdleUi();
+    app->refreshJoypadUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownJoypadLocalHapticGpioValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    uint16_t selected = 0;
+    int32_t value = -1;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid haptic GPIO dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kNeopixelGpioOptions,
+                                     sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
+                                     selected);
+    app->_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_GPIO] = value;
+    app->setNvsParam(NVS_KEY_AUDIO_HAPTIC_GPIO, value);
+    jc_ui_haptic_feedback_set_gpio(value);
+    jc_ui_haptic_feedback_test();
+    app->refreshJoypadUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownJoypadLocalHapticLevelValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    uint16_t selected = 0;
+    int32_t value = 0;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid haptic level dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kHapticLevelOptions,
+                                     sizeof(kHapticLevelOptions) / sizeof(kHapticLevelOptions[0]),
+                                     selected);
+    app->_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_LEVEL] = value;
+    app->setNvsParam(NVS_KEY_AUDIO_HAPTIC_LEVEL, value);
+    jc_ui_haptic_feedback_set_level(value);
+    jc_ui_haptic_feedback_test();
+    app->refreshJoypadUi();
 
 end:
     return;

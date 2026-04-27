@@ -3,6 +3,7 @@ set(APPS_SRCS ${APPS_DIR}/system_ui_service.cpp)
 list(APPEND APPS_SRCS ${APPS_DIR}/lvgl_input_helper.c)
 list(APPEND APPS_SRCS ${APPS_DIR}/joypad_runtime.cpp)
 list(APPEND APPS_SRCS ${APPS_DIR}/joypad_transport.cpp)
+list(APPEND APPS_SRCS ${APPS_DIR}/neopixel_runtime.cpp)
 
 list(APPEND APPS_SRCS ${APPS_DIR}/hardware_history_service.cpp)
 
@@ -67,7 +68,7 @@ idf_component_register(
                  ${APPS_DIR}/sega_emulator/gwenesis/src/savestate
                  ${APPS_DIR}/sega_emulator/gwenesis/src/sound
                  ${APPS_DIR}/sega_emulator/gwenesis/src/vdp
-    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client esp_http_server json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player app_update esp_partition esp-tls esp_hosted bt mdns driver main)
+    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client esp_http_server json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player app_update esp_partition esp-tls esp_hosted bt mdns driver led_strip main)
 
 target_compile_options(
     ${COMPONENT_LIB}

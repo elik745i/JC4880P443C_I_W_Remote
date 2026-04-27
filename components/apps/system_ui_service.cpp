@@ -6,6 +6,7 @@
 
 #include "battery_history_service.h"
 #include "hardware_history_service.h"
+#include "joypad_runtime.h"
 #include "joypad_transport.h"
 #include "setting/wifi/SettingWifiPrivate.hpp"
 #include "freertos/FreeRTOS.h"
@@ -168,6 +169,10 @@ bool initialize(ESP_Brookesia_Phone &phone)
     }
 
 #if CONFIG_JC4880_FEATURE_BATTERY
+    jc4880_joypad_config_t joypadConfig = {};
+    const bool local_controller_active = jc4880_joypad_get_config(&joypadConfig) &&
+                                         (joypadConfig.backend == JC4880_JOYPAD_BACKEND_MANUAL);
+    battery_history_service::set_adc_attached(!local_controller_active);
     battery_history_service::initialize();
 #endif
     hardware_history_service::initialize();

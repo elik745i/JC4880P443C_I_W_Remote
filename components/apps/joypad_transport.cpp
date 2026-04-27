@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "battery_history_service.h"
 #include "joypad_runtime.h"
 #include "jc4880_joypad_protocol.h"
 
@@ -108,8 +109,13 @@ void log_report_change(const jc4880_joypad_report_t &report)
 
 void on_joypad_config_changed(const jc4880_joypad_config_t *config, void *context)
 {
-    (void)config;
     (void)context;
+    if (config != nullptr) {
+        const bool local_controller_active = config->backend == JC4880_JOYPAD_BACKEND_MANUAL;
+        if (!battery_history_service::set_adc_attached(!local_controller_active)) {
+            ESP_LOGW(kTag, "Failed to switch battery ADC2 ownership for backend %u", static_cast<unsigned>(config->backend));
+        }
+    }
     ESP_LOGI(kTag, "Joypad config changed");
     s_configDirty.store(true);
 }

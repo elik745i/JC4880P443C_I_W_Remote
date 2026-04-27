@@ -236,6 +236,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 1.5.1
+  espressif/led_strip:
+    component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 3.0.3
   espressif/wifi_remote_over_eppp:
     component_hash: 06d8bc15348bbd21f1390daace36ed5adcf6026c93c5b69decc55fa04df2711a
     dependencies:
@@ -279,8 +289,9 @@ direct_dependencies:
 - espressif/esp_lcd_touch_gt911
 - espressif/esp_lvgl_port
 - espressif/esp_wifi_remote
+- espressif/led_strip
 - idf
 - lvgl/lvgl
-manifest_hash: 79534bd06935235cf11b4979f729d7e8bbd8357b5d957c05f0161b069f39787a
+manifest_hash: 128548ff2202870071d18f0d244fec4434f6617047278d351b6c680cae01dfbd
 target: esp32p4
 version: 2.0.0

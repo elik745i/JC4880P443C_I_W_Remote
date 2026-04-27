@@ -144,6 +144,7 @@ private:
     void refreshSavedWifiUi(void);
     void refreshAboutWifiUi(void);
     void refreshDisplayIdleUi(void);
+    void applyNeopixelConfig(void);
     void refreshTimezoneUi(void);
     void refreshBluetoothUi(void);
     void refreshJoypadUi(void);
@@ -298,8 +299,15 @@ private:
     static void onSliderPanelSystemVolumeValueChangeEventCallback(lv_event_t * e);
     static void onSwitchPanelScreenSettingTapSoundValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingHapticFeedbackValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownJoypadLocalHapticGpioValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownJoypadLocalHapticLevelValueChangeEventCallback(lv_event_t *e);
     // Brightness
     static void onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t * e);
+    static void onSwitchPanelScreenSettingNeopixelPowerValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingNeopixelGpioValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingNeopixelPaletteValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingNeopixelEffectValueChangeEventCallback(lv_event_t *e);
+    static void onSliderPanelScreenSettingNeopixelBrightnessValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingAdaptiveBrightnessValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingScreensaverValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingTimeoffIntervalValueChangeEventCallback(lv_event_t *e);
@@ -335,6 +343,12 @@ private:
     std::string _wifiScanUiStateKey;
     lv_obj_t *_aboutWifiValueLabel;
     lv_obj_t *_displayAdaptiveBrightnessSwitch;
+    lv_obj_t *_displayNeopixelPowerSwitch;
+    lv_obj_t *_displayNeopixelGpioDropdown;
+    lv_obj_t *_displayNeopixelPaletteDropdown;
+    lv_obj_t *_displayNeopixelEffectDropdown;
+    lv_obj_t *_displayNeopixelBrightnessSlider;
+    lv_obj_t *_displayNeopixelInfoLabel;
     lv_obj_t *_displayScreensaverSwitch;
     lv_obj_t *_displayTimeoffDropdown;
     lv_obj_t *_displaySleepDropdown;
@@ -385,6 +399,12 @@ private:
     std::array<lv_obj_t *, 2> _joypadBleStickKnobs;
     std::array<lv_obj_t *, 4> _joypadBleDpadIndicators;
     std::array<lv_obj_t *, 4> _joypadBleFaceIndicators;
+    std::array<lv_obj_t *, 2> _joypadLocalTriggerBars;
+    std::array<lv_obj_t *, 2> _joypadLocalShoulderIndicators;
+    std::array<lv_obj_t *, 2> _joypadLocalStickBases;
+    std::array<lv_obj_t *, 2> _joypadLocalStickKnobs;
+    std::array<lv_obj_t *, 4> _joypadLocalDpadIndicators;
+    std::array<lv_obj_t *, 4> _joypadLocalFaceIndicators;
     std::array<int16_t, 4> _joypadBlePreviewCenterAxes;
     std::array<char, 18> _joypadBlePreviewDeviceAddr;
     bool _joypadBlePreviewCenterValid;
@@ -393,7 +413,15 @@ private:
     std::array<lv_obj_t *, 2> _joypadManualResistiveDropdowns;
     std::array<lv_obj_t *, JC4880_JOYPAD_BUTTON_CONTROL_COUNT> _joypadManualResistiveButtonDropdowns;
     std::array<lv_obj_t *, 2> _joypadManualMcpDropdowns;
-    std::array<lv_obj_t *, JC4880_JOYPAD_BUTTON_CONTROL_COUNT> _joypadManualMcpButtonDropdowns;
+    std::array<lv_obj_t *, JC4880_JOYPAD_SPI_CONTROL_COUNT> _joypadManualMcpButtonDropdowns;
+    lv_obj_t *_joypadLocalHapticGpioDropdown;
+    lv_obj_t *_joypadLocalHapticLevelDropdown;
+    lv_obj_t *_joypadLocalNeopixelPowerSwitch;
+    lv_obj_t *_joypadLocalNeopixelGpioDropdown;
+    lv_obj_t *_joypadLocalNeopixelPaletteDropdown;
+    lv_obj_t *_joypadLocalNeopixelEffectDropdown;
+    lv_obj_t *_joypadLocalNeopixelBrightnessSlider;
+    lv_obj_t *_joypadLocalNeopixelInfoLabel;
     std::vector<std::string> _joypadBleDeviceOptions;
     lv_obj_t *_zigbeeEnableSwitch;
     lv_obj_t *_zigbeeNameTextArea;

@@ -26,6 +26,7 @@ static adc_battery_estimation_handle_t s_batteryEstimationHandle = nullptr;
 static battery_history_service::HistorySample *s_historySamples = nullptr;
 static SemaphoreHandle_t s_historyMutex = nullptr;
 static std::atomic<bool> s_initialized{false};
+static std::atomic<bool> s_adcAttached{true};
 static std::size_t s_historyCount = 0;
 static std::size_t s_historyHead = 0;
 static int64_t s_nextHistorySampleSec = 0;
@@ -90,6 +91,18 @@ static bool initialize_battery_estimation_handle(void)
     }
 
     return true;
+}
+
+static void destroy_battery_estimation_handle(void)
+{
+    if (s_batteryEstimationHandle == nullptr) {
+        return;
+    }
+
+    if (adc_battery_estimation_destroy(s_batteryEstimationHandle) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to destroy battery estimation handle cleanly");
+    }
+    s_batteryEstimationHandle = nullptr;
 }
 
 static std::size_t history_oldest_index_locked(void)
@@ -182,7 +195,17 @@ static int32_t calculate_eta_minutes_locked(bool charging, int current_capacity_
 
 static void sample_battery_state(bool store_history)
 {
-    if ((s_batteryEstimationHandle == nullptr) || (s_historyMutex == nullptr)) {
+    if (s_historyMutex == nullptr) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_historyMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return;
+    }
+
+    if (!s_adcAttached.load() || (s_batteryEstimationHandle == nullptr)) {
+        s_latestStatus.available = false;
+        xSemaphoreGive(s_historyMutex);
         return;
     }
 
@@ -190,15 +213,12 @@ static void sample_battery_state(bool store_history)
     bool charging = false;
     if ((adc_battery_estimation_get_capacity(s_batteryEstimationHandle, &capacity) != ESP_OK) ||
         (adc_battery_estimation_get_charging_state(s_batteryEstimationHandle, &charging) != ESP_OK)) {
+        xSemaphoreGive(s_historyMutex);
         return;
     }
 
     const int64_t now_sec = esp_timer_get_time() / 1000000LL;
     const int capacity_tenths = std::max(0, std::min(1000, static_cast<int>((capacity * 10.0f) + 0.5f)));
-
-    if (xSemaphoreTake(s_historyMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
-        return;
-    }
 
     if (store_history) {
         append_history_sample_locked(now_sec, static_cast<int16_t>(capacity_tenths), charging);
@@ -244,16 +264,16 @@ bool initialize()
         return true;
     }
 
-    if (!initialize_battery_estimation_handle()) {
-        return false;
-    }
-
     if (s_historyMutex == nullptr) {
         s_historyMutex = xSemaphoreCreateMutex();
         if (s_historyMutex == nullptr) {
             ESP_LOGE(TAG, "Failed to create battery history mutex");
             return false;
         }
+    }
+
+    if (s_adcAttached.load() && !initialize_battery_estimation_handle()) {
+        return false;
     }
 
     if (s_historySamples == nullptr) {
@@ -284,6 +304,37 @@ bool initialize()
 
     s_initialized.store(true);
     return true;
+#endif
+}
+
+bool set_adc_attached(bool attached)
+{
+#if !CONFIG_JC4880_FEATURE_BATTERY
+    (void)attached;
+    return false;
+#else
+    s_adcAttached.store(attached);
+
+    if (s_historyMutex == nullptr) {
+        return true;
+    }
+
+    if (xSemaphoreTake(s_historyMutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return false;
+    }
+
+    bool ok = true;
+    if (attached) {
+        ESP_LOGI(TAG, "ADC2 ownership -> Battery service");
+        ok = initialize_battery_estimation_handle();
+    } else {
+        ESP_LOGI(TAG, "ADC2 ownership -> Local Controller");
+        destroy_battery_estimation_handle();
+        s_latestStatus.available = false;
+    }
+
+    xSemaphoreGive(s_historyMutex);
+    return ok;
 #endif
 }
 

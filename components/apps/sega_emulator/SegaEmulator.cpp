@@ -2099,7 +2099,7 @@ void SegaEmulator::emulatorTask()
                 setPlayerStatus("Saving state...");
             }
             if (joypadActions & JC4880_JOYPAD_ACTION_LOAD) {
-                showLoadStatePicker();
+                requestLoadStatePicker();
             }
             if (joypadActions & JC4880_JOYPAD_ACTION_EXIT) {
                 _closingApp.store(false);
@@ -2344,7 +2344,7 @@ void SegaEmulator::emulatorTask()
             setPlayerStatus("Saving state...");
         }
         if (joypadActions & JC4880_JOYPAD_ACTION_LOAD) {
-            showLoadStatePicker();
+            requestLoadStatePicker();
         }
         if (joypadActions & JC4880_JOYPAD_ACTION_EXIT) {
             _closingApp.store(false);
@@ -2556,6 +2556,22 @@ void SegaEmulator::setPlayerLoadButtonEnabled(bool enabled)
     bsp_display_unlock();
 }
 
+void SegaEmulator::requestLoadStatePicker()
+{
+    if (_loadMenuActive.load() || _loadMenuQueued.exchange(true)) {
+        return;
+    }
+
+    bsp_display_lock(0);
+    const lv_res_t result = lv_async_call(showLoadStatePickerAsync, this);
+    bsp_display_unlock();
+
+    if (result != LV_RES_OK) {
+        _loadMenuQueued.store(false);
+        setPlayerStatus("Failed to open load menu.");
+    }
+}
+
 void SegaEmulator::releaseSaveSlotEntries(SegaVector<SaveSlotEntry> &entries)
 {
     for (SaveSlotEntry &entry : entries) {
@@ -2569,6 +2585,7 @@ void SegaEmulator::releaseSaveSlotEntries(SegaVector<SaveSlotEntry> &entries)
 
 void SegaEmulator::closeLoadStatePicker()
 {
+    _loadMenuQueued.store(false);
     _loadMenuActive.store(false);
 
     if ((_loadStateModal != nullptr) && lv_obj_is_valid(_loadStateModal)) {
@@ -2581,6 +2598,7 @@ void SegaEmulator::closeLoadStatePicker()
 
 void SegaEmulator::showLoadStatePicker()
 {
+    _loadMenuQueued.store(false);
     closeLoadStatePicker();
 
     const uint16_t rotationDegrees = getPlayerRotationDegrees();
@@ -2742,6 +2760,16 @@ void SegaEmulator::showLoadStatePicker()
     set_button_label(cancelButton, "Cancel");
 
     lv_obj_move_foreground(_loadStateModal);
+}
+
+void SegaEmulator::showLoadStatePickerAsync(void *context)
+{
+    auto *app = static_cast<SegaEmulator *>(context);
+    if (app == nullptr) {
+        return;
+    }
+
+    app->showLoadStatePicker();
 }
 
 void SegaEmulator::onLoadSlotSelected(lv_event_t *event)

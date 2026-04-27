@@ -148,6 +148,7 @@ private:
     static void finishEmulationAsync(void *context);
     static void indexingProgressAsync(void *context);
     static void indexingFinishedAsync(void *context);
+    static void showLoadStatePickerAsync(void *context);
 
     bool ensureRuntimeResources();
     void releaseRuntimeResources();
@@ -172,6 +173,7 @@ private:
     void setPlayerStatus(const char *text);
     void setPlayerFps(uint32_t emulatedFpsTimes10, uint32_t drawnFpsTimes10);
     void setPlayerLoadButtonEnabled(bool enabled);
+    void requestLoadStatePicker();
     void showLoadStatePicker();
     void closeLoadStatePicker();
     void setPlayerFullscreen(bool fullscreen);
@@ -271,6 +273,7 @@ private:
     std::atomic<bool> _saveRequested{false};
     std::atomic<bool> _loadRequested{false};
     std::atomic<bool> _loadMenuActive{false};
+    std::atomic<bool> _loadMenuQueued{false};
     std::atomic<bool> _showFrameStats{false};
 
     SegaString _activeRomPath;

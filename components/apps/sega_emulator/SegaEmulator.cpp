@@ -46,6 +46,7 @@ constexpr const char *kLegacyIndexTempFilePath = BSP_SPIFFS_MOUNT_POINT "/.jc488
 constexpr const char *kSavedGamesRootPath = BSP_SD_MOUNT_POINT "/saved_games";
 constexpr const char *kNvsStorageNamespace = "storage";
 constexpr const char *kRotationDegreesKey = "sega_rot_deg";
+constexpr const char *kScreenTimeoffInGameKey = "disp_off_g";
 
 constexpr uint32_t kInputUp = JC4880_JOYPAD_MASK_UP;
 constexpr uint32_t kInputDown = JC4880_JOYPAD_MASK_DOWN;
@@ -230,6 +231,27 @@ uint16_t rotation_degrees_to_index(uint16_t degrees)
         case 270:
         default:
             return 3;
+    }
+}
+
+bool is_screen_timeoff_in_game_enabled()
+{
+    bool enabled = false;
+    nvs_handle_t nvsHandle = 0;
+    if (nvs_open(kNvsStorageNamespace, NVS_READONLY, &nvsHandle) == ESP_OK) {
+        uint8_t value = 0;
+        if (nvs_get_u8(nvsHandle, kScreenTimeoffInGameKey, &value) == ESP_OK) {
+            enabled = (value != 0);
+        }
+        nvs_close(nvsHandle);
+    }
+    return enabled;
+}
+
+void notify_display_idle_activity(bool keepDisplayAwake, bool touchDetected, uint32_t joypadActions, uint32_t joypadInputMask)
+{
+    if (keepDisplayAwake || touchDetected || (joypadActions != 0) || (joypadInputMask != 0)) {
+        bsp_extra_display_idle_notify_activity();
     }
 }
 
@@ -798,6 +820,7 @@ bool SegaEmulator::init()
 bool SegaEmulator::run()
 {
     _closingApp.store(false);
+    bsp_extra_display_idle_set_screen_off_suppressed(false);
     if (!ensureUiReady()) {
         return false;
     }
@@ -812,6 +835,7 @@ bool SegaEmulator::pause()
 {
     restoreHomeChrome();
     stopEmulation();
+    bsp_extra_display_idle_set_screen_off_suppressed(false);
     return true;
 }
 
@@ -835,6 +859,7 @@ bool SegaEmulator::resume()
         setPlayerFullscreen(true);
         lv_scr_load(_playerScreen);
     } else {
+        bsp_extra_display_idle_set_screen_off_suppressed(false);
         setBrowserChrome();
         lv_scr_load(_browserScreen);
     }
@@ -867,6 +892,7 @@ bool SegaEmulator::back()
     if (_running.load()) {
         _closingApp.store(false);
         stopEmulation();
+        bsp_extra_display_idle_set_screen_off_suppressed(false);
         setBrowserChrome();
         lv_scr_load(_browserScreen);
         return true;
@@ -882,6 +908,7 @@ bool SegaEmulator::close()
 
     _closingApp.store(true);
     stopEmulation();
+    bsp_extra_display_idle_set_screen_off_suppressed(false);
     return true;
 }
 
@@ -1937,12 +1964,15 @@ void SegaEmulator::startRom(const SegaString &path, const SegaString &name)
     setPlayerStatus("Loading game...");
     lv_canvas_fill_bg(_canvas, lv_color_black(), LV_OPA_COVER);
     setPlayerFullscreen(true);
+    bsp_extra_display_idle_notify_activity();
     lv_scr_load(_playerScreen);
+    bsp_extra_display_idle_set_screen_off_suppressed(!is_screen_timeoff_in_game_enabled());
 
     resetPerformanceStats();
 
     if (create_emulator_task_prefer_internal(emulatorTaskEntry, "sega_emu", 8192, this, 4, &_emulatorTask, 1) != pdPASS) {
         _emulatorTask = nullptr;
+        bsp_extra_display_idle_set_screen_off_suppressed(false);
         setBrowserStatus("Failed to start the emulator task.");
         setPlayerFullscreen(false);
         lv_scr_load(_browserScreen);
@@ -1953,6 +1983,7 @@ void SegaEmulator::startRom(const SegaString &path, const SegaString &name)
 void SegaEmulator::stopEmulation()
 {
     if (_emulatorTask == nullptr) {
+        bsp_extra_display_idle_set_screen_off_suppressed(false);
         _running.store(false);
         _stopRequested.store(false);
         _inputMask.store(0);
@@ -1977,7 +2008,9 @@ void SegaEmulator::emulatorTaskEntry(void *context)
 
 void SegaEmulator::emulatorTask()
 {
+    const bool keepDisplayAwake = !is_screen_timeoff_in_game_enabled();
     _running.store(true);
+    bsp_extra_display_idle_set_screen_off_suppressed(keepDisplayAwake);
     bool smsSystemInitialized = false;
     constexpr int64_t kPerfLogWindowUs = 2000000;
 
@@ -1991,6 +2024,7 @@ void SegaEmulator::emulatorTask()
         release_loaded_cartridge_memory();
         sega_gwenesis_shutdown();
 
+        bsp_extra_display_idle_set_screen_off_suppressed(false);
         _running.store(false);
         _stopRequested.store(false);
         _emulatorTask = nullptr;
@@ -2058,6 +2092,8 @@ void SegaEmulator::emulatorTask()
             updatePlayerControlsVisibility(touchDetected, frameStartUs);
 
             const uint32_t joypadActions = jc4880_joypad_consume_action_mask();
+            const uint32_t joypadInputMask = jc4880_joypad_get_input_mask();
+            notify_display_idle_activity(keepDisplayAwake, touchDetected, joypadActions, joypadInputMask);
             if (joypadActions & JC4880_JOYPAD_ACTION_SAVE) {
                 _saveRequested.store(true);
                 setPlayerStatus("Saving state...");
@@ -2068,10 +2104,11 @@ void SegaEmulator::emulatorTask()
             if (joypadActions & JC4880_JOYPAD_ACTION_EXIT) {
                 _closingApp.store(false);
                 setPlayerStatus("Returning to the game list...");
+                bsp_extra_display_idle_notify_activity();
                 stopEmulation();
             }
 
-            sega_gwenesis_set_input_mask(_inputMask.load() | jc4880_joypad_get_input_mask());
+            sega_gwenesis_set_input_mask(_inputMask.load() | joypadInputMask);
             if (showFrameStats) {
                 const int64_t coreStartUs = esp_timer_get_time();
                 sega_gwenesis_run_frame(drawFrame);
@@ -2300,6 +2337,8 @@ void SegaEmulator::emulatorTask()
         updatePlayerControlsVisibility(touchDetected, frameStartUs);
 
         const uint32_t joypadActions = jc4880_joypad_consume_action_mask();
+        const uint32_t joypadInputMask = jc4880_joypad_get_input_mask();
+        notify_display_idle_activity(keepDisplayAwake, touchDetected, joypadActions, joypadInputMask);
         if (joypadActions & JC4880_JOYPAD_ACTION_SAVE) {
             _saveRequested.store(true);
             setPlayerStatus("Saving state...");
@@ -2310,6 +2349,7 @@ void SegaEmulator::emulatorTask()
         if (joypadActions & JC4880_JOYPAD_ACTION_EXIT) {
             _closingApp.store(false);
             setPlayerStatus("Returning to the game list...");
+            bsp_extra_display_idle_notify_activity();
             stopEmulation();
         }
 
@@ -3050,6 +3090,7 @@ void SegaEmulator::finishEmulationOnUiThread()
     if (!_pendingBrowserStatus.empty()) {
         setBrowserStatus(_pendingBrowserStatus.c_str());
     }
+    bsp_extra_display_idle_notify_activity();
     setBrowserChrome();
     if (!_closingApp.load() && (lv_scr_act() == _playerScreen)) {
         lv_scr_load(_browserScreen);

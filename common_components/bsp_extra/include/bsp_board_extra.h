@@ -328,6 +328,25 @@ void bsp_extra_display_idle_set_base_brightness(int brightness_percent);
 void bsp_extra_display_idle_configure(bool adaptive_brightness_enabled, bool screensaver_enabled,
 									  uint32_t screen_off_timeout_sec, uint32_t sleep_timeout_sec);
 
+/**
+ * @brief Temporarily suppress screen-off timeout handling.
+ *
+ * This keeps the configured display timeoff from blanking the panel while a
+ * foreground runtime needs the screen to remain visible. Adaptive dimming and
+ * deep-sleep timeout behavior are unchanged.
+ *
+ * @param suppressed True to suppress the screen-off timeout.
+ */
+void bsp_extra_display_idle_set_screen_off_suppressed(bool suppressed);
+
+/**
+ * @brief Notify the display idle service about non-touch user activity.
+ *
+ * This resets LVGL inactivity tracking so controller or other external input
+ * can keep display idle behavior in sync with actual user activity.
+ */
+void bsp_extra_display_idle_notify_activity(void);
+
 #ifdef __cplusplus
 }
 #endif

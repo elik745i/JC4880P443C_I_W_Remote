@@ -97,6 +97,7 @@ typedef struct {
     bool initialized;
     bool adaptive_brightness_enabled;
     bool screensaver_enabled;
+    bool screen_off_suppressed;
     uint32_t screen_off_timeout_sec;
     uint32_t sleep_timeout_sec;
     int base_brightness_percent;
@@ -107,6 +108,7 @@ static display_idle_state_t s_display_idle_state = {
     .initialized = false,
     .adaptive_brightness_enabled = false,
     .screensaver_enabled = false,
+    .screen_off_suppressed = false,
     .screen_off_timeout_sec = 0,
     .sleep_timeout_sec = 0,
     .base_brightness_percent = 100,
@@ -499,7 +501,8 @@ static int display_idle_get_target_brightness(uint32_t inactive_time_ms)
 {
     int target_brightness = s_display_idle_state.base_brightness_percent;
 
-    if ((s_display_idle_state.screen_off_timeout_sec > 0) &&
+    if (!s_display_idle_state.screen_off_suppressed &&
+        (s_display_idle_state.screen_off_timeout_sec > 0) &&
         (inactive_time_ms >= (s_display_idle_state.screen_off_timeout_sec * 1000U))) {
         return 0;
     }
@@ -1006,4 +1009,31 @@ void bsp_extra_display_idle_configure(bool adaptive_brightness_enabled, bool scr
     s_display_idle_state.screen_off_timeout_sec = screen_off_timeout_sec;
     s_display_idle_state.sleep_timeout_sec = sleep_timeout_sec;
     s_display_idle_state.applied_brightness_percent = -1;
+}
+
+void bsp_extra_display_idle_set_screen_off_suppressed(bool suppressed)
+{
+    s_display_idle_state.screen_off_suppressed = suppressed;
+    s_display_idle_state.applied_brightness_percent = -1;
+}
+
+void bsp_extra_display_idle_notify_activity(void)
+{
+    if (bsp_display_lock(DISPLAY_IDLE_TASK_PERIOD_MS)) {
+        lv_disp_t *display = lv_disp_get_default();
+        if (display != NULL) {
+            lv_disp_trig_activity(display);
+            s_deep_sleep_warning_logged = false;
+
+            const int target_brightness = display_idle_get_target_brightness(0);
+            if (target_brightness != s_display_idle_state.applied_brightness_percent) {
+                if (bsp_display_brightness_set(target_brightness) == ESP_OK) {
+                    s_display_idle_state.applied_brightness_percent = target_brightness;
+                } else {
+                    ESP_LOGW(TAG, "Failed to restore brightness after activity: %d", target_brightness);
+                }
+            }
+        }
+        bsp_display_unlock();
+    }
 }

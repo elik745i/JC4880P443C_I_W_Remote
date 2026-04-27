@@ -2317,7 +2317,7 @@ void AppSettings::refreshJoypadUi(void)
 
     const auto localPreviewAxis = [](uint16_t raw_value) {
         const int32_t centered = static_cast<int32_t>(raw_value) - 2048;
-        return static_cast<int16_t>(std::max<int32_t>(-512, std::min<int32_t>(512, centered / 4)));
+        return static_cast<int16_t>(std::max<int32_t>(-512, std::min<int32_t>(512, -(centered / 4))));
     };
     const bool localAnalogActive = (manual_report.active != 0) &&
                                    (manual_report.manual_mode == JC4880_JOYPAD_MANUAL_MODE_MCP23017);

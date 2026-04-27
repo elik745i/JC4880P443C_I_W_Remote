@@ -997,15 +997,15 @@ void sampleAnalogAxisStateLocked(uint32_t &gameplayMask)
     uint32_t axis_mask = 0;
 
     if (y_value <= (kAnalogAxisCenter - kAnalogAxisDeadzone)) {
-        axis_mask |= JC4880_JOYPAD_MASK_UP;
-    } else if (y_value >= (kAnalogAxisCenter + kAnalogAxisDeadzone)) {
         axis_mask |= JC4880_JOYPAD_MASK_DOWN;
+    } else if (y_value >= (kAnalogAxisCenter + kAnalogAxisDeadzone)) {
+        axis_mask |= JC4880_JOYPAD_MASK_UP;
     }
 
     if (x_value <= (kAnalogAxisCenter - kAnalogAxisDeadzone)) {
-        axis_mask |= JC4880_JOYPAD_MASK_LEFT;
-    } else if (x_value >= (kAnalogAxisCenter + kAnalogAxisDeadzone)) {
         axis_mask |= JC4880_JOYPAD_MASK_RIGHT;
+    } else if (x_value >= (kAnalogAxisCenter + kAnalogAxisDeadzone)) {
+        axis_mask |= JC4880_JOYPAD_MASK_LEFT;
     }
 
     gameplayMask |= axis_mask;

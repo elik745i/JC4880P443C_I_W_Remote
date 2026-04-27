@@ -310,6 +310,7 @@ private:
     static void onSliderPanelScreenSettingNeopixelBrightnessValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingAdaptiveBrightnessValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingScreensaverValueChangeEventCallback(lv_event_t *e);
+    static void onSwitchPanelScreenSettingTimeoffInGameValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingTimeoffIntervalValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingAutoTimezoneValueChangeEventCallback(lv_event_t *e);
@@ -350,6 +351,7 @@ private:
     lv_obj_t *_displayNeopixelBrightnessSlider;
     lv_obj_t *_displayNeopixelInfoLabel;
     lv_obj_t *_displayScreensaverSwitch;
+    lv_obj_t *_displayTimeoffInGameSwitch;
     lv_obj_t *_displayTimeoffDropdown;
     lv_obj_t *_displaySleepDropdown;
     lv_obj_t *_displayAutoTimezoneSwitch;

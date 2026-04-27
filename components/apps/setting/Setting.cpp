@@ -131,6 +131,7 @@
 #define NVS_KEY_NEOPIXEL_EFFECT         "neo_fx"
 #define NVS_KEY_DISPLAY_ADAPTIVE        "disp_adapt"
 #define NVS_KEY_DISPLAY_SCREENSAVER     "disp_saver"
+#define NVS_KEY_DISPLAY_TIMEOFF_IN_GAME "disp_off_g"
 #define NVS_KEY_DISPLAY_TIMEOFF         "disp_off_sec"
 #define NVS_KEY_DISPLAY_SLEEP           "disp_sleep"
 #define NVS_KEY_DISPLAY_TIMEZONE        "disp_tz_min"
@@ -1511,6 +1512,7 @@ AppSettings::AppSettings():
     _displayNeopixelBrightnessSlider(nullptr),
     _displayNeopixelInfoLabel(nullptr),
     _displayScreensaverSwitch(nullptr),
+    _displayTimeoffInGameSwitch(nullptr),
     _displayTimeoffDropdown(nullptr),
     _displaySleepDropdown(nullptr),
     _displayAutoTimezoneSwitch(nullptr),
@@ -1730,6 +1732,7 @@ void AppSettings::initializeDefaultNvsParams(void)
     _nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_SCREENSAVER] = 0;
+    _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF_IN_GAME] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_SLEEP] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE] = 480;
@@ -2636,50 +2639,6 @@ void AppSettings::extraUiInit(void)
         return row;
     };
 
-    lv_obj_t *neoPowerRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Neopixel Power");
-    _displayNeopixelPowerSwitch = lv_switch_create(neoPowerRow);
-    lv_obj_align(_displayNeopixelPowerSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_displayNeopixelPowerSwitch, onSwitchPanelScreenSettingNeopixelPowerValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *neoGpioRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Neopixel GPIO");
-    _displayNeopixelGpioDropdown = lv_dropdown_create(neoGpioRow);
-    lv_dropdown_set_options_static(_displayNeopixelGpioDropdown, kNeopixelGpioOptionsText);
-    lv_obj_set_width(_displayNeopixelGpioDropdown, 140);
-    lv_obj_align(_displayNeopixelGpioDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_displayNeopixelGpioDropdown, onDropdownPanelScreenSettingNeopixelGpioValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    createDisplaySliderRow(ui_PanelScreenSettingLightList,
-                           "Neopixel Brightness",
-                           &_displayNeopixelBrightnessSlider,
-                           NEOPIXEL_BRIGHTNESS_MIN,
-                           NEOPIXEL_BRIGHTNESS_MAX);
-    lv_obj_add_event_cb(_displayNeopixelBrightnessSlider, onSliderPanelScreenSettingNeopixelBrightnessValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *neoPaletteRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Palette");
-    _displayNeopixelPaletteDropdown = lv_dropdown_create(neoPaletteRow);
-    lv_dropdown_set_options_static(_displayNeopixelPaletteDropdown, kNeopixelPaletteOptionsText);
-    lv_obj_set_width(_displayNeopixelPaletteDropdown, 148);
-    lv_obj_align(_displayNeopixelPaletteDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_displayNeopixelPaletteDropdown, onDropdownPanelScreenSettingNeopixelPaletteValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *neoEffectRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Animation");
-    _displayNeopixelEffectDropdown = lv_dropdown_create(neoEffectRow);
-    lv_dropdown_set_options_static(_displayNeopixelEffectDropdown, kNeopixelEffectOptionsText);
-    lv_obj_set_width(_displayNeopixelEffectDropdown, 168);
-    lv_obj_align(_displayNeopixelEffectDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_displayNeopixelEffectDropdown, onDropdownPanelScreenSettingNeopixelEffectValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-
-    _displayNeopixelInfoLabel = lv_label_create(ui_PanelScreenSettingLightList);
-    lv_obj_set_width(_displayNeopixelInfoLabel, lv_pct(100));
-    lv_label_set_long_mode(_displayNeopixelInfoLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_displayNeopixelInfoLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_displayNeopixelInfoLabel, lv_color_hex(0x475569), 0);
-
     lv_obj_t *adaptiveRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Adaptive Brightness");
     _displayAdaptiveBrightnessSwitch = lv_switch_create(adaptiveRow);
     lv_obj_align(_displayAdaptiveBrightnessSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
@@ -2690,6 +2649,12 @@ void AppSettings::extraUiInit(void)
     _displayScreensaverSwitch = lv_switch_create(screensaverRow);
     lv_obj_align(_displayScreensaverSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_add_event_cb(_displayScreensaverSwitch, onSwitchPanelScreenSettingScreensaverValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *timeoffInGameRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Screen timeoff in game");
+    _displayTimeoffInGameSwitch = lv_switch_create(timeoffInGameRow);
+    lv_obj_align(_displayTimeoffInGameSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayTimeoffInGameSwitch, onSwitchPanelScreenSettingTimeoffInGameValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
 
     lv_obj_t *timezoneRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Timezone");
@@ -3931,6 +3896,14 @@ void AppSettings::refreshDisplayIdleUi(void)
         }
     }
 
+    if (lv_obj_ready(_displayTimeoffInGameSwitch)) {
+        if (_nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF_IN_GAME]) {
+            lv_obj_add_state(_displayTimeoffInGameSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_displayTimeoffInGameSwitch, LV_STATE_CHECKED);
+        }
+    }
+
     if (lv_obj_ready(_displayTimeoffDropdown)) {
         lv_dropdown_set_selected(_displayTimeoffDropdown,
                                  findDropdownIndexForValue(kDisplayTimeoffOptionsSec,
@@ -3945,57 +3918,6 @@ void AppSettings::refreshDisplayIdleUi(void)
                                                            _nvs_param_map[NVS_KEY_DISPLAY_SLEEP]));
     }
 
-    if (lv_obj_ready(_displayNeopixelPowerSwitch)) {
-        if (_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0) {
-            lv_obj_add_state(_displayNeopixelPowerSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_displayNeopixelPowerSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_displayNeopixelGpioDropdown)) {
-        lv_dropdown_set_selected(_displayNeopixelGpioDropdown,
-                                 findDropdownIndexForValue(kNeopixelGpioOptions,
-                                                           sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
-                                                           _nvs_param_map[NVS_KEY_NEOPIXEL_GPIO]));
-    }
-
-    if (lv_obj_ready(_displayNeopixelBrightnessSlider)) {
-        lv_slider_set_value(_displayNeopixelBrightnessSlider,
-                            std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS]), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MIN), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MAX)),
-                            LV_ANIM_OFF);
-    }
-
-    if (lv_obj_ready(_displayNeopixelPaletteDropdown)) {
-        lv_dropdown_set_selected(_displayNeopixelPaletteDropdown,
-                                 findDropdownIndexForValue(kNeopixelPaletteOptions,
-                                                           sizeof(kNeopixelPaletteOptions) / sizeof(kNeopixelPaletteOptions[0]),
-                                                           static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE])));
-    }
-
-    if (lv_obj_ready(_displayNeopixelEffectDropdown)) {
-        lv_dropdown_set_selected(_displayNeopixelEffectDropdown,
-                                 findDropdownIndexForValue(kNeopixelEffectOptions,
-                                                           sizeof(kNeopixelEffectOptions) / sizeof(kNeopixelEffectOptions[0]),
-                                                           static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT])));
-    }
-
-    if (lv_obj_ready(_displayNeopixelInfoLabel)) {
-        const int palette_index = std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE]), 0, 11);
-        const int effect_index = std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT]), 0, 20);
-        std::string label = (_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0) ? "WS2812 output is on. " : "WS2812 output is off. ";
-        if (_nvs_param_map[NVS_KEY_NEOPIXEL_GPIO] >= 0) {
-            label += "GPIO " + std::to_string(_nvs_param_map[NVS_KEY_NEOPIXEL_GPIO]) + ", ";
-        } else {
-            label += "No GPIO selected, ";
-        }
-        label += std::string("palette ") + kNeopixelPaletteLabels[palette_index] + ", ";
-        label += (_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT] == 0)
-                     ? std::string("solid color mode.")
-                     : (std::string("effect ") + kNeopixelEffectLabels[effect_index] + ".");
-        lv_label_set_text(_displayNeopixelInfoLabel, label.c_str());
-    }
-
     #if CONFIG_JC4880_FEATURE_TIME_SYNC
     refreshTimezoneUi();
     #endif
@@ -4008,9 +3930,9 @@ void AppSettings::applyNeopixelConfig(void)
 #else
     jc4880_neopixel_apply_config(_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0,
                                  _nvs_param_map[NVS_KEY_NEOPIXEL_GPIO],
-                                 std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS]), NEOPIXEL_BRIGHTNESS_MIN, NEOPIXEL_BRIGHTNESS_MAX),
-                                 std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE]), 0, 11),
-                                 std::clamp(static_cast<int>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT]), 0, 20));
+                                 std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS]), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MIN), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MAX)),
+                                 std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE]), static_cast<int32_t>(0), static_cast<int32_t>(11)),
+                                 std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT]), static_cast<int32_t>(0), static_cast<int32_t>(20)));
 #endif
 }
 
@@ -7197,6 +7119,27 @@ void AppSettings::onDropdownPanelScreenSettingTimeoffIntervalValueChangeEventCal
 
 end:
     return;
+}
+
+void AppSettings::onSwitchPanelScreenSettingTimeoffInGameValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    bool enabled = false;
+    if (app == nullptr) {
+        ESP_LOGE(TAG, "Invalid app pointer");
+        return;
+    }
+
+    target = lv_event_get_target(e);
+    if (target == nullptr) {
+        ESP_LOGE(TAG, "Invalid screen timeoff in game switch");
+        return;
+    }
+
+    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
+    app->_nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF_IN_GAME] = enabled;
+    app->setNvsParam(NVS_KEY_DISPLAY_TIMEOFF_IN_GAME, enabled ? 1 : 0);
 }
 
 void AppSettings::onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback(lv_event_t *e)

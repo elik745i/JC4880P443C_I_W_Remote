@@ -1,0 +1,67 @@
+{
+    // VS Code tasks:
+    // 1. Use the JC4880 tasks to Build / Flash / Monitor either P4 or C6 directly from Tasks: Run Task.
+    // 2. Use "JC4880: Build and Flash P4" or "JC4880: Build and Flash C6" for the common one-shot flow.
+    // 3. "JC4880: Flash Selected Target" still works if you want one shared flash task.
+    // 4. Ports and baud rates are configured below.
+    "cmake.cmakePath": "C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin\\cmake.exe",
+    "cmake.configureOnOpen": false,
+    "cmake.generator": "Ninja",
+    "cmake.environment": {
+        "IDF_PATH": "C:\\Espressif\\frameworks\\esp-idf-v5.5.4",
+        "IDF_TOOLS_PATH": "C:\\Users\\Elik\\.espressif",
+        "IDF_PYTHON_ENV_PATH": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env",
+        "IDF_TARGET": "esp32p4",
+        "ESP_IDF_VERSION": "5.5",
+        "ESP_ROM_ELF_DIR": "C:\\Users\\Elik\\.espressif\\tools\\esp-rom-elfs\\20241011\\",
+        "OPENOCD_SCRIPTS": "C:\\Users\\Elik\\.espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20251215\\openocd-esp32\\share\\openocd\\scripts",
+        "PATH": "C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\espcoredump;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\partition_table;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\app_update;C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf-gdb\\16.3_20250913\\riscv32-esp-elf-gdb\\bin;C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20251215\\openocd-esp32\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1\\;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3\\;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools;C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;${env:PATH}"
+    },
+    "cmake.configureEnvironment": {
+        "IDF_PATH": "C:\\Espressif\\frameworks\\esp-idf-v5.5.4",
+        "IDF_TOOLS_PATH": "C:\\Users\\Elik\\.espressif",
+        "IDF_PYTHON_ENV_PATH": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env",
+        "IDF_TARGET": "esp32p4",
+        "ESP_IDF_VERSION": "5.5",
+        "ESP_ROM_ELF_DIR": "C:\\Users\\Elik\\.espressif\\tools\\esp-rom-elfs\\20241011\\",
+        "OPENOCD_SCRIPTS": "C:\\Users\\Elik\\.espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20251215\\openocd-esp32\\share\\openocd\\scripts",
+        "PATH": "C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\espcoredump;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\partition_table;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\app_update;C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf-gdb\\16.3_20250913\\riscv32-esp-elf-gdb\\bin;C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20251215\\openocd-esp32\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1\\;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3\\;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools;C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;${env:PATH}"
+    },
+    "cmake.buildEnvironment": {
+        "IDF_PATH": "C:\\Espressif\\frameworks\\esp-idf-v5.5.4",
+        "IDF_TOOLS_PATH": "C:\\Users\\Elik\\.espressif",
+        "IDF_PYTHON_ENV_PATH": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env",
+        "IDF_TARGET": "esp32p4",
+        "PATH": "C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\espcoredump;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\partition_table;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\app_update;C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf-gdb\\16.3_20250913\\riscv32-esp-elf-gdb\\bin;C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20251215\\openocd-esp32\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1\\;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3\\;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools;C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;${env:PATH}"
+    },
+    "cmake.configureSettings": {
+        "CMAKE_TOOLCHAIN_FILE": "C:/Espressif/frameworks/esp-idf-v5.5.4/tools/cmake/toolchain-esp32p4.cmake",
+        "CMAKE_MAKE_PROGRAM": "C:/Users/Elik/.espressif/tools/ninja/1.12.1/ninja.exe",
+        "CMAKE_C_COMPILER": "C:/Users/Elik/.espressif/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-gcc.exe",
+        "CMAKE_CXX_COMPILER": "C:/Users/Elik/.espressif/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-g++.exe",
+        "CMAKE_ASM_COMPILER": "C:/Users/Elik/.espressif/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-gcc.exe",
+        "PYTHON": "C:/Users/Elik/.espressif/python_env/idf5.5_py3.12_env/Scripts/python.exe",
+        "IDF_TARGET": "esp32p4",
+        "CCACHE_ENABLE": "1",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+    },
+    "idf.customExtraPaths": "C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf-gdb\\16.3_20250913\\riscv32-esp-elf-gdb\\bin;C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\openocd-esp32\\v0.12.0-esp32-20251215\\openocd-esp32\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1\\;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3\\;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64",
+    "idf.adapterTargetName": "esp32p4",
+    "idf.openOcdConfigs": [
+        "board/esp32p4-builtin.cfg"
+    ],
+    "idf.currentSetup": "C:\\Espressif\\frameworks\\esp-idf-v5.5.4",
+    "idf.extensionActivationMode": "always",
+    "idf.notificationMode": "All",
+    "idf.enableStatusBar": true,
+    "idf.flashType": "UART",
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32p4"
+    },
+    "idf.portWin": "COM10",
+    "jc4880.flashTarget": "p4",
+    "jc4880.flashBaud.p4": 460800,
+    "jc4880.flashBaud.c6": 115200,
+    "jc4880.ports.p4": "COM10",
+    "jc4880.ports.c6": "COM12"
+}

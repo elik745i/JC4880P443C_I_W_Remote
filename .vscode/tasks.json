@@ -1,0 +1,335 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "ESP Brookesia: Verify Environment",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py --version",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Brookesia: Set Target esp32p4",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py set-target esp32p4",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Brookesia: Build",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py build",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Brookesia: Menuconfig",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py menuconfig",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Brookesia: Full Clean",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py fullclean",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Brookesia: Flash",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py build flash",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Brookesia: Monitor",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py monitor",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Brookesia: Flash and Monitor",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py build flash monitor",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Hosted C6: Set Target esp32c6",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py set-target esp32c6",
+            "options": {
+                "cwd": "${workspaceFolder}\\coprocessor_c6",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Hosted C6: Build",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py build",
+            "options": {
+                "cwd": "${workspaceFolder}\\coprocessor_c6",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Build P4",
+            "dependsOn": "ESP Brookesia: Build",
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Flash P4",
+            "type": "shell",
+            "command": "Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 esp_brookesia_demo.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xf80000 storage.bin",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command"
+                    ]
+                }
+            },
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Monitor P4",
+            "type": "shell",
+            "command": "Set-Location '${workspaceFolder}'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' -p '${config:jc4880.ports.p4}' -b 115200 '${workspaceFolder}\\build\\esp_brookesia_demo.elf'",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command"
+                    ]
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Build and Flash P4",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "JC4880: Build P4",
+                "JC4880: Flash P4"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Build C6",
+            "dependsOn": "ESP Hosted C6: Build",
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Flash C6",
+            "type": "shell",
+            "command": "Set-Location '${workspaceFolder}\\coprocessor_c6\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32c6 -p '${config:jc4880.ports.c6}' -b ${config:jc4880.flashBaud.c6} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 bootloader\\bootloader.bin 0x8000 partition_table\\partition-table.bin 0xd000 ota_data_initial.bin 0x10000 network_adapter.bin",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command"
+                    ]
+                }
+            },
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Monitor C6",
+            "type": "shell",
+            "command": "Set-Location '${workspaceFolder}\\coprocessor_c6'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' -p '${config:jc4880.ports.c6}' -b 115200 '${workspaceFolder}\\coprocessor_c6\\build\\network_adapter.elf'",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command"
+                    ]
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Build and Flash C6",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "JC4880: Build C6",
+                "JC4880: Flash C6"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "ESP Hosted C6: Flash and Monitor",
+            "type": "shell",
+            "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py build -p ${input:espBrookesiaPort} flash monitor",
+            "options": {
+                "cwd": "${workspaceFolder}\\coprocessor_c6",
+                "shell": {
+                    "executable": "cmd.exe",
+                    "args": [
+                        "/d",
+                        "/c"
+                    ]
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Flash Selected Target",
+            "type": "shell",
+            "command": "$target = '${config:jc4880.flashTarget}'; if ($target -eq 'c6') { Set-Location '${workspaceFolder}\\coprocessor_c6\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32c6 -p '${config:jc4880.ports.c6}' -b ${config:jc4880.flashBaud.c6} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 bootloader\\bootloader.bin 0x8000 partition_table\\partition-table.bin 0xd000 ota_data_initial.bin 0x10000 network_adapter.bin } elseif ($target -eq 'p4') { Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 esp_brookesia_demo.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xf80000 storage.bin } else { Write-Error ('Unsupported jc4880.flashTarget ' + $target + '. Use p4 or c6.'); exit 1 }",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command"
+                    ]
+                }
+            },
+            "group": "test",
+            "problemMatcher": []
+        },
+        {
+            "label": "JC4880: Joypad Layout Configurator",
+            "type": "shell",
+            "command": "& 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' '${workspaceFolder}\\tools\\joypad_layout\\server.py'",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command"
+                    ]
+                }
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        }
+    ]
+}

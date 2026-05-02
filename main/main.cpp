@@ -26,6 +26,7 @@
 #include "esp_system.h"
 #include "esp_memory_utils.h"
 #include "esp_heap_caps.h"
+#include "esp_ota_ops.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "lvgl.h"
@@ -65,6 +66,8 @@ static constexpr const char *kCrashReportLocalPath = BSP_SPIFFS_MOUNT_POINT "/la
 static constexpr const char *kCrashReportPendingPath = BSP_SPIFFS_MOUNT_POINT "/pending_crash_report.txt";
 static constexpr const char *kCrashReportUploadUrl = "";
 static constexpr TickType_t kCrashReportUploadDelay = pdMS_TO_TICKS(15000);
+static constexpr TickType_t kOtaValidationDelay = pdMS_TO_TICKS(10000);
+static constexpr uint32_t kOtaValidationTaskStack = 4096;
 static constexpr const char *kSegaEmulatorAppName = "SEGA Emulator";
 static constexpr uint32_t kTapSoundDebounceMs = 80;
 static constexpr gpio_num_t kDefaultHapticFeedbackGpio = GPIO_NUM_49;
@@ -1132,6 +1135,31 @@ static void clear_pending_release_notes(void)
     nvs_close(handle);
 }
 
+static bool get_running_ota_image_state(esp_ota_img_states_t &state)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    if (running == nullptr) {
+        return false;
+    }
+
+    return esp_ota_get_state_partition(running, &state) == ESP_OK;
+}
+
+static bool pending_release_notes_match_running_version(void)
+{
+    std::string pending_version;
+    if (!load_nvs_string(kNvsKeyOtaPendingVersion, pending_version) || pending_version.empty()) {
+        return true;
+    }
+
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+    if ((app_desc == nullptr) || (app_desc->version[0] == '\0')) {
+        return false;
+    }
+
+    return pending_version == app_desc->version;
+}
+
 static void close_release_notes_popup(lv_event_t *event)
 {
     lv_obj_t *target = lv_event_get_current_target(event);
@@ -1200,6 +1228,11 @@ static void schedule_pending_release_notes_popup(void)
     }
     nvs_close(handle);
 
+    if (!pending_release_notes_match_running_version()) {
+        clear_pending_release_notes();
+        return;
+    }
+
     auto *context = new PendingReleaseNotesContext();
     if (context == nullptr) {
         return;
@@ -1219,6 +1252,49 @@ static void schedule_pending_release_notes_popup(void)
         return;
     }
     bsp_display_unlock();
+}
+
+static void ota_validation_task(void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(kOtaValidationDelay);
+
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    if (!get_running_ota_image_state(state) || (state != ESP_OTA_IMG_PENDING_VERIFY)) {
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to mark running OTA image valid: %s", esp_err_to_name(err));
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Marked running OTA image valid after boot grace period");
+    schedule_pending_release_notes_popup();
+    vTaskDelete(nullptr);
+}
+
+static void schedule_ota_validation_if_needed(void)
+{
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    if (!get_running_ota_image_state(state) || (state != ESP_OTA_IMG_PENDING_VERIFY)) {
+        schedule_pending_release_notes_popup();
+        return;
+    }
+
+    if (xTaskCreatePinnedToCore(ota_validation_task,
+                                "ota_validate",
+                                kOtaValidationTaskStack,
+                                nullptr,
+                                2,
+                                nullptr,
+                                1) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to start OTA validation task");
+    }
 }
 
 static bool describe_reset_reason(esp_reset_reason_t reason, std::string &title, std::string &details)
@@ -1426,5 +1502,5 @@ extern "C" void app_main(void)
 #endif
 
     schedule_previous_reset_notice_popup();
-    schedule_pending_release_notes_popup();
+    schedule_ota_validation_if_needed();
 }

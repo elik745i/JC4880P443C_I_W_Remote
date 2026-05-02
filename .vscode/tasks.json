@@ -180,7 +180,7 @@
         {
             "label": "JC4880: Flash P4",
             "type": "shell",
-            "command": "Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 esp_brookesia_demo.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xf80000 storage.bin",
+            "command": "Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xf80000 storage.bin",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "shell": {
@@ -199,7 +199,7 @@
         {
             "label": "JC4880: Monitor P4",
             "type": "shell",
-            "command": "Set-Location '${workspaceFolder}'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' -p '${config:jc4880.ports.p4}' -b 115200 '${workspaceFolder}\\build\\esp_brookesia_demo.elf'",
+            "command": "Set-Location '${workspaceFolder}'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' -p '${config:jc4880.ports.p4}' -b 115200 '${workspaceFolder}\\build\\ESP32P4_Remote.elf'",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "shell": {
@@ -296,7 +296,7 @@
         {
             "label": "JC4880: Flash Selected Target",
             "type": "shell",
-            "command": "$target = '${config:jc4880.flashTarget}'; if ($target -eq 'c6') { Set-Location '${workspaceFolder}\\coprocessor_c6\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32c6 -p '${config:jc4880.ports.c6}' -b ${config:jc4880.flashBaud.c6} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 bootloader\\bootloader.bin 0x8000 partition_table\\partition-table.bin 0xd000 ota_data_initial.bin 0x10000 network_adapter.bin } elseif ($target -eq 'p4') { Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 esp_brookesia_demo.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xf80000 storage.bin } else { Write-Error ('Unsupported jc4880.flashTarget ' + $target + '. Use p4 or c6.'); exit 1 }",
+            "command": "$target = '${config:jc4880.flashTarget}'; if ($target -eq 'c6') { Set-Location '${workspaceFolder}\\coprocessor_c6\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32c6 -p '${config:jc4880.ports.c6}' -b ${config:jc4880.flashBaud.c6} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 bootloader\\bootloader.bin 0x8000 partition_table\\partition-table.bin 0xd000 ota_data_initial.bin 0x10000 network_adapter.bin } elseif ($target -eq 'p4') { Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xf80000 storage.bin } else { Write-Error ('Unsupported jc4880.flashTarget ' + $target + '. Use p4 or c6.'); exit 1 }",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "shell": {

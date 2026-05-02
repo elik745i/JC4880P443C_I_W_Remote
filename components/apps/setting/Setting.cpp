@@ -138,6 +138,7 @@ extern "C" bool __attribute__((weak)) jc_security_handle_app_launch_request(int 
 #define NVS_KEY_DISPLAY_SLEEP           "disp_sleep"
 #define NVS_KEY_DISPLAY_TIMEZONE        "disp_tz_min"
 #define NVS_KEY_DISPLAY_TZ_AUTO         "disp_tz_auto"
+#define NVS_KEY_OTA_AUTO_UPDATE         "ota_auto"
 #define NVS_KEY_OTA_PENDING_VERSION     "ota_ver"
 #define NVS_KEY_OTA_PENDING_NOTES       "ota_notes"
 #define NVS_KEY_OTA_PENDING_SHOW        "ota_show"
@@ -1648,6 +1649,7 @@ AppSettings::AppSettings():
     _firmwareSdFlashButton(nullptr),
     _firmwareOtaCheckButton(nullptr),
     _firmwareOtaFlashButton(nullptr),
+    _firmwareAutoUpdateSwitch(nullptr),
     _firmwareCurrentVersionLabel(nullptr),
     _firmwareOtaSummaryLabel(nullptr),
     _firmwareOtaListContainer(nullptr),
@@ -1658,6 +1660,11 @@ AppSettings::AppSettings():
     _firmwareProgressBar(nullptr),
     _firmwareProgressLabel(nullptr),
     _otaUpdateAvailableMsgbox(nullptr),
+    _otaUpdateProgressOverlay(nullptr),
+    _otaUpdateProgressStatusLabel(nullptr),
+    _otaUpdateProgressBar(nullptr),
+    _otaUpdateProgressLabel(nullptr),
+    _otaUpdateProgressCloseButton(nullptr),
     _firmwareUpdateInProgress(false),
     _firmwareOtaCheckInProgress(false),
     _otaStatusIconInstalled(false),
@@ -1750,6 +1757,7 @@ void AppSettings::initializeDefaultNvsParams(void)
     _nvs_param_map[NVS_KEY_DISPLAY_SLEEP] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE] = 480;
     _nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO] = 0;
+    _nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] = 1;
 }
 
 bool AppSettings::run(void)
@@ -2081,6 +2089,7 @@ void AppSettings::extraUiInit(void)
     };
 
     lv_obj_add_flag(ui_PanelSettingMainContainerItem1, LV_OBJ_FLAG_HIDDEN);
+
     #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
     lv_obj_add_flag(ui_PanelSettingMainContainerItem2, LV_OBJ_FLAG_HIDDEN);
     #endif
@@ -3589,6 +3598,38 @@ void AppSettings::ensureFirmwareScreen(void)
     lv_obj_set_style_text_font(_firmwareCurrentVersionLabel, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(_firmwareCurrentVersionLabel, lv_color_hex(0x0F172A), 0);
 
+    lv_obj_t *otaAutoUpdateRow = lv_obj_create(currentSection);
+    lv_obj_set_width(otaAutoUpdateRow, lv_pct(100));
+    lv_obj_set_height(otaAutoUpdateRow, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(otaAutoUpdateRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(otaAutoUpdateRow, 16, 0);
+    lv_obj_set_style_border_width(otaAutoUpdateRow, 0, 0);
+    lv_obj_set_style_bg_color(otaAutoUpdateRow, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_bg_opa(otaAutoUpdateRow, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_left(otaAutoUpdateRow, 14, 0);
+    lv_obj_set_style_pad_right(otaAutoUpdateRow, 14, 0);
+    lv_obj_set_style_pad_top(otaAutoUpdateRow, 12, 0);
+    lv_obj_set_style_pad_bottom(otaAutoUpdateRow, 12, 0);
+
+    lv_obj_t *otaAutoUpdateTitle = lv_label_create(otaAutoUpdateRow);
+    lv_label_set_text(otaAutoUpdateTitle, "Auto Update");
+    lv_obj_set_style_text_font(otaAutoUpdateTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(otaAutoUpdateTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(otaAutoUpdateTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t *otaAutoUpdateDetail = lv_label_create(otaAutoUpdateRow);
+    lv_obj_set_width(otaAutoUpdateDetail, 240);
+    lv_label_set_long_mode(otaAutoUpdateDetail, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(otaAutoUpdateDetail, "Automatically start the preferred OTA release when a new update is detected.");
+    lv_obj_set_style_text_font(otaAutoUpdateDetail, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(otaAutoUpdateDetail, lv_color_hex(0x475569), 0);
+    lv_obj_align_to(otaAutoUpdateDetail, otaAutoUpdateTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
+
+    _firmwareAutoUpdateSwitch = lv_switch_create(otaAutoUpdateRow);
+    lv_obj_align(_firmwareAutoUpdateSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_firmwareAutoUpdateSwitch, onFirmwareAutoUpdateSwitchValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
     lv_obj_t *sdSection = createFirmwareSection(firmwarePanel, "Flash from SD Card");
     lv_obj_t *sdHint = lv_label_create(sdSection);
     lv_obj_set_width(sdHint, lv_pct(100));
@@ -4308,6 +4349,11 @@ void AppSettings::refreshSecurityUi(void)
 
 void AppSettings::setFirmwareStatus(const std::string &status, bool is_error)
 {
+    if (lv_obj_ready(_otaUpdateProgressStatusLabel)) {
+        lv_label_set_text(_otaUpdateProgressStatusLabel, status.c_str());
+        lv_obj_set_style_text_color(_otaUpdateProgressStatusLabel, is_error ? lv_color_hex(0xB91C1C) : lv_color_hex(0x334155), 0);
+    }
+
     if (!isUiActive() || !lv_obj_ready(_firmwareStatusLabel)) {
         return;
     }
@@ -4379,14 +4425,129 @@ void AppSettings::setFirmwareOtaCheckOverlayVisible(bool visible, const std::str
     }
 }
 
+void AppSettings::ensureOtaUpdateProgressOverlay(void)
+{
+    if ((_otaUpdateProgressOverlay != nullptr) && lv_obj_ready(_otaUpdateProgressOverlay)) {
+        return;
+    }
+
+    _otaUpdateProgressOverlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(_otaUpdateProgressOverlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(_otaUpdateProgressOverlay, lv_color_hex(0x0F172A), 0);
+    lv_obj_set_style_bg_opa(_otaUpdateProgressOverlay, LV_OPA_50, 0);
+    lv_obj_set_style_border_width(_otaUpdateProgressOverlay, 0, 0);
+    lv_obj_set_style_pad_all(_otaUpdateProgressOverlay, 0, 0);
+    lv_obj_add_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(_otaUpdateProgressOverlay);
+    lv_obj_add_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *card = lv_obj_create(_otaUpdateProgressOverlay);
+    lv_obj_set_size(card, 340, LV_SIZE_CONTENT);
+    lv_obj_center(card);
+    lv_obj_set_style_radius(card, 24, 0);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 20, 0);
+    lv_obj_set_style_pad_row(card, 14, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *titleLabel = lv_label_create(card);
+    lv_label_set_text(titleLabel, "OTA update");
+    lv_obj_set_width(titleLabel, lv_pct(100));
+    lv_obj_set_style_text_align(titleLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(titleLabel, lv_color_hex(0x0F172A), 0);
+
+    _otaUpdateProgressStatusLabel = lv_label_create(card);
+    lv_obj_set_width(_otaUpdateProgressStatusLabel, lv_pct(100));
+    lv_label_set_long_mode(_otaUpdateProgressStatusLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(_otaUpdateProgressStatusLabel, "Preparing OTA update...");
+    lv_obj_set_style_text_align(_otaUpdateProgressStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(_otaUpdateProgressStatusLabel, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(_otaUpdateProgressStatusLabel, lv_color_hex(0x334155), 0);
+
+    _otaUpdateProgressBar = lv_bar_create(card);
+    lv_obj_set_width(_otaUpdateProgressBar, lv_pct(100));
+    lv_obj_set_height(_otaUpdateProgressBar, 18);
+    lv_bar_set_range(_otaUpdateProgressBar, 0, 100);
+    lv_bar_set_value(_otaUpdateProgressBar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_radius(_otaUpdateProgressBar, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(_otaUpdateProgressBar, lv_color_hex(0xCBD5E1), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(_otaUpdateProgressBar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_otaUpdateProgressBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(_otaUpdateProgressBar, LV_OPA_COVER, LV_PART_INDICATOR);
+
+    _otaUpdateProgressLabel = lv_label_create(card);
+    lv_obj_set_width(_otaUpdateProgressLabel, lv_pct(100));
+    lv_label_set_long_mode(_otaUpdateProgressLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(_otaUpdateProgressLabel, "Preparing OTA update...");
+    lv_obj_set_style_text_align(_otaUpdateProgressLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(_otaUpdateProgressLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_otaUpdateProgressLabel, lv_color_hex(0x64748B), 0);
+
+    _otaUpdateProgressCloseButton = lv_btn_create(card);
+    lv_obj_set_width(_otaUpdateProgressCloseButton, lv_pct(100));
+    lv_obj_set_height(_otaUpdateProgressCloseButton, 48);
+    lv_obj_set_style_radius(_otaUpdateProgressCloseButton, 16, 0);
+    lv_obj_set_style_bg_color(_otaUpdateProgressCloseButton, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_set_style_bg_opa(_otaUpdateProgressCloseButton, LV_OPA_COVER, 0);
+    lv_obj_add_flag(_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(_otaUpdateProgressCloseButton, onOtaUpdateProgressCloseEventCallback, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *closeLabel = lv_label_create(_otaUpdateProgressCloseButton);
+    lv_label_set_text(closeLabel, "Close");
+    lv_obj_set_style_text_font(closeLabel, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(closeLabel, lv_color_hex(0x0F172A), 0);
+    lv_obj_center(closeLabel);
+}
+
+void AppSettings::setOtaUpdateProgressOverlayVisible(bool visible)
+{
+    if (visible) {
+        ensureOtaUpdateProgressOverlay();
+    }
+
+    if ((_otaUpdateProgressOverlay == nullptr) || !lv_obj_ready(_otaUpdateProgressOverlay)) {
+        return;
+    }
+
+    if (visible) {
+        lv_obj_move_foreground(_otaUpdateProgressOverlay);
+        lv_obj_clear_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void AppSettings::setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error)
 {
+    const int32_t clamped = std::max<int32_t>(0, std::min<int32_t>(100, percent));
+
+    if (lv_obj_ready(_otaUpdateProgressBar)) {
+        lv_bar_set_value(_otaUpdateProgressBar, clamped, LV_ANIM_OFF);
+        lv_obj_set_style_bg_color(_otaUpdateProgressBar,
+                                  is_error ? lv_color_hex(0xFECACA) : lv_color_hex(0xCBD5E1),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_color(_otaUpdateProgressBar,
+                                  is_error ? lv_color_hex(0xDC2626) : lv_color_hex(0x2563EB),
+                                  LV_PART_INDICATOR);
+    }
+
+    if (lv_obj_ready(_otaUpdateProgressLabel)) {
+        lv_label_set_text(_otaUpdateProgressLabel, phase.c_str());
+        lv_obj_set_style_text_color(_otaUpdateProgressLabel,
+                                    is_error ? lv_color_hex(0xB91C1C) : lv_color_hex(0x64748B),
+                                    0);
+    }
+
     if (!isUiActive()) {
         return;
     }
 
     if (lv_obj_ready(_firmwareProgressBar)) {
-        const int32_t clamped = std::max<int32_t>(0, std::min<int32_t>(100, percent));
         lv_bar_set_value(_firmwareProgressBar, clamped, LV_ANIM_OFF);
         lv_obj_set_style_bg_color(_firmwareProgressBar,
                                   is_error ? lv_color_hex(0xFECACA) : lv_color_hex(0xCBD5E1),
@@ -4466,7 +4627,6 @@ int AppSettings::compareVersionStrings(const std::string &lhs, const std::string
     const std::vector<int> lhs_values = parse_values(lhs);
     const std::vector<int> rhs_values = parse_values(rhs);
     const size_t count = std::max(lhs_values.size(), rhs_values.size());
-
     for (size_t index = 0; index < count; ++index) {
         const int lhs_value = (index < lhs_values.size()) ? lhs_values[index] : 0;
         const int rhs_value = (index < rhs_values.size()) ? rhs_values[index] : 0;
@@ -4982,6 +5142,12 @@ void AppSettings::applyAsyncOtaAvailabilityResult(void *arg)
         return;
     }
 
+    if (app->_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] != 0) {
+        app->_otaUpdatePromptDismissedThisBoot = true;
+        app->startPreferredOtaUpdate();
+        return;
+    }
+
     const int preferred_index = app->findPreferredOtaEntryIndex(true);
     if (preferred_index < 0) {
         return;
@@ -4990,7 +5156,7 @@ void AppSettings::applyAsyncOtaAvailabilityResult(void *arg)
     const FirmwareEntry_t &entry = app->_otaFirmwareEntries[preferred_index];
     const std::string message = std::string("Current firmware: ") + app->getCurrentFirmwareVersion() +
                                 "\nNew firmware: " + entry.version +
-                                "\n\nOpen Firmware OTA to select the release asset and start the update?";
+                                "\n\nStart the OTA update now?";
     static const char *buttons[] = {"Update", "Cancel", ""};
     app->_otaUpdateAvailableMsgbox = lv_msgbox_create(lv_layer_top(), "Update Available", message.c_str(), buttons, false);
     if ((app->_otaUpdateAvailableMsgbox == nullptr) || !lv_obj_is_valid(app->_otaUpdateAvailableMsgbox)) {
@@ -5129,6 +5295,14 @@ void AppSettings::applyAsyncFirmwareUiUpdate(void *arg)
     }
 
     context->app->_firmwareUpdateInProgress = context->busy;
+    context->app->setOtaUpdateProgressOverlayVisible(context->busy || context->is_error);
+    if (lv_obj_ready(context->app->_otaUpdateProgressCloseButton)) {
+        if (context->busy || !context->is_error) {
+            lv_obj_add_flag(context->app->_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(context->app->_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     if (context->is_error) {
         context->app->refreshFirmwareUi();
         context->app->setFirmwareStatus(context->status, true);
@@ -5571,6 +5745,45 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
     return true;
 }
 
+bool AppSettings::startPreferredOtaUpdate(void)
+{
+    if (_firmwareUpdateInProgress) {
+        setOtaUpdateProgressOverlayVisible(true);
+        return true;
+    }
+
+    if (!hasOtaFlashSupport()) {
+        setOtaUpdateProgressOverlayVisible(true);
+        setFirmwareStatus("OTA flashing is blocked because the current partition table has no OTA slot.", true);
+        setFirmwareProgress(0, "OTA update unavailable.", true);
+        if (lv_obj_ready(_otaUpdateProgressCloseButton)) {
+            lv_obj_clear_flag(_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+        }
+        return false;
+    }
+
+    const int selected = findPreferredOtaEntryIndex(true);
+    if ((selected < 0) || (static_cast<size_t>(selected) >= _otaFirmwareEntries.size()) || !_otaFirmwareEntries[selected].is_valid) {
+        setOtaUpdateProgressOverlayVisible(true);
+        setFirmwareStatus("No valid OTA release asset is available for update.", true);
+        setFirmwareProgress(0, "OTA update unavailable.", true);
+        if (lv_obj_ready(_otaUpdateProgressCloseButton)) {
+            lv_obj_clear_flag(_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+        }
+        return false;
+    }
+
+    setSelectedOtaFirmwareIndex(selected);
+    setOtaUpdateProgressOverlayVisible(true);
+    setFirmwareStatus("Starting OTA update...");
+    setFirmwareProgress(0, "Preparing OTA update...");
+    if (lv_obj_ready(_otaUpdateProgressCloseButton)) {
+        lv_obj_add_flag(_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    return flashFirmwareEntry(_otaFirmwareEntries[selected], FIRMWARE_UPDATE_SOURCE_OTA);
+}
+
 void AppSettings::firmwareUpdateTask(void *arg)
 {
     auto *context = static_cast<FirmwareUpdateTaskContext *>(arg);
@@ -5770,6 +5983,14 @@ void AppSettings::updateUiByNvsParam(void)
 #if APP_SETTINGS_FEATURE_DISPLAY_MENU
     refreshDisplayIdleUi();
 #endif
+
+    if (lv_obj_ready(_firmwareAutoUpdateSwitch)) {
+        if (_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] != 0) {
+            lv_obj_add_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
+        }
+    }
 }
 
 void AppSettings::setZigbeeKeyboardVisible(bool visible)
@@ -5912,7 +6133,6 @@ void AppSettings::refreshHardwareMonitorUi(void)
                 lv_chart_set_next_value(trend_ui.historyChart, trend_ui.historySeries, history_buffer[sample_index]);
             }
             lv_obj_set_style_bg_color(trend_ui.historyChart, background_color, LV_PART_MAIN);
-            lv_obj_set_style_bg_color(trend_ui.historyChart, line_color, LV_PART_ITEMS);
             lv_chart_refresh(trend_ui.historyChart);
         }
         if (lv_obj_ready(trend_ui.historyLeftLabel)) {
@@ -5926,7 +6146,6 @@ void AppSettings::refreshHardwareMonitorUi(void)
             lv_label_set_text(trend_ui.historyFooterLabel, footer);
         }
     };
-
 #if CONFIG_JC4880_FEATURE_BATTERY
     battery_history_service::Status battery_status = {};
     battery_history_service::HistorySample battery_samples[battery_history_service::kMaxHistorySamples] = {};
@@ -6795,8 +7014,40 @@ void AppSettings::onOtaUpdateAvailablePopupEventCallback(lv_event_t *e)
     lv_msgbox_close_async(msgbox);
 
     if ((button_text != nullptr) && (strcmp(button_text, "Update") == 0)) {
-        app->requestFirmwareScreenOpen(true);
+        app->startPreferredOtaUpdate();
     }
+}
+
+void AppSettings::onFirmwareAutoUpdateSwitchValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    bool enabled = false;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid OTA auto update switch");
+
+    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
+    app->_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] = enabled ? 1 : 0;
+    app->setNvsParam(NVS_KEY_OTA_AUTO_UPDATE, enabled ? 1 : 0);
+
+end:
+    return;
+}
+
+void AppSettings::onOtaUpdateProgressCloseEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        return;
+    }
+
+    if (app->_firmwareUpdateInProgress) {
+        return;
+    }
+
+    app->setOtaUpdateProgressOverlayVisible(false);
 }
 
 

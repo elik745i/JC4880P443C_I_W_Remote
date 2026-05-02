@@ -186,8 +186,10 @@ private:
     void setFirmwareStatus(const std::string &status, bool is_error = false);
     void ensureFirmwareScreen(void);
     void ensureFirmwareOtaCheckOverlay(void);
+    void ensureOtaUpdateProgressOverlay(void);
     void setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error = false);
     void setFirmwareOtaCheckOverlayVisible(bool visible, const std::string &status = std::string());
+    void setOtaUpdateProgressOverlayVisible(bool visible);
     void queueFirmwareUiUpdate(const char *status, int32_t percent, bool busy, bool is_error);
     void populateFirmwareDropdown(lv_obj_t *dropdown, const std::vector<FirmwareEntry_t> &entries, const char *empty_label);
     void rebuildFirmwareOtaList(void);
@@ -214,6 +216,7 @@ private:
     void requestFirmwareScreenOpen(bool prefer_newer);
     void openFirmwareScreenIfPending(void);
     int findPreferredOtaEntryIndex(bool prefer_newer) const;
+    bool startPreferredOtaUpdate(void);
     static void firmwareUpdateTask(void *arg);
     static void applyAsyncFirmwareUiUpdate(void *arg);
     static void applyAsyncOtaAvailabilityResult(void *arg);
@@ -307,7 +310,9 @@ private:
     static void onFirmwareOtaEntryCheckedEventCallback(lv_event_t *e);
     static void onFirmwareFactoryResetClickedEventCallback(lv_event_t *e);
     static void onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e);
+    static void onFirmwareAutoUpdateSwitchValueChangeEventCallback(lv_event_t *e);
     static void onOtaUpdateAvailablePopupEventCallback(lv_event_t *e);
+    static void onOtaUpdateProgressCloseEventCallback(lv_event_t *e);
     // Audio
     static void onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e);
     static void onSliderPanelSystemVolumeValueChangeEventCallback(lv_event_t * e);
@@ -495,6 +500,7 @@ private:
     lv_obj_t *_firmwareSdFlashButton;
     lv_obj_t *_firmwareOtaCheckButton;
     lv_obj_t *_firmwareOtaFlashButton;
+    lv_obj_t *_firmwareAutoUpdateSwitch;
     lv_obj_t *_firmwareCurrentVersionLabel;
     lv_obj_t *_firmwareOtaSummaryLabel;
     lv_obj_t *_firmwareOtaListContainer;
@@ -505,6 +511,11 @@ private:
     lv_obj_t *_firmwareProgressBar;
     lv_obj_t *_firmwareProgressLabel;
     lv_obj_t *_otaUpdateAvailableMsgbox;
+    lv_obj_t *_otaUpdateProgressOverlay;
+    lv_obj_t *_otaUpdateProgressStatusLabel;
+    lv_obj_t *_otaUpdateProgressBar;
+    lv_obj_t *_otaUpdateProgressLabel;
+    lv_obj_t *_otaUpdateProgressCloseButton;
     bool _firmwareUpdateInProgress;
     bool _firmwareOtaCheckInProgress;
     bool _otaStatusIconInstalled;

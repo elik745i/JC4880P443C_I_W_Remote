@@ -2,15 +2,14 @@
 
 ## Highlights
 
-- Added bootloader-backed OTA rollback handling so a newly updated P4 image can roll back automatically if it crashes or bootloops before the post-update grace period marks it healthy.
-- Added a default-enabled `Auto Update` switch on the Firmware page under the installed project/version block so OTA discovery can start the preferred update automatically, keep the OTA modal visible during the update, and fall back to install/reschedule controls after a user-triggered cancel.
-- Added the dedicated OTA top-bar status icon plus reschedule / cancel OTA modal controls with future-only delay handling for automatic updates.
-- Renamed the main ESP-IDF P4 project and generated firmware image from `esp_brookesia_demo` to `ESP32P4_Remote`.
-- Updated product versioning and README/release documentation for the v1.3.1 release.
+- Added four new launcher apps: Browser, YouTube, E-Reader, and MQTT.
+- Browser and YouTube now use SD-card-backed cache when available and fall back to PSRAM when the card is not mounted.
+- Image Viewer now scans only `/sdcard/image` and no longer falls back to SPIFFS or extra image folders.
+- The P4 project name and generated firmware image remain `ESP32P4_Remote`, and the README was refreshed to document the expanded launcher surface and SD-card expectations.
 
 ## Validated Build Sizes
 
-- Main ESP32-P4 OTA app image: `0x6F1B30` bytes, leaving `0x09E4D0` bytes free in the smaller OTA slot.
+- Main ESP32-P4 OTA app image: `0x71C540` bytes, leaving `0x073AC0` bytes free in the smaller OTA slot.
 - ESP32-C6 app image: `0x1C7E50` bytes, leaving `0x0181B0` bytes free in the 1920 KB app slot.
 - ESP32-C6 merged flash image: `0x1D7E50` bytes.
 

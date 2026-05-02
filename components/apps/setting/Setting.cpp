@@ -2133,6 +2133,8 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_flag(ui_PanelSettingMainContainerItem3, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelSettingMainContainerItem4, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelSettingMainContainerItem5, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_scroll_dir(ui_PanelSettingMainContainer, LV_DIR_VER);
+    lv_obj_add_flag(ui_PanelSettingMainContainer, LV_OBJ_FLAG_SCROLL_MOMENTUM);
 
     #if APP_SETTINGS_FEATURE_WIFI
     _wifiMenuItem = createMainMenuItem("Wi-Fi", &ui_img_wifi_png, nullptr, nullptr);
@@ -5731,9 +5733,9 @@ void AppSettings::applyAsyncFirmwareUiUpdate(void *arg)
     }
 
     if (canceled) {
+        context->app->refreshFirmwareUi();
         context->app->setFirmwareStatus(context->status, false);
         context->app->setFirmwareProgress(0, "Install now, reschedule, or close this automatic update.", false);
-        context->app->refreshFirmwareUi();
         delete context;
         return;
     }
@@ -5873,11 +5875,23 @@ bool AppSettings::flashFirmwareFromFile(const FirmwareEntry_t &entry, std::strin
         }
     }
 
+    if (_firmwareCancelRequested) {
+        error_message = "Firmware update canceled.";
+        ESP_LOGI(TAG, "SD firmware flash canceled before finalization");
+        goto cleanup;
+    }
+
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK) {
         error_message = std::string("esp_ota_end failed: ") + esp_err_to_name(err);
         ESP_LOGE(TAG, "%s", error_message.c_str());
         goto cleanup_no_abort;
+    }
+
+    if (_firmwareCancelRequested) {
+        error_message = "Firmware update canceled.";
+        ESP_LOGI(TAG, "SD firmware flash canceled before boot partition switch");
+        return false;
     }
 
     err = esp_ota_set_boot_partition(partition);
@@ -6102,11 +6116,23 @@ bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string
         }
     }
 
+    if (_firmwareCancelRequested) {
+        error_message = "Firmware update canceled.";
+        ESP_LOGI(TAG, "OTA firmware flash canceled before finalization");
+        goto ota_cleanup;
+    }
+
     err = esp_ota_end(ota_handle);
     if (err != ESP_OK) {
         error_message = std::string("esp_ota_end failed: ") + esp_err_to_name(err);
         ESP_LOGE(TAG, "%s", error_message.c_str());
         goto ota_cleanup_no_abort;
+    }
+
+    if (_firmwareCancelRequested) {
+        error_message = "Firmware update canceled.";
+        ESP_LOGI(TAG, "OTA firmware flash canceled before boot partition switch");
+        return false;
     }
 
     err = esp_ota_set_boot_partition(partition);

@@ -39,6 +39,10 @@ Joystick circuit draft:
 Compared with the stock Espressif-based firmware stack used for this hardware profile, this build adds or changes the following:
 
 - Files app for browsing both `/sdcard` and SPIFFS directly on the device.
+- Browser app for lightweight DuckDuckGo Lite web search with SD-card cache when available and PSRAM fallback otherwise.
+- YouTube app for lightweight search and metadata browsing through public Invidious mirrors with SD-card cache when available and PSRAM fallback otherwise.
+- E-Reader app for reading text-oriented files from the SD card.
+- MQTT app with launch-page broker, credentials, client ID, and topic settings for quick connection testing.
 - Internet Radio app with station discovery by popularity, country, language, and category.
 - Native SEGA app with Master System, Game Gear, SG-1000, and Genesis / Mega Drive ROM support.
 - SEGA browser now includes an optional FPS overlay toggle, and the in-game control surface is tuned for the rotated handheld presentation.
@@ -85,6 +89,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Internal SRAM usage was reduced substantially by moving large SEGA emulator permanent buffers and tables into PSRAM-backed BSS.
 - Additional SEGA emulator permanent RAM, preview buffers, and SMS / Genesis scratch state now live in PSRAM-backed BSS, which cuts fresh-boot internal SRAM pressure before the emulator is launched.
 - Additional boot-time SRAM pressure was removed by deferring heavy Internet Radio, Image Display, and SEGA UI/runtime setup until first launch.
+- Image Viewer now reads images only from `/sdcard/image` instead of scanning SPIFFS or extra fallback folders.
 - The unused camera and deep-learning component stack was removed from the resolved build graph to reduce flash footprint and memory pressure.
 - Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
 - Music Player runtime metadata, library indexes, and long-lived worker stacks now prefer PSRAM, which reduces launch-time and background SRAM pressure.
@@ -116,12 +121,15 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ### Launcher And Native Apps
 
 - Phone-style launcher UI based on ESP-Brookesia and LVGL.
-- Settings, Calculator, Files, Music Player, Internet Radio, Image Display, and SEGA Emulator.
+- Settings, Calculator, Files, Browser, YouTube, E-Reader, MQTT, Music Player, Internet Radio, Image Display, and SEGA Emulator.
 - SEGA Emulator app integrated into the launcher instead of living as a separate upstream project.
 
 ### Media And Storage
 
 - Files app can inspect both onboard SPIFFS and the SD card.
+- Browser and YouTube cache heavier network responses to SD card when mounted, otherwise they fall back to PSRAM-backed buffers.
+- E-Reader reads supported files from the SD card.
+- Image Viewer now looks only in `/sdcard/image` for image content.
 - Music and image sample payloads were removed from SPIFFS to save flash.
 - The firmware updater can scan `/sdcard/firmware` for local `.bin` images or check GitHub releases for OTA-ready `.bin` assets.
 
@@ -213,7 +221,7 @@ Current modular switches include:
 
 - Connectivity domains: Wi-Fi, Bluetooth, BLE, ZigBee, internet time/date sync.
 - System domains: hardware info, battery, display, audio, security, OTA, about-device.
-- Launcher apps: Settings, Calculator, SEGA Emulator, Image Viewer, File Manager, Music Player, Internet Radio.
+- Launcher apps: Settings, Calculator, SEGA Emulator, Image Viewer, File Manager, Music Player, Internet Radio, Browser, YouTube, E-Reader, MQTT.
 
 Within the Settings app, these feature flags now also gate the actual Settings sections and their supporting runtime work. For example, disabling BLE removes the Bluetooth entry from Settings and skips its startup path, and disabling OTA removes the firmware updater entry and screen.
 

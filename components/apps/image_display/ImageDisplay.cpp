@@ -14,9 +14,10 @@
 #include "driver/jpeg_decode.h"
 #include "ImageDisplay.hpp"
 #include "app_gui/app_image_display.h"
+#include "storage_access.h"
 
 #define APP_SUPPORT_IMAGE_FILE_EXT ".jpg"
-#define IMAGE_DIR   BSP_SPIFFS_MOUNT_POINT "/image"
+#define IMAGE_DIR   "/sdcard/image"
 #define APP_IMAGE_FRAME_BUF_SIZE   (800 * 1280 * 2)
 #define APP_CACHE_BUF_SIZE         (64 * 1024)
 
@@ -110,6 +111,22 @@ AppImageDisplay::~AppImageDisplay()
 
 bool AppImageDisplay::run(void)
 {
+    if ((_image_file_iterator == nullptr) || (image_count <= 0)) {
+        lv_obj_t *title = lv_label_create(lv_scr_act());
+        lv_label_set_text(title, "Image Viewer");
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
+        lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 18);
+
+        lv_obj_t *message = lv_label_create(lv_scr_act());
+        lv_obj_set_width(message, 420);
+        lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(message,
+                  "No JPG images were found yet. Add files under /sdcard/image.");
+        lv_obj_set_style_text_font(message, &lv_font_montserrat_16, 0);
+        lv_obj_align(message, LV_ALIGN_TOP_LEFT, 20, 86);
+        return true;
+    }
+
     if (image_event_group == nullptr) {
         image_event_group = xEventGroupCreate();
         if (image_event_group == nullptr) {
@@ -219,17 +236,28 @@ bool AppImageDisplay::close(void)
 
 bool AppImageDisplay::init(void)
 {
-    if (bsp_extra_file_instance_init(IMAGE_DIR, &_image_file_iterator) != ESP_OK) {
-        ESP_LOGW(TAG, "Built-in sample image directory is missing, skipping image viewer app");
-        return false;
+    _image_file_iterator = nullptr;
+    image_count = 0;
+
+    const char *directories[] = {
+        IMAGE_DIR,
+    };
+
+    for (size_t index = 0; index < (sizeof(directories) / sizeof(directories[0])); ++index) {
+        if (!app_storage_ensure_sdcard_available()) {
+            continue;
+        }
+        if (bsp_extra_file_instance_init(directories[index], &_image_file_iterator) != ESP_OK) {
+            continue;
+        }
+        image_count = file_iterator_get_count(_image_file_iterator);
+        if (image_count > 0) {
+            ESP_LOGI(TAG, "Using image directory %s with %d JPG files", directories[index], image_count);
+            return true;
+        }
     }
 
-    image_count = file_iterator_get_count(_image_file_iterator);
-    if (image_count <= 0) {
-        ESP_LOGW(TAG, "No built-in sample images found, skipping image viewer app");
-        return false;
-    }
-    ESP_LOGI(TAG,"image file count = %d",image_count);
+    ESP_LOGW(TAG, "No JPG images found in SPIFFS or SD card. Showing empty-state viewer.");
 
     return true;
 }

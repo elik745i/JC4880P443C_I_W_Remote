@@ -1472,6 +1472,22 @@ extern "C" void app_main(void)
     s_internetRadioApp = install_app_or_delete(*phone, new InternetRadio(), "internet radio");
 #endif
 
+#if CONFIG_JC4880_APP_P4_BROWSER
+    install_app_or_delete(*phone, new P4Browser(), "browser");
+#endif
+
+#if CONFIG_JC4880_APP_P4_YOUTUBE
+    install_app_or_delete(*phone, new P4YouTube(), "youtube");
+#endif
+
+#if CONFIG_JC4880_APP_EREADER
+    install_app_or_delete(*phone, new EReaderApp(), "e-reader");
+#endif
+
+#if CONFIG_JC4880_APP_MQTT
+    install_app_or_delete(*phone, new MqttApp(), "mqtt");
+#endif
+
     uint16_t free_sram_size_kb = heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024;
     uint16_t total_sram_size_kb = heap_caps_get_total_size(MALLOC_CAP_INTERNAL) / 1024;
     uint16_t free_psram_size_kb = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024;

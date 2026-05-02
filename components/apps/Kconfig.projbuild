@@ -123,6 +123,25 @@ menu "JC4880 Modular Configuration"
             default y
             depends on JC4880_FEATURE_WIFI && JC4880_FEATURE_AUDIO
 
+        config JC4880_APP_P4_BROWSER
+            bool "Browser"
+            default y
+            depends on JC4880_FEATURE_WIFI
+
+        config JC4880_APP_P4_YOUTUBE
+            bool "YouTube"
+            default y
+            depends on JC4880_FEATURE_WIFI
+
+        config JC4880_APP_EREADER
+            bool "E-Reader"
+            default y
+
+        config JC4880_APP_MQTT
+            bool "MQTT"
+            default y
+            depends on JC4880_FEATURE_WIFI
+
     endmenu
 
 endmenu

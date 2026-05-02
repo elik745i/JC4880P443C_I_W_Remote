@@ -58,7 +58,7 @@
     "idf.customExtraVars": {
         "IDF_TARGET": "esp32p4"
     },
-    "idf.portWin": "COM10",
+    "idf.portWin": "COM11",
     "jc4880.flashTarget": "p4",
     "jc4880.flashBaud.p4": 460800,
     "jc4880.flashBaud.c6": 115200,

@@ -20,7 +20,7 @@ constexpr int8_t kDefaultMcpControlPins[JC4880_JOYPAD_SPI_CONTROL_COUNT] = {
     -1,
     -1,
     -1,
-    12,
+    13,
     11,
     15,
     14,
@@ -253,6 +253,16 @@ constexpr const char *kJoypadButtonLabels[JC4880_JOYPAD_BUTTON_CONTROL_COUNT] = 
     "Key Button",
 };
 
+bool isLocalControllerActive(const jc4880_joypad_config_t &config)
+{
+    return config.backend == JC4880_JOYPAD_BACKEND_MANUAL;
+}
+
+bool isLocalNeopixelEffectivelyEnabled(const jc4880_joypad_config_t &config, int32_t stored_power)
+{
+    return (stored_power != 0) && isLocalControllerActive(config);
+}
+
 lv_color_t parseJoypadColor(const char *hex, lv_color_t fallback)
 {
     if ((hex == nullptr) || (*hex == '\0')) {
@@ -442,6 +452,9 @@ void applyRequestedLocalDefaults(jc4880_joypad_config_t &config)
     }
 
     for (size_t index = 0; index < 2; ++index) {
+        if (config.manual_resistive_gpio[index] < 0) {
+            config.manual_resistive_gpio[index] = kDefaultResistiveAxisPins[index];
+        }
         if (config.manual_mcp_i2c_gpio[index] < 0) {
             config.manual_mcp_i2c_gpio[index] = kDefaultMcpI2cPins[index];
         }
@@ -2052,6 +2065,8 @@ void AppSettings::refreshJoypadUi(void)
         return;
     }
 
+    applyRequestedLocalDefaults(config);
+
     jc4880_joypad_ble_report_state_t report = {};
     jc4880_joypad_get_ble_report_state(&report);
     jc4880_joypad_manual_report_state_t manual_report = {};
@@ -2197,7 +2212,7 @@ void AppSettings::refreshJoypadUi(void)
     }
 
     if (lv_obj_ready(_joypadLocalNeopixelPowerSwitch)) {
-        if (_nvs_param_map[kNvsKeyNeopixelPower] != 0) {
+        if (isLocalNeopixelEffectivelyEnabled(config, _nvs_param_map[kNvsKeyNeopixelPower])) {
             lv_obj_add_state(_joypadLocalNeopixelPowerSwitch, LV_STATE_CHECKED);
         } else {
             lv_obj_clear_state(_joypadLocalNeopixelPowerSwitch, LV_STATE_CHECKED);
@@ -2354,7 +2369,7 @@ void AppSettings::refreshJoypadUi(void)
     if (lv_obj_ready(_joypadLocalNeopixelInfoLabel)) {
         std::string info = std::string("Neopixel GPIO: ") + std::to_string(_nvs_param_map[kNvsKeyNeopixelGpio]);
         info += " | Brightness: " + std::to_string(_nvs_param_map[kNvsKeyNeopixelBrightness]);
-        info += (_nvs_param_map[kNvsKeyNeopixelPower] != 0) ? " | Power: On" : " | Power: Off";
+        info += isLocalNeopixelEffectivelyEnabled(config, _nvs_param_map[kNvsKeyNeopixelPower]) ? " | Power: On" : " | Power: Off";
         info += "\nHaptics GPIO: ";
         if (_nvs_param_map[kNvsKeyAudioHapticGpio] < 0) {
             info += "Disabled";
@@ -2539,6 +2554,8 @@ void AppSettings::onJoypadConfigChangedEventCallback(lv_event_t *e)
 {
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
     lv_obj_t *target = nullptr;
+    bool local_controller_active = false;
+    bool backend_toggle_changed = false;
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
 
     target = lv_event_get_target(e);
@@ -2551,7 +2568,13 @@ void AppSettings::onJoypadConfigChangedEventCallback(lv_event_t *e)
         lv_obj_clear_state(app->_joypadBleActiveSwitch, LV_STATE_CHECKED);
     }
 
+    local_controller_active = lv_obj_ready(app->_joypadManualActiveSwitch) &&
+                              lv_obj_has_state(app->_joypadManualActiveSwitch, LV_STATE_CHECKED);
+    backend_toggle_changed = (target == app->_joypadManualActiveSwitch) || (target == app->_joypadBleActiveSwitch);
     app->persistJoypadConfigFromUi();
+    if (backend_toggle_changed) {
+        app->applyNeopixelConfig();
+    }
     app->refreshJoypadUi();
 
 end:

@@ -164,7 +164,7 @@ constexpr jc4880_joypad_config_t makeDefaultConfig()
     }
     config.manual_mcp_i2c_gpio[0] = 30;
     config.manual_mcp_i2c_gpio[1] = 31;
-    config.manual_mcp_button_pin[JC4880_JOYPAD_SPI_CONTROL_START] = 12;
+    config.manual_mcp_button_pin[JC4880_JOYPAD_SPI_CONTROL_START] = 13;
     config.manual_mcp_button_pin[JC4880_JOYPAD_SPI_CONTROL_EXIT] = 11;
     config.manual_mcp_button_pin[JC4880_JOYPAD_SPI_CONTROL_SAVE] = 15;
     config.manual_mcp_button_pin[JC4880_JOYPAD_SPI_CONTROL_LOAD] = 14;

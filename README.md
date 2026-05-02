@@ -159,6 +159,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - To pair the TOBO BSP-D9 with the unit, turn on `BLE Controller` in Settings, then press `HOME+X` on the controller.
 - Reflash the ESP32-C6 first with the coprocessor binary from the [latest release](https://github.com/elik745i/JC4880P443C_I_W_Remote/releases/latest), otherwise controller pairing on the P4 side is not expected to work correctly.
 - Local Controller mode also supports a directly wired handheld setup with analog `Y Axis` / `X Axis` inputs on the P4 and MCP23017 button expansion over I2C.
+- The default MCP23017 Local Controller dropdowns are `Y Axis GPIO = 50`, `X Axis GPIO = 51`, `MCP SDA GPIO = 30`, `MCP SCL GPIO = 31`, `Start = B5`, `Exit = B3`, `Save = B7`, `Load = B6`, `A = B2`, `B = B1`, `C = B0`, and `Key = B4`.
 - The Local Controller preview is live on-device and reflects analog movement plus MCP-backed face and action buttons, including `Save`, `Load`, `Exit`, and `Key`.
 - Local Controller settings also expose non-blocking Neopixel and haptic feedback controls, including effect selection, brightness, GPIO routing, and haptic strength test pulses.
 

@@ -3928,7 +3928,10 @@ void AppSettings::applyNeopixelConfig(void)
 #if !APP_SETTINGS_FEATURE_DISPLAY_MENU
     return;
 #else
-    jc4880_neopixel_apply_config(_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0,
+    jc4880_joypad_config_t joypad_config = {};
+    const bool local_controller_active = jc4880_joypad_get_config(&joypad_config) &&
+                                         (joypad_config.backend == JC4880_JOYPAD_BACKEND_MANUAL);
+    jc4880_neopixel_apply_config((_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0) && local_controller_active,
                                  _nvs_param_map[NVS_KEY_NEOPIXEL_GPIO],
                                  std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS]), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MIN), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MAX)),
                                  std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE]), static_cast<int32_t>(0), static_cast<int32_t>(11)),

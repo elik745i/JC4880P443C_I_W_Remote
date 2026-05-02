@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <memory>
 
 #include "esp_log.h"
+
+LV_IMG_DECLARE(img_app_browser);
 
 namespace {
 
@@ -12,6 +15,8 @@ static constexpr const char *TAG = "P4Browser";
 static constexpr const char *kSearchUrlPrefix = "https://html.duckduckgo.com/html/?q=";
 static constexpr const char *kSdCacheDir = "/sdcard/.jc4880_browser_cache";
 static constexpr size_t kSdThresholdBytes = 8192;
+static constexpr const char *kDefaultHomeTitle = "Google";
+static constexpr const char *kDefaultHomeUrl = "https://www.google.com/";
 
 struct WorkerContext {
     P4Browser *app = nullptr;
@@ -122,20 +127,6 @@ std::string strip_html(const std::string &html)
     return trim_copy(normalized);
 }
 
-std::string extract_between(const std::string &text, size_t start_pos, const char *begin_marker, const char *end_marker)
-{
-    const size_t begin = text.find(begin_marker, start_pos);
-    if (begin == std::string::npos) {
-        return {};
-    }
-    const size_t value_start = begin + std::strlen(begin_marker);
-    const size_t end = text.find(end_marker, value_start);
-    if (end == std::string::npos) {
-        return {};
-    }
-    return text.substr(value_start, end - value_start);
-}
-
 std::string decode_duckduckgo_result_url(const std::string &href)
 {
     const size_t uddg_pos = href.find("uddg=");
@@ -148,6 +139,28 @@ std::string decode_duckduckgo_result_url(const std::string &href)
         value_end = href.size();
     }
     return app_network_cache::percent_decode_component(href.substr(value_start, value_end - value_start));
+}
+
+bool looks_like_url(const std::string &text)
+{
+    if (text.empty()) {
+        return false;
+    }
+    if (text.find("://") != std::string::npos) {
+        return true;
+    }
+    if (text.find(' ') != std::string::npos) {
+        return false;
+    }
+    return (text.find('.') != std::string::npos) || (text.find('/') != std::string::npos);
+}
+
+std::string normalize_url(const std::string &text)
+{
+    if (text.find("://") != std::string::npos) {
+        return text;
+    }
+    return "https://" + text;
 }
 
 P4Browser::SearchResultList parse_results(const std::string &html)
@@ -199,7 +212,7 @@ P4Browser::SearchResultList parse_results(const std::string &html)
 } // namespace
 
 P4Browser::P4Browser():
-    ESP_Brookesia_PhoneApp("Browser", nullptr, true),
+    ESP_Brookesia_PhoneApp("Browser", &img_app_browser, true),
     _screen(nullptr),
     _statusLabel(nullptr),
     _searchArea(nullptr),
@@ -210,7 +223,8 @@ P4Browser::P4Browser():
     _detailMeta(nullptr),
     _detailBody(nullptr),
     _resultsPanel(nullptr),
-    _requestInFlight(false)
+    _requestInFlight(false),
+    _homeLoaded(false)
 {
 }
 
@@ -225,7 +239,13 @@ bool P4Browser::run()
         return false;
     }
     showResultList();
-    setStatus("Search the web. Heavy pages cache on SD card when available, otherwise in PSRAM.");
+    if (!_homeLoaded) {
+        _homeLoaded = true;
+        lv_textarea_set_text(_searchArea, "google.com");
+        startOpenPage(kDefaultHomeTitle, kDefaultHomeUrl, "Opening google.com...");
+    } else {
+        setStatus("Chrome-style shell active. Use the address bar for URLs or search terms. Large pages cache on SD card first, then PSRAM.");
+    }
     return true;
 }
 
@@ -255,6 +275,8 @@ bool P4Browser::close()
 {
     _results.clear();
     _buttonIndexMap.clear();
+    _homeLoaded = false;
+    _requestInFlight.store(false);
     return true;
 }
 
@@ -265,48 +287,90 @@ bool P4Browser::buildUi()
         return false;
     }
 
-    lv_obj_set_style_bg_color(_screen, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_bg_grad_color(_screen, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_add_event_cb(_screen, onScreenDeleted, LV_EVENT_DELETE, this);
+
+    lv_obj_set_style_bg_color(_screen, lv_color_hex(0xE8EEF9), 0);
+    lv_obj_set_style_bg_grad_color(_screen, lv_color_hex(0xF8FAFC), 0);
     lv_obj_set_style_bg_grad_dir(_screen, LV_GRAD_DIR_VER, 0);
 
-    lv_obj_t *title = lv_label_create(_screen);
-    lv_label_set_text(title, "Browser");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_30, 0);
+    lv_obj_t *header = lv_obj_create(_screen);
+    lv_obj_set_size(header, 444, 70);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_set_style_radius(header, 28, 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_set_style_pad_all(header, 12, 0);
+    lv_obj_set_style_bg_color(header, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_shadow_width(header, 18, 0);
+    lv_obj_set_style_shadow_opa(header, LV_OPA_20, 0);
+    lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *chromeDotRed = lv_obj_create(header);
+    lv_obj_set_size(chromeDotRed, 16, 16);
+    lv_obj_align(chromeDotRed, LV_ALIGN_LEFT_MID, 8, 0);
+    lv_obj_set_style_radius(chromeDotRed, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(chromeDotRed, lv_color_hex(0xEA4335), 0);
+    lv_obj_set_style_border_width(chromeDotRed, 0, 0);
+    lv_obj_clear_flag(chromeDotRed, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *chromeDotYellow = lv_obj_create(header);
+    lv_obj_set_size(chromeDotYellow, 16, 16);
+    lv_obj_align_to(chromeDotYellow, chromeDotRed, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_set_style_radius(chromeDotYellow, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(chromeDotYellow, lv_color_hex(0xFBBC05), 0);
+    lv_obj_set_style_border_width(chromeDotYellow, 0, 0);
+    lv_obj_clear_flag(chromeDotYellow, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *chromeDotGreen = lv_obj_create(header);
+    lv_obj_set_size(chromeDotGreen, 16, 16);
+    lv_obj_align_to(chromeDotGreen, chromeDotYellow, LV_ALIGN_OUT_RIGHT_MID, 8, 0);
+    lv_obj_set_style_radius(chromeDotGreen, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(chromeDotGreen, lv_color_hex(0x34A853), 0);
+    lv_obj_set_style_border_width(chromeDotGreen, 0, 0);
+    lv_obj_clear_flag(chromeDotGreen, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Chrome Lite");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 18, 16);
+    lv_obj_align(title, LV_ALIGN_RIGHT_MID, -10, 0);
 
     _statusLabel = lv_label_create(_screen);
     lv_obj_set_width(_statusLabel, 444);
     lv_label_set_long_mode(_statusLabel, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(_statusLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_statusLabel, lv_color_hex(0x334155), 0);
-    lv_obj_align(_statusLabel, LV_ALIGN_TOP_LEFT, 18, 58);
+    lv_obj_align(_statusLabel, LV_ALIGN_TOP_LEFT, 18, 92);
 
     _searchArea = lv_textarea_create(_screen);
-    lv_obj_set_size(_searchArea, 316, 54);
-    lv_obj_align(_searchArea, LV_ALIGN_TOP_LEFT, 18, 98);
+    lv_obj_set_size(_searchArea, 336, 54);
+    lv_obj_align(_searchArea, LV_ALIGN_TOP_LEFT, 18, 132);
     lv_textarea_set_one_line(_searchArea, true);
-    lv_textarea_set_placeholder_text(_searchArea, "Search the web");
+    lv_textarea_set_placeholder_text(_searchArea, "Search Google or type a URL");
+    lv_obj_set_style_radius(_searchArea, 27, 0);
+    lv_obj_set_style_bg_color(_searchArea, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_width(_searchArea, 0, 0);
     lv_obj_add_event_cb(_searchArea, onSearchFocus, LV_EVENT_FOCUSED, this);
 
     lv_obj_t *searchButton = lv_btn_create(_screen);
-    lv_obj_set_size(searchButton, 120, 54);
-    lv_obj_align(searchButton, LV_ALIGN_TOP_RIGHT, -18, 98);
+    lv_obj_set_size(searchButton, 100, 54);
+    lv_obj_align(searchButton, LV_ALIGN_TOP_RIGHT, -18, 132);
     lv_obj_set_style_bg_color(searchButton, lv_color_hex(0x2563EB), 0);
     lv_obj_set_style_border_width(searchButton, 0, 0);
+    lv_obj_set_style_radius(searchButton, 27, 0);
     lv_obj_add_event_cb(searchButton, onSearchClicked, LV_EVENT_CLICKED, this);
 
     lv_obj_t *searchLabel = lv_label_create(searchButton);
-    lv_label_set_text(searchLabel, "Search");
+    lv_label_set_text(searchLabel, "Go");
     lv_obj_set_style_text_color(searchLabel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_center(searchLabel);
 
     _resultsPanel = lv_obj_create(_screen);
     lv_obj_set_size(_resultsPanel, 444, 370);
-    lv_obj_align(_resultsPanel, LV_ALIGN_TOP_LEFT, 18, 164);
+    lv_obj_align(_resultsPanel, LV_ALIGN_TOP_LEFT, 18, 198);
     lv_obj_set_style_radius(_resultsPanel, 24, 0);
     lv_obj_set_style_border_width(_resultsPanel, 0, 0);
     lv_obj_set_style_pad_all(_resultsPanel, 12, 0);
+    lv_obj_set_style_bg_color(_resultsPanel, lv_color_hex(0xFFFFFF), 0);
 
     _resultsList = lv_list_create(_resultsPanel);
     lv_obj_set_size(_resultsList, 420, 344);
@@ -314,10 +378,11 @@ bool P4Browser::buildUi()
 
     _detailPanel = lv_obj_create(_screen);
     lv_obj_set_size(_detailPanel, 444, 370);
-    lv_obj_align(_detailPanel, LV_ALIGN_TOP_LEFT, 18, 164);
+    lv_obj_align(_detailPanel, LV_ALIGN_TOP_LEFT, 18, 198);
     lv_obj_set_style_radius(_detailPanel, 24, 0);
     lv_obj_set_style_border_width(_detailPanel, 0, 0);
     lv_obj_set_style_pad_all(_detailPanel, 14, 0);
+    lv_obj_set_style_bg_color(_detailPanel, lv_color_hex(0xFFFFFF), 0);
     lv_obj_add_flag(_detailPanel, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *backButton = lv_btn_create(_detailPanel);
@@ -389,6 +454,13 @@ void P4Browser::startSearch()
         return;
     }
 
+    const std::string input = trim_copy(query);
+    if (looks_like_url(input)) {
+        _requestInFlight.store(false);
+        startOpenPage(input, normalize_url(input), "Opening page...");
+        return;
+    }
+
     lv_obj_add_flag(_keyboard, LV_OBJ_FLAG_HIDDEN);
     setStatus("Searching DuckDuckGo Lite...");
 
@@ -400,6 +472,30 @@ void P4Browser::startSearch()
         delete context;
         _requestInFlight.store(false);
         setStatus("Failed to start browser request.");
+    }
+}
+
+void P4Browser::startOpenPage(const std::string &title, const std::string &url, const char *status_text)
+{
+    if (_requestInFlight.exchange(true)) {
+        setStatus("Wait for the current request to finish.");
+        return;
+    }
+
+    if ((_keyboard != nullptr) && lv_obj_is_valid(_keyboard)) {
+        lv_obj_add_flag(_keyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+    setStatus(status_text);
+
+    WorkerContext *context = new WorkerContext();
+    context->app = this;
+    context->action = WorkerAction::Open;
+    context->title = title;
+    context->url = url;
+    if (xTaskCreate(workerTask, "p4_page", 10240, context, 5, nullptr) != pdPASS) {
+        delete context;
+        _requestInFlight.store(false);
+        setStatus("Failed to start page fetch.");
     }
 }
 

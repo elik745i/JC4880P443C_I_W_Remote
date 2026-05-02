@@ -33,6 +33,7 @@ public:
     using VideoResultList = std::vector<VideoResult, AppPsramAllocator<VideoResult>>;
 
     enum class WorkerAction {
+        Popular,
         Search,
         Detail,
     };
@@ -54,6 +55,7 @@ private:
     bool buildUi();
     bool ensureUiReady();
     bool hasLiveScreen() const;
+    void startLoadHome();
     void startSearch();
     void startOpenVideo(size_t index);
     void renderResults();
@@ -84,4 +86,5 @@ private:
     VideoResultList _results;
     std::unordered_map<lv_obj_t *, size_t> _buttonIndexMap;
     std::atomic<bool> _requestInFlight;
+    bool _homeLoaded;
 };

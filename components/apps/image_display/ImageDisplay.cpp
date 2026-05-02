@@ -96,6 +96,11 @@ static uint8_t *output_buf[APP_IMAMG_BUF];
 static size_t output_buf_size[APP_IMAMG_BUF];
 static uint8_t *input_buf[APP_IMAMG_BUF];
 
+static bool image_runtime_ready(void)
+{
+    return image_event_group != nullptr;
+}
+
 LV_IMG_DECLARE(img_app_img_display);
 
 AppImageDisplay::AppImageDisplay():
@@ -204,6 +209,10 @@ bool AppImageDisplay::run(void)
 bool AppImageDisplay::pause(void)
 {
     // app_image_display_pause();
+    if (!image_runtime_ready()) {
+        return true;
+    }
+
     xEventGroupClearBits(image_event_group, IMAGE_EVENT_TASK_RUN);
 
     return true;
@@ -212,6 +221,10 @@ bool AppImageDisplay::pause(void)
 bool AppImageDisplay::resume(void)
 {
     // app_image_display_resume();
+    if (!image_runtime_ready()) {
+        return true;
+    }
+
     xEventGroupSetBits(image_event_group, IMAGE_EVENT_DIR);
     xEventGroupSetBits(image_event_group, IMAGE_EVENT_TASK_RUN);
     return true;
@@ -225,11 +238,22 @@ bool AppImageDisplay::back(void)
 bool AppImageDisplay::close(void)
 {
     // app_image_display_close();
+    if (!image_runtime_ready()) {
+        return true;
+    }
+
     xEventGroupSetBits(image_event_group, IMAGE_EVENT_DELETE);
-    ESP_ERROR_CHECK(esp_timer_stop(time_refer_handle));
-    for(int i=0;i<2;i++)
-    {
+    if (time_refer_handle != NULL) {
+        esp_err_t ret = esp_timer_stop(time_refer_handle);
+        if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "Failed to stop image refresh timer: %s", esp_err_to_name(ret));
+        }
+    }
+
+    for (int i = 0; i < APP_IMAMG_BUF; i++) {
         free(output_buf[i]);
+        output_buf[i] = NULL;
+        output_buf_size[i] = 0;
     }
     return true;
 }
@@ -257,7 +281,7 @@ bool AppImageDisplay::init(void)
         }
     }
 
-    ESP_LOGW(TAG, "No JPG images found in SPIFFS or SD card. Showing empty-state viewer.");
+    ESP_LOGW(TAG, "No JPG images found under /sdcard/image. Showing empty-state viewer.");
 
     return true;
 }

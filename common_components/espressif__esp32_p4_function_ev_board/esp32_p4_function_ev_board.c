@@ -175,6 +175,16 @@ static esp_err_t bsp_sdcard_mount_with_profile(const esp_vfs_fat_sdmmc_mount_con
     if (ret != ESP_OK) {
         bsp_sdcard = NULL;
         s_sdcard_mounted = false;
+        if (use_ldo && (s_sd_pwr_ctrl_handle != NULL)) {
+            esp_err_t ldo_ret = sd_pwr_ctrl_del_on_chip_ldo(s_sd_pwr_ctrl_handle);
+            if (ldo_ret != ESP_OK) {
+                ESP_LOGW(TAG,
+                         "Failed to release on-chip SD LDO after '%s': %s",
+                         profile_name,
+                         esp_err_to_name(ldo_ret));
+            }
+            s_sd_pwr_ctrl_handle = NULL;
+        }
         esp_err_t deinit_ret = sdmmc_host_deinit_slot(host.slot);
         if ((deinit_ret != ESP_OK) && (deinit_ret != ESP_ERR_INVALID_STATE)) {
             ESP_LOGW(TAG, "Failed to deinit SD host slot after '%s': %s", profile_name, esp_err_to_name(deinit_ret));
@@ -242,6 +252,13 @@ esp_err_t bsp_sdcard_unmount(void)
     if (ret == ESP_OK) {
         bsp_sdcard = NULL;
         s_sdcard_mounted = false;
+        if (s_sd_pwr_ctrl_handle != NULL) {
+            esp_err_t ldo_ret = sd_pwr_ctrl_del_on_chip_ldo(s_sd_pwr_ctrl_handle);
+            if (ldo_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to release on-chip SD LDO during unmount: %s", esp_err_to_name(ldo_ret));
+            }
+            s_sd_pwr_ctrl_handle = NULL;
+        }
     }
 
     return ret;

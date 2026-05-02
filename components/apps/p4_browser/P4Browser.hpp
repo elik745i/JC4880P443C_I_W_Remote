@@ -54,6 +54,7 @@ private:
     bool ensureUiReady();
     bool hasLiveScreen() const;
     void startSearch();
+    void startOpenPage(const std::string &title, const std::string &url, const char *status_text);
     void startOpenResult(size_t index);
     void renderResults();
     void showResultList();
@@ -84,4 +85,5 @@ private:
     SearchResultList _results;
     std::unordered_map<lv_obj_t *, size_t> _buttonIndexMap;
     std::atomic<bool> _requestInFlight;
+    bool _homeLoaded;
 };

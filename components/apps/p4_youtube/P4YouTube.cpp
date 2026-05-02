@@ -5,6 +5,8 @@
 #include "cJSON.h"
 #include "esp_log.h"
 
+LV_IMG_DECLARE(img_app_youtube);
+
 namespace {
 
 static constexpr const char *TAG = "P4YouTube";
@@ -155,7 +157,7 @@ std::string parse_video_detail_body(const std::string &json, const std::string &
 } // namespace
 
 P4YouTube::P4YouTube():
-    ESP_Brookesia_PhoneApp("YouTube", nullptr, true),
+    ESP_Brookesia_PhoneApp("YouTube", &img_app_youtube, true),
     _screen(nullptr),
     _statusLabel(nullptr),
     _searchArea(nullptr),
@@ -166,7 +168,8 @@ P4YouTube::P4YouTube():
     _detailTitle(nullptr),
     _detailMeta(nullptr),
     _detailBody(nullptr),
-    _requestInFlight(false)
+    _requestInFlight(false),
+    _homeLoaded(false)
 {
 }
 
@@ -181,7 +184,12 @@ bool P4YouTube::run()
         return false;
     }
     showResultList();
-    setStatus("Search YouTube metadata through public Invidious mirrors. Large responses cache on SD card when mounted.");
+    if (!_homeLoaded) {
+        _homeLoaded = true;
+        startLoadHome();
+    } else {
+        setStatus("Popular videos load on open. Search queries and cached responses prefer SD card and fall back to PSRAM.");
+    }
     return true;
 }
 
@@ -208,7 +216,27 @@ bool P4YouTube::close()
 {
     _results.clear();
     _buttonIndexMap.clear();
+    _homeLoaded = false;
+    _requestInFlight.store(false);
     return true;
+}
+
+void P4YouTube::startLoadHome()
+{
+    if (_requestInFlight.exchange(true)) {
+        setStatus("Wait for the current request to finish.");
+        return;
+    }
+
+    setStatus("Loading popular videos...");
+    WorkerContext *context = new WorkerContext();
+    context->app = this;
+    context->action = WorkerAction::Popular;
+    if (xTaskCreate(workerTask, "p4_yt_home", 10240, context, 5, nullptr) != pdPASS) {
+        delete context;
+        _requestInFlight.store(false);
+        setStatus("Failed to load popular videos.");
+    }
 }
 
 bool P4YouTube::buildUi()
@@ -239,7 +267,7 @@ bool P4YouTube::buildUi()
     lv_obj_set_size(_searchArea, 316, 54);
     lv_obj_align(_searchArea, LV_ALIGN_TOP_LEFT, 18, 98);
     lv_textarea_set_one_line(_searchArea, true);
-    lv_textarea_set_placeholder_text(_searchArea, "Search YouTube");
+    lv_textarea_set_placeholder_text(_searchArea, "Search videos");
     lv_obj_add_event_cb(_searchArea, onSearchFocus, LV_EVENT_FOCUSED, this);
 
     lv_obj_t *searchButton = lv_btn_create(_screen);
@@ -427,7 +455,9 @@ void P4YouTube::showVideo(const std::string &title, const std::string &video_id,
     std::string meta = std::string("https://youtube.com/watch?v=") + video_id + "\nLoaded from " +
                        app_network_cache::storage_label(storage);
     lv_label_set_text(_detailMeta, meta.c_str());
-    lv_textarea_set_text(_detailBody, body.c_str());
+    std::string detail = body;
+    detail += "\n\nPlayback handoff is not implemented in this firmware build yet; this view shows the public metadata and watch URL.";
+    lv_textarea_set_text(_detailBody, detail.c_str());
     lv_obj_add_flag(_resultsPanel, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(_detailPanel, LV_OBJ_FLAG_HIDDEN);
 }
@@ -504,7 +534,23 @@ void P4YouTube::workerTask(void *context_ptr)
     result->app = context->app;
     result->action = context->action;
 
-    if (context->action == WorkerAction::Search) {
+    if (context->action == WorkerAction::Popular) {
+        app_network_cache::CachedPayload payload;
+        if (!fetch_invidious("/api/v1/popular", payload, result->status)) {
+            result->success = false;
+        } else {
+            std::string json;
+            result->success = app_network_cache::load_cached_text(payload, json, 64000);
+            if (!result->success) {
+                result->status = "Failed to read popular feed response";
+            } else {
+                result->results = parse_video_results(json);
+                result->success = !result->results.empty();
+                result->status = result->success ? ("Loaded " + std::to_string(result->results.size()) + " popular videos")
+                                                 : "No popular videos returned by the public mirrors";
+            }
+        }
+    } else if (context->action == WorkerAction::Search) {
         const std::string path = "/api/v1/search?q=" + app_network_cache::percent_encode_component(context->query) +
                                  "&type=video&page=1&sort_by=relevance";
         app_network_cache::CachedPayload payload;
@@ -560,7 +606,7 @@ void P4YouTube::applyWorkerResult(void *context)
         return;
     }
 
-    if (result->action == WorkerAction::Search) {
+    if ((result->action == WorkerAction::Search) || (result->action == WorkerAction::Popular)) {
         result->app->_results = std::move(result->results);
         result->app->renderResults();
         result->app->showResultList();

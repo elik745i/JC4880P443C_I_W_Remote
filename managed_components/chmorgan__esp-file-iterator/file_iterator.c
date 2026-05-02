@@ -32,8 +32,12 @@ static const char *TAG = "file_iterator";
 static esp_err_t file_scan(file_iterator_instance_t *i, const char *base_path)
 {
     i->count = 0;
+    i->list = NULL;
     struct dirent *p_dirent = NULL;
     DIR *p_dir_stream = opendir(base_path);
+
+    ESP_RETURN_ON_FALSE(p_dir_stream != NULL, ESP_ERR_NOT_FOUND,
+        TAG, "Failed to open directory: %s", base_path);
 
     do {    /* Get total file count */
         p_dirent = readdir(p_dir_stream);
@@ -45,11 +49,17 @@ static esp_err_t file_scan(file_iterator_instance_t *i, const char *base_path)
         }
     } while (1);
 
+    if (i->count == 0) {
+        return ESP_OK;
+    }
+
     i->list = (char **) malloc(i->count * sizeof(char *));
     ESP_RETURN_ON_FALSE(NULL != i->list, ESP_ERR_NO_MEM,
         TAG, "Failed allocate audio list buffer");
 
     p_dir_stream = opendir(base_path);
+    ESP_RETURN_ON_FALSE(p_dir_stream != NULL, ESP_ERR_NOT_FOUND,
+        TAG, "Failed to reopen directory: %s", base_path);
     for (size_t file_index = 0; file_index < i->count; file_index++) {
         p_dirent = readdir(p_dir_stream);
         if (NULL != p_dirent) {

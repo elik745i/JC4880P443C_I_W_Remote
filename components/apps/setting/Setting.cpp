@@ -64,6 +64,8 @@
 
 #include "esp_brookesia_versions.h"
 
+extern "C" bool __attribute__((weak)) jc_security_handle_app_launch_request(int app_id, const char *app_name);
+
 #if CONFIG_JC4880_FEATURE_WIFI
 #define APP_SETTINGS_FEATURE_WIFI 1
 #else
@@ -169,6 +171,10 @@ static constexpr uint32_t kBatteryCardExpandAnimMs = 240;
 static constexpr lv_coord_t kHardwareTrendCardCollapsedHeight = 146;
 static constexpr lv_coord_t kHardwareTrendCardExpandedHeight = 514;
 static constexpr uint32_t kHardwareTrendCardExpandAnimMs = 240;
+static constexpr int kStatusBarOtaIconId = 0x4F5441;
+static constexpr uint64_t kOtaAvailabilityInitialDelayUs = 20ULL * 1000000ULL;
+static constexpr uint64_t kOtaAvailabilitySuccessIntervalUs = 6ULL * 60ULL * 60ULL * 1000000ULL;
+static constexpr uint64_t kOtaAvailabilityRetryIntervalUs = 15ULL * 60ULL * 1000000ULL;
 
 static void *allocate_psram_preferred_buffer(size_t size)
 {
@@ -1651,8 +1657,15 @@ AppSettings::AppSettings():
     _firmwareStatusLabel(nullptr),
     _firmwareProgressBar(nullptr),
     _firmwareProgressLabel(nullptr),
+    _otaUpdateAvailableMsgbox(nullptr),
     _firmwareUpdateInProgress(false),
     _firmwareOtaCheckInProgress(false),
+    _otaStatusIconInstalled(false),
+    _otaUpdateAvailableThisBoot(false),
+    _otaUpdatePromptDismissedThisBoot(false),
+    _otaAvailabilityCheckInProgress(false),
+    _pendingOpenFirmwareScreen(false),
+    _nextOtaAvailabilityCheckUs(0),
     _bluetoothStatusIconInstalled(false),
     _zigbeeStatusIconInstalled(false),
     _deviceLockToggleContext{this, device_security::LockType::Device},
@@ -1878,6 +1891,10 @@ bool AppSettings::init(void)
 
     refreshRadioStatusBar();
 
+#if CONFIG_JC4880_FEATURE_OTA
+    _nextOtaAvailabilityCheckUs = static_cast<uint64_t>(esp_timer_get_time()) + kOtaAvailabilityInitialDelayUs;
+#endif
+
     return true;
 }
 
@@ -1897,6 +1914,7 @@ bool AppSettings::resume(void)
 {
     _is_ui_resumed = false;
     refreshRadioStatusBar();
+    openFirmwareScreenIfPending();
 
     return true;
 }
@@ -4161,6 +4179,31 @@ void AppSettings::refreshRadioStatusBar(void)
     if (_zigbeeStatusIconInstalled) {
         mutable_status_bar->setIconState(kStatusBarZigbeeIconId, zigbee_active ? 0 : -1);
     }
+
+#if CONFIG_JC4880_FEATURE_OTA
+    if (!_otaStatusIconInstalled) {
+        ESP_Brookesia_StatusBarIconData_t ota_icon = {
+            .size = {
+                .width = 18,
+                .height = 18,
+            },
+            .icon = {
+                .image_num = 1,
+                .images = {
+                    ESP_BROOKESIA_STYLE_IMAGE_RECOLOR_WHITE(&img_app_setting),
+                },
+            },
+        };
+
+        _otaStatusIconInstalled = mutable_status_bar->addIcon(
+            ota_icon, ESP_BROOKESIA_STATUS_BAR_DATA_AREA_NUM_MAX - 1, kStatusBarOtaIconId
+        );
+    }
+
+    if (_otaStatusIconInstalled) {
+        mutable_status_bar->setIconState(kStatusBarOtaIconId, _otaUpdateAvailableThisBoot ? 0 : -1);
+    }
+#endif
 }
 
 void AppSettings::refreshZigbeeUi(void)
@@ -4713,7 +4756,25 @@ bool AppSettings::scanSdFirmwareEntries(void)
 
 bool AppSettings::fetchGithubFirmwareEntries(void)
 {
-    _otaFirmwareEntries.clear();
+    std::vector<FirmwareEntry_t> entries;
+    if (!fetchGithubFirmwareEntriesForVersion(getCurrentFirmwareVersion(), entries)) {
+        _otaFirmwareEntries.clear();
+        _otaUpdateAvailableThisBoot = false;
+        refreshRadioStatusBar();
+        return false;
+    }
+
+    _otaFirmwareEntries = std::move(entries);
+    _otaUpdateAvailableThisBoot = std::any_of(_otaFirmwareEntries.begin(), _otaFirmwareEntries.end(), [](const FirmwareEntry_t &entry) {
+        return entry.is_valid && entry.is_newer;
+    });
+    refreshRadioStatusBar();
+    return !_otaFirmwareEntries.empty();
+}
+
+bool AppSettings::fetchGithubFirmwareEntriesForVersion(const std::string &current_version, std::vector<FirmwareEntry_t> &entries)
+{
+    entries.clear();
     std::string response;
 
     esp_http_client_config_t config = {};
@@ -4745,7 +4806,6 @@ bool AppSettings::fetchGithubFirmwareEntries(void)
         (esp_http_client_get_status_code(client) == 200)) {
         cJSON *root = cJSON_Parse(response.c_str());
         if (cJSON_IsArray(root)) {
-            const std::string current_version = getCurrentFirmwareVersion();
             cJSON *release = nullptr;
             cJSON_ArrayForEach(release, root) {
                 if (!cJSON_IsObject(release) || cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(release, "draft"))) {
@@ -4787,17 +4847,17 @@ bool AppSettings::fetchGithubFirmwareEntries(void)
                     entry.is_valid = true;
                     entry.is_current = compareVersionStrings(entry.version, current_version) == 0;
                     entry.is_newer = compareVersionStrings(entry.version, current_version) > 0;
-                    _otaFirmwareEntries.push_back(entry);
+                    entries.push_back(entry);
                 }
             }
         }
         cJSON_Delete(root);
-        ok = !_otaFirmwareEntries.empty();
+        ok = !entries.empty();
     }
 
     esp_http_client_cleanup(client);
 
-    std::sort(_otaFirmwareEntries.begin(), _otaFirmwareEntries.end(), [](const FirmwareEntry_t &lhs, const FirmwareEntry_t &rhs) {
+    std::sort(entries.begin(), entries.end(), [](const FirmwareEntry_t &lhs, const FirmwareEntry_t &rhs) {
         if (lhs.is_current != rhs.is_current) {
             return lhs.is_current > rhs.is_current;
         }
@@ -4808,6 +4868,183 @@ bool AppSettings::fetchGithubFirmwareEntries(void)
     });
 
     return ok;
+}
+
+bool AppSettings::isWifiConnectedForOtaCheck(void) const
+{
+#if !CONFIG_JC4880_FEATURE_WIFI
+    return false;
+#else
+    wifi_ap_record_t ap_info = {};
+    return esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK;
+#endif
+}
+
+int AppSettings::findPreferredOtaEntryIndex(bool prefer_newer) const
+{
+    if (prefer_newer) {
+        for (size_t index = 0; index < _otaFirmwareEntries.size(); ++index) {
+            if (_otaFirmwareEntries[index].is_valid && _otaFirmwareEntries[index].is_newer) {
+                return static_cast<int>(index);
+            }
+        }
+    }
+
+    for (size_t index = 0; index < _otaFirmwareEntries.size(); ++index) {
+        if (_otaFirmwareEntries[index].is_valid) {
+            return static_cast<int>(index);
+        }
+    }
+
+    return -1;
+}
+
+void AppSettings::requestFirmwareScreenOpen(bool prefer_newer)
+{
+#if !CONFIG_JC4880_FEATURE_OTA
+    (void)prefer_newer;
+    return;
+#else
+    const int preferred_index = findPreferredOtaEntryIndex(prefer_newer);
+    if (preferred_index >= 0) {
+        setSelectedOtaFirmwareIndex(preferred_index);
+    }
+
+    _pendingOpenFirmwareScreen = true;
+    if (isUiActive()) {
+        openFirmwareScreenIfPending();
+        return;
+    }
+
+    if ((jc_security_handle_app_launch_request != nullptr) &&
+        jc_security_handle_app_launch_request(getId(), getName())) {
+        return;
+    }
+
+    ESP_Brookesia_CoreAppEventData_t app_event_data = {
+        .id = getId(),
+        .type = ESP_BROOKESIA_CORE_APP_EVENT_TYPE_START,
+        .data = nullptr,
+    };
+    getPhone()->sendAppEvent(&app_event_data);
+#endif
+}
+
+void AppSettings::openFirmwareScreenIfPending(void)
+{
+    if (!_pendingOpenFirmwareScreen) {
+        return;
+    }
+
+    _pendingOpenFirmwareScreen = false;
+    ensureFirmwareScreen();
+    refreshFirmwareUi();
+    if ((_firmwareScreen != nullptr) && (lv_scr_act() != _firmwareScreen)) {
+        lv_scr_load_anim(_firmwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    }
+}
+
+void AppSettings::applyAsyncOtaAvailabilityResult(void *arg)
+{
+    std::unique_ptr<AsyncOtaAvailabilityContext> context(static_cast<AsyncOtaAvailabilityContext *>(arg));
+    if ((context == nullptr) || (context->app == nullptr)) {
+        return;
+    }
+
+    AppSettings *app = context->app;
+    app->_otaAvailabilityCheckInProgress = false;
+
+    if (!context->success) {
+        return;
+    }
+
+    app->_otaFirmwareEntries = std::move(context->entries);
+    app->_otaUpdateAvailableThisBoot = std::any_of(app->_otaFirmwareEntries.begin(), app->_otaFirmwareEntries.end(),
+                                                   [](const FirmwareEntry_t &entry) {
+                                                       return entry.is_valid && entry.is_newer;
+                                                   });
+
+    if (app->getSelectedOtaFirmwareIndex() < 0) {
+        app->setSelectedOtaFirmwareIndex(app->findPreferredOtaEntryIndex(true));
+    }
+
+    if (!app->_otaUpdateAvailableThisBoot && (app->_otaUpdateAvailableMsgbox != nullptr) && lv_obj_is_valid(app->_otaUpdateAvailableMsgbox)) {
+        lv_msgbox_close_async(app->_otaUpdateAvailableMsgbox);
+    }
+
+    app->refreshRadioStatusBar();
+    if (app->isUiActive()) {
+        app->refreshFirmwareUi();
+    }
+
+    if (!app->_otaUpdateAvailableThisBoot || app->_otaUpdatePromptDismissedThisBoot ||
+        ((app->_otaUpdateAvailableMsgbox != nullptr) && lv_obj_is_valid(app->_otaUpdateAvailableMsgbox))) {
+        return;
+    }
+
+    const int preferred_index = app->findPreferredOtaEntryIndex(true);
+    if (preferred_index < 0) {
+        return;
+    }
+
+    const FirmwareEntry_t &entry = app->_otaFirmwareEntries[preferred_index];
+    const std::string message = std::string("Current firmware: ") + app->getCurrentFirmwareVersion() +
+                                "\nNew firmware: " + entry.version +
+                                "\n\nOpen Firmware OTA to select the release asset and start the update?";
+    static const char *buttons[] = {"Update", "Cancel", ""};
+    app->_otaUpdateAvailableMsgbox = lv_msgbox_create(lv_layer_top(), "Update Available", message.c_str(), buttons, false);
+    if ((app->_otaUpdateAvailableMsgbox == nullptr) || !lv_obj_is_valid(app->_otaUpdateAvailableMsgbox)) {
+        app->_otaUpdateAvailableMsgbox = nullptr;
+        return;
+    }
+
+    lv_obj_set_width(app->_otaUpdateAvailableMsgbox, LV_MIN(LV_HOR_RES - 24, 460));
+    lv_obj_center(app->_otaUpdateAvailableMsgbox);
+    lv_obj_add_event_cb(app->_otaUpdateAvailableMsgbox, onOtaUpdateAvailablePopupEventCallback, LV_EVENT_VALUE_CHANGED, app);
+    lv_obj_add_event_cb(app->_otaUpdateAvailableMsgbox, onOtaUpdateAvailablePopupEventCallback, LV_EVENT_DELETE, app);
+}
+
+void AppSettings::maybeRunOtaAvailabilityCheck(void)
+{
+#if !CONFIG_JC4880_FEATURE_OTA
+    return;
+#else
+    const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+    if (_otaAvailabilityCheckInProgress || _firmwareUpdateInProgress || _firmwareOtaCheckInProgress || (now_us < _nextOtaAvailabilityCheckUs)) {
+        return;
+    }
+
+    if (!hasOtaFlashSupport() || !isWifiConnectedForOtaCheck()) {
+        _nextOtaAvailabilityCheckUs = now_us + kOtaAvailabilityRetryIntervalUs;
+        return;
+    }
+
+    _otaAvailabilityCheckInProgress = true;
+    _nextOtaAvailabilityCheckUs = now_us + kOtaAvailabilitySuccessIntervalUs;
+
+    auto *context = new AsyncOtaAvailabilityContext{};
+    if (context == nullptr) {
+        _otaAvailabilityCheckInProgress = false;
+        _nextOtaAvailabilityCheckUs = now_us + kOtaAvailabilityRetryIntervalUs;
+        return;
+    }
+
+    context->app = this;
+    context->success = fetchGithubFirmwareEntriesForVersion(getCurrentFirmwareVersion(), context->entries);
+    if (!context->success) {
+        _nextOtaAvailabilityCheckUs = now_us + kOtaAvailabilityRetryIntervalUs;
+    }
+
+    bsp_display_lock(0);
+    if (lv_async_call(applyAsyncOtaAvailabilityResult, context) != LV_RES_OK) {
+        bsp_display_unlock();
+        delete context;
+        _otaAvailabilityCheckInProgress = false;
+        _nextOtaAvailabilityCheckUs = now_us + kOtaAvailabilityRetryIntervalUs;
+        return;
+    }
+    bsp_display_unlock();
+#endif
 }
 
 void AppSettings::refreshFirmwareUi(void)
@@ -6073,6 +6310,7 @@ void AppSettings::euiRefresTask(void *arg)
 #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
         bleCheckStartupTimeout();
 #endif
+        app->maybeRunOtaAvailabilityCheck();
         if (app->isUiActive()) {
             bsp_display_lock(0);
             app->refreshRadioStatusBar();
@@ -6531,6 +6769,34 @@ void AppSettings::onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e)
     }
 
     lv_msgbox_close(msgbox);
+}
+
+void AppSettings::onOtaUpdateAvailablePopupEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const lv_event_code_t code = lv_event_get_code(e);
+
+    if (app == nullptr) {
+        return;
+    }
+
+    if ((code == LV_EVENT_DELETE) && (app->_otaUpdateAvailableMsgbox == msgbox)) {
+        app->_otaUpdateAvailableMsgbox = nullptr;
+        return;
+    }
+
+    if ((code != LV_EVENT_VALUE_CHANGED) || (msgbox == nullptr)) {
+        return;
+    }
+
+    const char *button_text = lv_msgbox_get_active_btn_text(msgbox);
+    app->_otaUpdatePromptDismissedThisBoot = true;
+    lv_msgbox_close_async(msgbox);
+
+    if ((button_text != nullptr) && (strcmp(button_text, "Update") == 0)) {
+        app->requestFirmwareScreenOpen(true);
+    }
 }
 
 

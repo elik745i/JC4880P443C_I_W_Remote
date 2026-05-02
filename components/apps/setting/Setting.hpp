@@ -83,6 +83,12 @@ private:
         bool is_error;
     };
 
+    struct AsyncOtaAvailabilityContext {
+        AppSettings *app;
+        std::vector<FirmwareEntry_t> entries;
+        bool success;
+    };
+
     typedef enum {
         WIFI_SIGNAL_STRENGTH_NONE = 0,
         WIFI_SIGNAL_STRENGTH_WEAK = 1,
@@ -190,6 +196,7 @@ private:
     void setSelectedOtaFirmwareIndex(int index);
     bool scanSdFirmwareEntries(void);
     bool fetchGithubFirmwareEntries(void);
+    static bool fetchGithubFirmwareEntriesForVersion(const std::string &current_version, std::vector<FirmwareEntry_t> &entries);
     bool probeFirmwareFile(const std::string &path, FirmwareEntry_t &entry);
     bool hasOtaFlashSupport(void) const;
     std::string getCurrentFirmwareVersion(void) const;
@@ -202,8 +209,14 @@ private:
                                      std::string &error_message, bool &header_checked);
     void persistPendingReleaseNotes(const FirmwareEntry_t &entry);
     bool isUiActive(void) const;
+    bool isWifiConnectedForOtaCheck(void) const;
+    void maybeRunOtaAvailabilityCheck(void);
+    void requestFirmwareScreenOpen(bool prefer_newer);
+    void openFirmwareScreenIfPending(void);
+    int findPreferredOtaEntryIndex(bool prefer_newer) const;
     static void firmwareUpdateTask(void *arg);
     static void applyAsyncFirmwareUiUpdate(void *arg);
+    static void applyAsyncOtaAvailabilityResult(void *arg);
     // NVS Parameters
     bool loadNvsParam(void);
     bool setNvsParam(std::string key, int value);
@@ -294,6 +307,7 @@ private:
     static void onFirmwareOtaEntryCheckedEventCallback(lv_event_t *e);
     static void onFirmwareFactoryResetClickedEventCallback(lv_event_t *e);
     static void onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e);
+    static void onOtaUpdateAvailablePopupEventCallback(lv_event_t *e);
     // Audio
     static void onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e);
     static void onSliderPanelSystemVolumeValueChangeEventCallback(lv_event_t * e);
@@ -490,8 +504,15 @@ private:
     lv_obj_t *_firmwareStatusLabel;
     lv_obj_t *_firmwareProgressBar;
     lv_obj_t *_firmwareProgressLabel;
+    lv_obj_t *_otaUpdateAvailableMsgbox;
     bool _firmwareUpdateInProgress;
     bool _firmwareOtaCheckInProgress;
+    bool _otaStatusIconInstalled;
+    bool _otaUpdateAvailableThisBoot;
+    bool _otaUpdatePromptDismissedThisBoot;
+    bool _otaAvailabilityCheckInProgress;
+    bool _pendingOpenFirmwareScreen;
+    uint64_t _nextOtaAvailabilityCheckUs;
     bool _bluetoothStatusIconInstalled;
     bool _zigbeeStatusIconInstalled;
     struct SecurityToggleContext {

@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.2.12 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.3.0 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -51,6 +51,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Firmware screen factory reset button with confirmation and settings wipe.
 - Firmware releases now publish OTA-detectable `.bin` assets directly instead of ZIP-only packages.
 - GitHub OTA updates now follow release-asset redirects correctly, keep visible status during checks and flashes, preserve failure messages, and keep the final OTA verification worker on an internal stack so the update no longer panics at the end of flashing.
+- OTA update awareness now runs in the background, shows a one-per-boot update popup with current/new version details, keeps a passive update-available icon in the top bar, and routes the popup `Update` action directly into the Firmware OTA screen.
 - Power management now enables tickless idle and runtime light-sleep configuration on the main ESP32-P4 firmware so idle CPU utilization can drop instead of staying artificially high.
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
@@ -184,7 +185,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.2.12 validates at `0x6ECD10`, leaving `0x0A32F0` bytes free in the smaller OTA app slot.
+- Version 1.3.0 validates at `0x6EDC40`, leaving `0x0A23C0` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

@@ -1175,12 +1175,13 @@ static void show_pending_release_notes_popup(void *context)
     body += "\n\nNotes:\n";
     body += notes->notes.empty() ? std::string("No release notes were provided.") : notes->notes;
 
-    lv_obj_t *msgbox = lv_msgbox_create(nullptr, "Firmware Installed", body.c_str(), buttons, false);
+    lv_obj_t *msgbox = lv_msgbox_create(lv_layer_top(), "Firmware Installed", body.c_str(), buttons, false);
     if (msgbox == nullptr) {
         return;
     }
 
-    lv_obj_set_width(msgbox, 420);
+    lv_obj_set_size(msgbox, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_radius(msgbox, 0, 0);
     lv_obj_center(msgbox);
     lv_obj_add_event_cb(msgbox, close_release_notes_popup, LV_EVENT_VALUE_CHANGED, nullptr);
 }

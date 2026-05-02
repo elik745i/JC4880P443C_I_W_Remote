@@ -1,7 +1,12 @@
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <setjmp.h>
 #include <algorithm>
-#include <fcntl.h>
+#include <cctype>
+#include <memory>
+#include <string>
+#include <vector>
 #include <dirent.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -9,58 +14,263 @@
 #include "freertos/semphr.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "esp_random.h"
+#include "esp_system.h"
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 #include "driver/jpeg_decode.h"
+#include "jpeglib.h"
+#include "../../../managed_components/lvgl__lvgl/src/extra/libs/sjpg/tjpgd.h"
 #include "ImageDisplay.hpp"
 #include "app_gui/app_image_display.h"
 #include "storage_access.h"
 
-#define APP_SUPPORT_IMAGE_FILE_EXT ".jpg"
-#define IMAGE_DIR   "/sdcard/image"
-#define APP_IMAGE_FRAME_BUF_SIZE   (800 * 1280 * 2)
-#define APP_CACHE_BUF_SIZE         (64 * 1024)
+#define IMAGE_DIR "/sdcard/image"
+#define IMAGE_DIR_FALLBACK "/sdcard/imagefolder"
 
-#define APP_IMAMG_BUF           3
+namespace {
 
-static SemaphoreHandle_t image_task_event;
-static SemaphoreHandle_t image_muxe;
-static esp_timer_handle_t time_refer_handle = NULL;
+constexpr int kScreenWidth = 480;
+constexpr int kScreenHeight = 800;
+constexpr int kTileWidth = 212;
+constexpr int kTileHeight = 168;
+constexpr int kTilePreviewWidth = kTileWidth - 24;
+constexpr int kTilePreviewHeight = 96;
+constexpr int kHeaderHeight = 82;
+constexpr int kTileTapSlopPx = 18;
+constexpr uint32_t kTransitionDurationMs = 420;
+constexpr int64_t kIdleSlideshowUs = 15LL * 1000LL * 1000LL;
+constexpr int kTransitionCount = 20;
+constexpr size_t kTjpgdWorkspaceBytes = 16U * 1024U;
 
-typedef enum {
-    IMAGE_EVENT_TASK_RUN = BIT(0),
-    IMAGE_EVENT_DELETE = BIT(1),
-    IMAGE_EVENT_DIR = BIT(2),
-} image_event_id_t;
+SemaphoreHandle_t image_task_event = nullptr;
+SemaphoreHandle_t image_muxe = nullptr;
+esp_timer_handle_t time_refer_handle = nullptr;
 
-static void image_change_display(file_iterator_instance_t *ft,int index);
+lv_obj_t *s_gallery_screen = nullptr;
+lv_obj_t *s_gallery_header = nullptr;
+lv_obj_t *s_gallery_grid = nullptr;
+lv_obj_t *s_viewer_layer = nullptr;
+lv_obj_t *s_viewer_topbar = nullptr;
+lv_obj_t *s_viewer_title = nullptr;
+lv_obj_t *s_viewer_hint = nullptr;
+lv_obj_t *s_transition_badge = nullptr;
+lv_obj_t *s_viewer_canvas[2] = {nullptr, nullptr};
+lv_color_t *s_viewer_buffers[2] = {nullptr, nullptr};
+std::vector<lv_color_t *> s_tile_preview_buffers;
+lv_timer_t *s_thumbnail_loader_timer = nullptr;
 
-static int image_count = 0;
-static int count_now = 0;
-
-static jpeg_decoder_handle_t jpgd_handle;
-
-static jpeg_decode_engine_cfg_t decode_eng_cfg = {
-        .timeout_ms = 40,
-};
-
-static jpeg_decode_cfg_t decode_cfg_rgb = {
-    .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
-    .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
-};
-
-
-static jpeg_decode_memory_alloc_cfg_t rx_mem_cfg = {
-    .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER,
-};
-
-static jpeg_decode_memory_alloc_cfg_t tx_mem_cfg = {
-    .buffer_direction = JPEG_DEC_ALLOC_INPUT_BUFFER,
-};
-
-using namespace std;
+AppImageDisplay *s_active_app = nullptr;
+int s_visible_canvas = 0;
+int s_current_index = -1;
+int s_last_transition = -1;
+bool s_fullscreen_visible = false;
+int s_debug_pending_open_index = -1;
+bool s_debug_pending_open_animate = false;
+const char *s_debug_pending_open_reason = nullptr;
+lv_obj_t *s_tile_press_target = nullptr;
+int s_tile_press_index = -1;
+lv_point_t s_tile_press_point = {0, 0};
+bool s_tile_press_moved = false;
 
 static const char *TAG = "AppImageDisplay";
+
+struct TjpgdSession {
+    const uint8_t *input = nullptr;
+    size_t input_size = 0;
+    size_t input_offset = 0;
+    uint8_t *decoded_rgb888 = nullptr;
+    uint32_t decoded_width = 0;
+    uint32_t decoded_height = 0;
+};
+
+struct LibjpegErrorManager {
+    jpeg_error_mgr base;
+    jmp_buf jump_buffer;
+};
+
+struct PendingPreview {
+    size_t index = 0;
+    lv_obj_t *preview = nullptr;
+    lv_obj_t *canvas = nullptr;
+    lv_obj_t *status = nullptr;
+    lv_color_t *buffer = nullptr;
+};
+
+struct PendingViewerRequest {
+    AppImageDisplay *app = nullptr;
+    int index = -1;
+    bool animate = false;
+    const char *reason = nullptr;
+};
+
+std::vector<PendingPreview> s_pending_previews;
+size_t s_next_pending_preview = 0;
+
+static void render_rgb565_to_buffer(const uint16_t *source,
+                                    uint32_t source_width,
+                                    uint32_t source_height,
+                                    uint32_t source_stride,
+                                    lv_color_t *destination,
+                                    uint32_t destination_width,
+                                    uint32_t destination_height);
+static void render_rgb888_to_buffer(const uint8_t *source,
+                                    uint32_t source_width,
+                                    uint32_t source_height,
+                                    lv_color_t *destination,
+                                    uint32_t destination_width,
+                                    uint32_t destination_height);
+static void render_rgb565a8_to_buffer(const uint8_t *source,
+                                      uint32_t source_width,
+                                      uint32_t source_height,
+                                      lv_color_t *destination,
+                                      uint32_t destination_width,
+                                      uint32_t destination_height);
+static bool decode_jpeg_to_buffer(const std::string &path,
+                                  lv_color_t *destination,
+                                  uint32_t destination_width,
+                                  uint32_t destination_height);
+static bool decode_jpeg_with_tjpgd(const std::string &path,
+                                   const uint8_t *input_buffer,
+                                   size_t input_size,
+                                   lv_color_t *destination,
+                                   uint32_t destination_width,
+                                   uint32_t destination_height);
+static bool decode_jpeg_with_libjpeg_turbo(const std::string &path,
+                                           const uint8_t *input_buffer,
+                                           size_t input_size,
+                                           lv_color_t *destination,
+                                           uint32_t destination_width,
+                                           uint32_t destination_height);
+static bool decode_png_to_buffer(const std::string &path,
+                                 lv_color_t *destination,
+                                 uint32_t destination_width,
+                                 uint32_t destination_height);
+static void draw_preview_placeholder(lv_obj_t *canvas, lv_color_t *preview_buffer, const std::string &path);
+static bool queue_lvgl_async_locked(lv_async_cb_t callback, void *user_data);
+static void show_image_index_async(void *context);
+static void thumbnail_loader_timer_cb(lv_timer_t *timer);
+static void start_thumbnail_loader();
+static void stop_thumbnail_loader();
+static bool decode_image_to_buffer(const std::string &path,
+                                   lv_color_t *destination,
+                                   uint32_t destination_width,
+                                   uint32_t destination_height);
+
+struct TransitionRecipe {
+    int32_t incomingStartX;
+    int32_t incomingStartY;
+    int32_t outgoingEndX;
+    int32_t outgoingEndY;
+    int32_t incomingStartOpa;
+    int32_t outgoingEndOpa;
+    int32_t incomingStartZoom;
+    int32_t outgoingEndZoom;
+    int32_t incomingStartAngle;
+    int32_t outgoingEndAngle;
+};
+
+constexpr TransitionRecipe kTransitionRecipes[kTransitionCount] = {
+    {0, 0, 0, 0, 0, 0, 256, 256, 0, 0},
+    {kScreenWidth, 0, -kScreenWidth, 0, 255, 255, 256, 256, 0, 0},
+    {-kScreenWidth, 0, kScreenWidth, 0, 255, 255, 256, 256, 0, 0},
+    {0, kScreenHeight, 0, -kScreenHeight, 255, 255, 256, 256, 0, 0},
+    {0, -kScreenHeight, 0, kScreenHeight, 255, 255, 256, 256, 0, 0},
+    {0, 0, 0, 0, 0, 0, 168, 320, 0, 0},
+    {0, 0, 0, 0, 0, 0, 360, 180, 0, 0},
+    {kScreenWidth, 0, 0, 0, 0, 0, 256, 200, 0, 0},
+    {-kScreenWidth, 0, 0, 0, 0, 0, 256, 200, 0, 0},
+    {0, kScreenHeight, 0, 0, 0, 0, 256, 200, 0, 0},
+    {0, -kScreenHeight, 0, 0, 0, 0, 256, 200, 0, 0},
+    {kScreenWidth, kScreenHeight, -kScreenWidth / 2, -kScreenHeight / 2, 0, 0, 256, 256, 0, 0},
+    {-kScreenWidth, kScreenHeight, kScreenWidth / 2, -kScreenHeight / 2, 0, 0, 256, 256, 0, 0},
+    {kScreenWidth, -kScreenHeight, -kScreenWidth / 2, kScreenHeight / 2, 0, 0, 256, 256, 0, 0},
+    {-kScreenWidth, -kScreenHeight, kScreenWidth / 2, kScreenHeight / 2, 0, 0, 256, 256, 0, 0},
+    {0, 0, 0, 0, 0, 0, 220, 300, 120, -90},
+    {0, 0, 0, 0, 0, 0, 220, 300, -120, 90},
+    {kScreenWidth / 3, 0, -kScreenWidth / 4, 0, 0, 0, 192, 352, 0, 45},
+    {-kScreenWidth / 3, 0, kScreenWidth / 4, 0, 0, 0, 192, 352, 0, -45},
+    {0, 0, 0, 0, 0, 0, 128, 420, 240, -180},
+};
+
+constexpr const char *kTransitionNames[kTransitionCount] = {
+    "Fade",
+    "Slide Left",
+    "Slide Right",
+    "Slide Up",
+    "Slide Down",
+    "Soft Zoom In",
+    "Soft Zoom Out",
+    "Drift Left",
+    "Drift Right",
+    "Drift Up",
+    "Drift Down",
+    "Diagonal South-East",
+    "Diagonal South-West",
+    "Diagonal North-East",
+    "Diagonal North-West",
+    "Spin Lift",
+    "Spin Drop",
+    "Parallax Left",
+    "Parallax Right",
+    "Orbit Fade",
+};
+
+static bool has_supported_image_extension(const char *name)
+{
+    if (name == nullptr) {
+        return false;
+    }
+
+    const char *extension = strrchr(name, '.');
+    if (extension == nullptr) {
+        return false;
+    }
+
+    std::string lowered_extension(extension);
+    std::transform(lowered_extension.begin(), lowered_extension.end(), lowered_extension.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+
+    return (lowered_extension == ".jpg") || (lowered_extension == ".jpeg") ||
+           (lowered_extension == ".jpe") || (lowered_extension == ".jfif") ||
+           (lowered_extension == ".png");
+}
+
+static bool is_png_path(const std::string &path)
+{
+    const char *extension = strrchr(path.c_str(), '.');
+    if (extension == nullptr) {
+        return false;
+    }
+
+    std::string lowered_extension(extension);
+    std::transform(lowered_extension.begin(), lowered_extension.end(), lowered_extension.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    return lowered_extension == ".png";
+}
+
+static void scan_supported_images_in_directory(const char *directory_path, std::vector<std::string> &output_paths)
+{
+    DIR *directory = opendir(directory_path);
+    if (directory == nullptr) {
+        return;
+    }
+
+    struct dirent *entry = nullptr;
+    while ((entry = readdir(directory)) != nullptr) {
+        if ((strcmp(entry->d_name, ".") == 0) || (strcmp(entry->d_name, "..") == 0)) {
+            continue;
+        }
+        if (!has_supported_image_extension(entry->d_name)) {
+            continue;
+        }
+        output_paths.emplace_back(std::string(directory_path) + "/" + entry->d_name);
+    }
+
+    closedir(directory);
+}
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
@@ -91,22 +301,1477 @@ static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
     return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, task_handle, core_id);
 }
 
-static EventGroupHandle_t image_event_group;
-static uint8_t *output_buf[APP_IMAMG_BUF];
-static size_t output_buf_size[APP_IMAMG_BUF];
-static uint8_t *input_buf[APP_IMAMG_BUF];
-
-static bool image_runtime_ready(void)
+static const char *base_name(const std::string &path)
 {
-    return image_event_group != nullptr;
+    const size_t slash = path.find_last_of('/');
+    if (slash == std::string::npos) {
+        return path.c_str();
+    }
+    return path.c_str() + slash + 1;
 }
+
+static std::string file_extension_label(const std::string &path)
+{
+    const char *extension = strrchr(path.c_str(), '.');
+    if (extension == nullptr) {
+        return "FILE";
+    }
+
+    std::string label(extension + 1);
+    std::transform(label.begin(), label.end(), label.begin(), [](unsigned char value) {
+        return static_cast<char>(std::toupper(value));
+    });
+    return label;
+}
+
+static lv_color_t tile_color_for_path(const std::string &path)
+{
+    uint32_t hash = 2166136261u;
+    for (char value : path) {
+        hash ^= static_cast<uint8_t>(value);
+        hash *= 16777619u;
+    }
+
+    const uint8_t red = static_cast<uint8_t>(96 + (hash & 0x3f));
+    const uint8_t green = static_cast<uint8_t>(72 + ((hash >> 8) & 0x5f));
+    const uint8_t blue = static_cast<uint8_t>(80 + ((hash >> 16) & 0x5f));
+    return lv_color_make(red, green, blue);
+}
+
+static void stop_idle_slideshow()
+{
+    if (time_refer_handle != nullptr) {
+        const esp_err_t result = esp_timer_stop(time_refer_handle);
+        if ((result != ESP_OK) && (result != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "Failed to stop image idle timer: %s", esp_err_to_name(result));
+        } else {
+            ESP_LOGI(TAG, "idle slideshow stop result=%s visible=%s current_index=%d",
+                     esp_err_to_name(result),
+                     s_fullscreen_visible ? "yes" : "no",
+                     s_current_index);
+        }
+    }
+}
+
+static void arm_idle_slideshow()
+{
+    stop_idle_slideshow();
+    if (!s_fullscreen_visible || (s_active_app == nullptr) || (s_active_app->imagePathCount() < 2)) {
+        ESP_LOGI(TAG,
+                 "idle slideshow not armed visible=%s app=%p count=%u",
+                 s_fullscreen_visible ? "yes" : "no",
+                 s_active_app,
+                 s_active_app == nullptr ? 0U : static_cast<unsigned>(s_active_app->imagePathCount()));
+        return;
+    }
+
+    const esp_err_t result = esp_timer_start_once(time_refer_handle, kIdleSlideshowUs);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to arm image idle timer: %s", esp_err_to_name(result));
+    } else {
+        ESP_LOGI(TAG, "idle slideshow armed delay_us=%lld current_index=%d", kIdleSlideshowUs, s_current_index);
+    }
+}
+
+static void note_viewer_interaction()
+{
+    ESP_LOGI(TAG, "viewer interaction visible=%s current_index=%d", s_fullscreen_visible ? "yes" : "no", s_current_index);
+    arm_idle_slideshow();
+}
+
+static void reset_tile_press_state()
+{
+    s_tile_press_target = nullptr;
+    s_tile_press_index = -1;
+    s_tile_press_point.x = 0;
+    s_tile_press_point.y = 0;
+    s_tile_press_moved = false;
+}
+
+static bool queue_viewer_request(AppImageDisplay *app, int index, bool animate, const char *reason)
+{
+    if (app == nullptr) {
+        ESP_LOGW(TAG, "queue_viewer_request ignored null app index=%d", index);
+        return false;
+    }
+
+    PendingViewerRequest *request = new (std::nothrow) PendingViewerRequest{
+        .app = app,
+        .index = index,
+        .animate = animate,
+        .reason = reason,
+    };
+    if (request == nullptr) {
+        ESP_LOGE(TAG, "queue_viewer_request alloc failed index=%d reason=%s", index, reason == nullptr ? "unknown" : reason);
+        return false;
+    }
+
+    if (!queue_lvgl_async_locked(show_image_index_async, request)) {
+        ESP_LOGW(TAG, "queue_viewer_request async queue failed index=%d reason=%s", index, reason == nullptr ? "unknown" : reason);
+        delete request;
+        return false;
+    }
+
+    return true;
+}
+
+static void maybe_queue_debug_open(AppImageDisplay *app)
+{
+    if ((app == nullptr) || (s_debug_pending_open_index < 0)) {
+        return;
+    }
+
+    const int index = s_debug_pending_open_index;
+    const bool animate = s_debug_pending_open_animate;
+    const char *reason = (s_debug_pending_open_reason != nullptr) ? s_debug_pending_open_reason : "debug-open";
+
+    if (index >= static_cast<int>(app->imagePathCount())) {
+        ESP_LOGW(TAG, "maybe_queue_debug_open rejected index=%d count=%u", index, static_cast<unsigned>(app->imagePathCount()));
+        s_debug_pending_open_index = -1;
+        s_debug_pending_open_animate = false;
+        s_debug_pending_open_reason = nullptr;
+        return;
+    }
+
+    ESP_LOGI(TAG, "maybe_queue_debug_open index=%d animate=%s reason=%s", index, animate ? "yes" : "no", reason);
+    if (queue_viewer_request(app, index, animate, reason)) {
+        s_debug_pending_open_index = -1;
+        s_debug_pending_open_animate = false;
+        s_debug_pending_open_reason = nullptr;
+    }
+}
+
+static bool queue_lvgl_async_locked(lv_async_cb_t callback, void *user_data)
+{
+    if (!bsp_display_lock(0)) {
+        ESP_LOGW(TAG, "LVGL async queue failed to lock callback=%p", reinterpret_cast<void *>(callback));
+        return false;
+    }
+
+    const lv_res_t result = lv_async_call(callback, user_data);
+    bsp_display_unlock();
+    if (result != LV_RES_OK) {
+        ESP_LOGW(TAG, "LVGL async queue failed result=%d callback=%p", static_cast<int>(result), reinterpret_cast<void *>(callback));
+    }
+    return result == LV_RES_OK;
+}
+
+static uint32_t align_up_to_16(uint32_t value)
+{
+    return (value + 15U) & ~15U;
+}
+
+static bool read_jpeg_info_from_buffer(const std::string &path,
+                                       const uint8_t *jpeg_bytes,
+                                       size_t jpeg_size,
+                                       jpeg_decode_picture_info_t *picture_info)
+{
+    if ((picture_info == nullptr) || (jpeg_bytes == nullptr) || (jpeg_size == 0U)) {
+        return false;
+    }
+
+    memset(picture_info, 0, sizeof(*picture_info));
+    const esp_err_t result = jpeg_decoder_get_info(jpeg_bytes, static_cast<uint32_t>(jpeg_size), picture_info);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to parse JPEG header %s: %s", path.c_str(), esp_err_to_name(result));
+        return false;
+    }
+
+    if ((picture_info->width == 0U) || (picture_info->height == 0U)) {
+        ESP_LOGE(TAG,
+                 "JPEG header returned invalid dimensions for %s (%u x %u from %u bytes)",
+                 path.c_str(),
+                 static_cast<unsigned>(picture_info->width),
+                 static_cast<unsigned>(picture_info->height),
+                 static_cast<unsigned>(jpeg_size));
+        return false;
+    }
+
+    return true;
+}
+
+static const char *tjpgd_result_to_string(JRESULT result)
+{
+    switch (result) {
+        case JDR_OK:
+            return "JDR_OK";
+        case JDR_INTR:
+            return "JDR_INTR";
+        case JDR_INP:
+            return "JDR_INP";
+        case JDR_MEM1:
+            return "JDR_MEM1";
+        case JDR_MEM2:
+            return "JDR_MEM2";
+        case JDR_PAR:
+            return "JDR_PAR";
+        case JDR_FMT1:
+            return "JDR_FMT1";
+        case JDR_FMT2:
+            return "JDR_FMT2";
+        case JDR_FMT3:
+            return "JDR_FMT3";
+        default:
+            return "JDR_UNKNOWN";
+    }
+}
+
+static size_t tjpgd_input_callback(JDEC *decoder, uint8_t *buffer, size_t bytes_to_read)
+{
+    if (decoder == nullptr) {
+        return 0;
+    }
+
+    TjpgdSession *session = static_cast<TjpgdSession *>(decoder->device);
+    if ((session == nullptr) || (session->input == nullptr) || (session->input_offset > session->input_size)) {
+        return 0;
+    }
+
+    const size_t bytes_left = session->input_size - session->input_offset;
+    const size_t bytes_available = std::min(bytes_to_read, bytes_left);
+    if ((buffer != nullptr) && (bytes_available > 0U)) {
+        memcpy(buffer, session->input + session->input_offset, bytes_available);
+    }
+    session->input_offset += bytes_available;
+    return bytes_available;
+}
+
+static int tjpgd_output_callback(JDEC *decoder, void *bitmap, JRECT *rectangle)
+{
+    if ((decoder == nullptr) || (bitmap == nullptr) || (rectangle == nullptr)) {
+        return 0;
+    }
+
+    TjpgdSession *session = static_cast<TjpgdSession *>(decoder->device);
+    if ((session == nullptr) || (session->decoded_rgb888 == nullptr)) {
+        return 0;
+    }
+
+    const uint32_t rect_width = static_cast<uint32_t>(rectangle->right - rectangle->left + 1U);
+    const uint32_t rect_height = static_cast<uint32_t>(rectangle->bottom - rectangle->top + 1U);
+    const uint8_t *source = static_cast<const uint8_t *>(bitmap);
+    if ((rect_width == 0U) || (rect_height == 0U) || (source == nullptr)) {
+        return 0;
+    }
+
+    for (uint32_t row = 0; row < rect_height; ++row) {
+        const uint32_t destination_y = static_cast<uint32_t>(rectangle->top) + row;
+        if (destination_y >= session->decoded_height) {
+            return 0;
+        }
+
+        uint8_t *destination_row = session->decoded_rgb888 +
+                                   ((static_cast<size_t>(destination_y) * session->decoded_width + static_cast<uint32_t>(rectangle->left)) * 3U);
+        memcpy(destination_row, source + (static_cast<size_t>(row) * rect_width * 3U), rect_width * 3U);
+    }
+
+    return 1;
+}
+
+static uint8_t choose_tjpgd_scale(uint16_t source_width,
+                                  uint16_t source_height,
+                                  uint32_t destination_width,
+                                  uint32_t destination_height)
+{
+    uint8_t scale = 0;
+    while (scale < 3U) {
+        const uint32_t scaled_width = std::max<uint32_t>(1U, (static_cast<uint32_t>(source_width) + ((1U << scale) - 1U)) >> scale);
+        const uint32_t scaled_height = std::max<uint32_t>(1U, (static_cast<uint32_t>(source_height) + ((1U << scale) - 1U)) >> scale);
+        if ((scaled_width <= (destination_width * 2U)) && (scaled_height <= (destination_height * 2U))) {
+            break;
+        }
+        ++scale;
+    }
+    return scale;
+}
+
+static void libjpeg_error_exit(j_common_ptr common_info)
+{
+    LibjpegErrorManager *error_manager = reinterpret_cast<LibjpegErrorManager *>(common_info->err);
+    longjmp(error_manager->jump_buffer, 1);
+}
+
+static void render_rgb565_to_buffer(const uint16_t *source,
+                                    uint32_t source_width,
+                                    uint32_t source_height,
+                                    uint32_t source_stride,
+                                    lv_color_t *destination,
+                                    uint32_t destination_width,
+                                    uint32_t destination_height)
+{
+    if ((source == nullptr) || (destination == nullptr) || (source_width == 0U) || (source_height == 0U)) {
+        return;
+    }
+
+    uint16_t *destination_pixels = reinterpret_cast<uint16_t *>(destination);
+    memset(destination_pixels, 0, destination_width * destination_height * sizeof(uint16_t));
+
+    const uint32_t width_limited_height = (source_height * destination_width) / source_width;
+    uint32_t scaled_width = destination_width;
+    uint32_t scaled_height = width_limited_height;
+    if (scaled_height > destination_height) {
+        scaled_height = destination_height;
+        scaled_width = (source_width * destination_height) / source_height;
+    }
+
+    if (scaled_width == 0U) {
+        scaled_width = 1U;
+    }
+    if (scaled_height == 0U) {
+        scaled_height = 1U;
+    }
+
+    const int32_t offset_x = (static_cast<int32_t>(destination_width) - static_cast<int32_t>(scaled_width)) / 2;
+    const int32_t offset_y = (static_cast<int32_t>(destination_height) - static_cast<int32_t>(scaled_height)) / 2;
+
+    for (uint32_t y = 0; y < scaled_height; ++y) {
+        const uint32_t source_y = (y * source_height) / scaled_height;
+        uint16_t *destination_row = destination_pixels + ((offset_y + static_cast<int32_t>(y)) * destination_width);
+        const uint16_t *source_row = source + (source_y * source_stride);
+        for (uint32_t x = 0; x < scaled_width; ++x) {
+            const uint32_t source_x = (x * source_width) / scaled_width;
+            destination_row[offset_x + static_cast<int32_t>(x)] = source_row[source_x];
+        }
+    }
+}
+
+static void render_rgb888_to_buffer(const uint8_t *source,
+                                    uint32_t source_width,
+                                    uint32_t source_height,
+                                    lv_color_t *destination,
+                                    uint32_t destination_width,
+                                    uint32_t destination_height)
+{
+    if ((source == nullptr) || (destination == nullptr) || (source_width == 0U) || (source_height == 0U)) {
+        return;
+    }
+
+    uint16_t *destination_pixels = reinterpret_cast<uint16_t *>(destination);
+    memset(destination_pixels, 0, destination_width * destination_height * sizeof(uint16_t));
+
+    const uint32_t width_limited_height = (source_height * destination_width) / source_width;
+    uint32_t scaled_width = destination_width;
+    uint32_t scaled_height = width_limited_height;
+    if (scaled_height > destination_height) {
+        scaled_height = destination_height;
+        scaled_width = (source_width * destination_height) / source_height;
+    }
+
+    if (scaled_width == 0U) {
+        scaled_width = 1U;
+    }
+    if (scaled_height == 0U) {
+        scaled_height = 1U;
+    }
+
+    const int32_t offset_x = (static_cast<int32_t>(destination_width) - static_cast<int32_t>(scaled_width)) / 2;
+    const int32_t offset_y = (static_cast<int32_t>(destination_height) - static_cast<int32_t>(scaled_height)) / 2;
+
+    for (uint32_t y = 0; y < scaled_height; ++y) {
+        const uint32_t source_y = (y * source_height) / scaled_height;
+        uint16_t *destination_row = destination_pixels + ((offset_y + static_cast<int32_t>(y)) * destination_width);
+        for (uint32_t x = 0; x < scaled_width; ++x) {
+            const uint32_t source_x = (x * source_width) / scaled_width;
+            const uint8_t *source_pixel = source + ((static_cast<size_t>(source_y) * source_width + source_x) * 3U);
+            destination_row[offset_x + static_cast<int32_t>(x)] = static_cast<uint16_t>(((source_pixel[0] & 0xF8U) << 8U) |
+                                                                                          ((source_pixel[1] & 0xFCU) << 3U) |
+                                                                                          (source_pixel[2] >> 3U));
+        }
+    }
+}
+
+static void render_rgb565a8_to_buffer(const uint8_t *source,
+                                      uint32_t source_width,
+                                      uint32_t source_height,
+                                      lv_color_t *destination,
+                                      uint32_t destination_width,
+                                      uint32_t destination_height)
+{
+    if ((source == nullptr) || (destination == nullptr) || (source_width == 0U) || (source_height == 0U)) {
+        return;
+    }
+
+    uint16_t *destination_pixels = reinterpret_cast<uint16_t *>(destination);
+    memset(destination_pixels, 0, destination_width * destination_height * sizeof(uint16_t));
+
+    const uint32_t width_limited_height = (source_height * destination_width) / source_width;
+    uint32_t scaled_width = destination_width;
+    uint32_t scaled_height = width_limited_height;
+    if (scaled_height > destination_height) {
+        scaled_height = destination_height;
+        scaled_width = (source_width * destination_height) / source_height;
+    }
+
+    if (scaled_width == 0U) {
+        scaled_width = 1U;
+    }
+    if (scaled_height == 0U) {
+        scaled_height = 1U;
+    }
+
+    const int32_t offset_x = (static_cast<int32_t>(destination_width) - static_cast<int32_t>(scaled_width)) / 2;
+    const int32_t offset_y = (static_cast<int32_t>(destination_height) - static_cast<int32_t>(scaled_height)) / 2;
+
+    for (uint32_t y = 0; y < scaled_height; ++y) {
+        const uint32_t source_y = (y * source_height) / scaled_height;
+        uint16_t *destination_row = destination_pixels + ((offset_y + static_cast<int32_t>(y)) * destination_width);
+        for (uint32_t x = 0; x < scaled_width; ++x) {
+            const uint32_t source_x = (x * source_width) / scaled_width;
+            const uint8_t *source_pixel = source + ((source_y * source_width + source_x) * 3U);
+            const uint16_t rgb565 = static_cast<uint16_t>(source_pixel[0]) | (static_cast<uint16_t>(source_pixel[1]) << 8U);
+            const uint8_t alpha = source_pixel[2];
+            if (alpha == 0U) {
+                destination_row[offset_x + static_cast<int32_t>(x)] = 0;
+                continue;
+            }
+
+            if (alpha == 255U) {
+                destination_row[offset_x + static_cast<int32_t>(x)] = rgb565;
+                continue;
+            }
+
+            uint8_t red = static_cast<uint8_t>(((rgb565 >> 11U) & 0x1FU) * 255U / 31U);
+            uint8_t green = static_cast<uint8_t>(((rgb565 >> 5U) & 0x3FU) * 255U / 63U);
+            uint8_t blue = static_cast<uint8_t>((rgb565 & 0x1FU) * 255U / 31U);
+            red = static_cast<uint8_t>((red * alpha) / 255U);
+            green = static_cast<uint8_t>((green * alpha) / 255U);
+            blue = static_cast<uint8_t>((blue * alpha) / 255U);
+            destination_row[offset_x + static_cast<int32_t>(x)] = static_cast<uint16_t>(((red & 0xF8U) << 8U) |
+                                                                                          ((green & 0xFCU) << 3U) |
+                                                                                          (blue >> 3U));
+        }
+    }
+}
+
+static bool read_file_to_psram_buffer(const std::string &path, uint8_t **buffer, size_t *buffer_size)
+{
+    if ((buffer == nullptr) || (buffer_size == nullptr)) {
+        return false;
+    }
+
+    *buffer = nullptr;
+    *buffer_size = 0;
+
+    FILE *file = fopen(path.c_str(), "rb");
+    if (file == nullptr) {
+        ESP_LOGE(TAG, "Failed to open image file %s", path.c_str());
+        return false;
+    }
+
+    fseek(file, 0, SEEK_END);
+    const long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    if (file_size <= 0) {
+        fclose(file);
+        ESP_LOGE(TAG, "Image file has invalid size %s", path.c_str());
+        return false;
+    }
+
+    uint8_t *file_buffer = static_cast<uint8_t *>(heap_caps_malloc(static_cast<size_t>(file_size), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (file_buffer == nullptr) {
+        fclose(file);
+        ESP_LOGE(TAG, "Failed to allocate PSRAM for image file %s", path.c_str());
+        return false;
+    }
+
+    const size_t bytes_read = fread(file_buffer, 1, static_cast<size_t>(file_size), file);
+    fclose(file);
+    if (bytes_read != static_cast<size_t>(file_size)) {
+        free(file_buffer);
+        ESP_LOGE(TAG, "Failed to read image file %s", path.c_str());
+        return false;
+    }
+
+    *buffer = file_buffer;
+    *buffer_size = bytes_read;
+    return true;
+}
+
+static bool decode_jpeg_to_buffer(const std::string &path,
+                                  lv_color_t *destination,
+                                  uint32_t destination_width,
+                                  uint32_t destination_height)
+{
+    uint8_t *input_buffer = nullptr;
+    size_t bytes_read = 0;
+    if (!read_file_to_psram_buffer(path, &input_buffer, &bytes_read)) {
+        return false;
+    }
+
+    jpeg_decode_picture_info_t image_info = {};
+    if (!read_jpeg_info_from_buffer(path, input_buffer, bytes_read, &image_info)) {
+        ESP_LOGW(TAG, "Hardware JPEG header parse rejected %s, trying TJpgDec fallback", path.c_str());
+        const bool fallback_result = decode_jpeg_with_tjpgd(path, input_buffer, bytes_read, destination, destination_width, destination_height);
+        free(input_buffer);
+        return fallback_result;
+    }
+
+    esp_err_t result = ESP_OK;
+
+    const uint32_t padded_width = align_up_to_16(image_info.width);
+    const uint32_t padded_height = align_up_to_16(image_info.height);
+    const size_t decoded_bytes = static_cast<size_t>(padded_width) * static_cast<size_t>(padded_height) * sizeof(uint16_t);
+    size_t decoder_output_capacity = decoded_bytes;
+    uint8_t *decoded_buffer = static_cast<uint8_t *>(heap_caps_aligned_alloc(64, decoded_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (decoded_buffer == nullptr) {
+        decoded_buffer = static_cast<uint8_t *>(heap_caps_malloc(decoded_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
+    if (decoded_buffer == nullptr) {
+        ESP_LOGE(TAG,
+                 "Failed to allocate PSRAM JPEG decode buffer for %s (%u x %u, %u bytes)",
+                 path.c_str(),
+                 static_cast<unsigned>(image_info.width),
+                 static_cast<unsigned>(image_info.height),
+                 static_cast<unsigned>(decoded_bytes));
+        const bool fallback_result = decode_jpeg_with_tjpgd(path, input_buffer, bytes_read, destination, destination_width, destination_height);
+        free(input_buffer);
+        return fallback_result;
+    }
+
+    jpeg_decode_engine_cfg_t engine_cfg = {
+        .timeout_ms = 120,
+    };
+    jpeg_decoder_handle_t decoder_handle = nullptr;
+    result = jpeg_new_decoder_engine(&engine_cfg, &decoder_handle);
+    if (result != ESP_OK) {
+        free(input_buffer);
+        free(decoded_buffer);
+        ESP_LOGE(TAG, "Failed to create JPEG decoder for %s: %s", path.c_str(), esp_err_to_name(result));
+        return false;
+    }
+
+    uint32_t output_size = 0;
+    jpeg_decode_cfg_t decode_cfg = {
+        .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
+        .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
+    };
+    result = jpeg_decoder_process(decoder_handle,
+                                  &decode_cfg,
+                                  input_buffer,
+                                  static_cast<uint32_t>(bytes_read),
+                                  decoded_buffer,
+                                  static_cast<uint32_t>(decoder_output_capacity),
+                                  &output_size);
+    if (result != ESP_OK) {
+        jpeg_del_decoder_engine(decoder_handle);
+        free(decoded_buffer);
+        ESP_LOGW(TAG, "Hardware JPEG decode failed for %s: %s, trying TJpgDec fallback", path.c_str(), esp_err_to_name(result));
+        const bool fallback_result = decode_jpeg_with_tjpgd(path, input_buffer, bytes_read, destination, destination_width, destination_height);
+        free(input_buffer);
+        return fallback_result;
+    }
+    free(input_buffer);
+
+    uint32_t stride_pixels = image_info.width;
+    if ((image_info.height != 0U) && (output_size >= (image_info.height * sizeof(uint16_t)))) {
+        const uint32_t computed_stride = (output_size / sizeof(uint16_t)) / image_info.height;
+        if (computed_stride >= image_info.width) {
+            stride_pixels = computed_stride;
+        }
+    }
+    render_rgb565_to_buffer(reinterpret_cast<uint16_t *>(decoded_buffer),
+                            image_info.width,
+                            image_info.height,
+                            stride_pixels,
+                            destination,
+                            destination_width,
+                            destination_height);
+    jpeg_del_decoder_engine(decoder_handle);
+    free(decoded_buffer);
+    return true;
+}
+
+static bool decode_jpeg_with_tjpgd(const std::string &path,
+                                   const uint8_t *input_buffer,
+                                   size_t input_size,
+                                   lv_color_t *destination,
+                                   uint32_t destination_width,
+                                   uint32_t destination_height)
+{
+    if ((input_buffer == nullptr) || (input_size == 0U) || (destination == nullptr)) {
+        return false;
+    }
+
+    uint8_t *workspace = static_cast<uint8_t *>(heap_caps_malloc(kTjpgdWorkspaceBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (workspace == nullptr) {
+        ESP_LOGE(TAG, "Failed to allocate TJpgDec workspace for %s", path.c_str());
+        return false;
+    }
+
+    TjpgdSession session = {};
+    session.input = input_buffer;
+    session.input_size = input_size;
+
+    JDEC decoder = {};
+    JRESULT result = jd_prepare(&decoder, tjpgd_input_callback, workspace, kTjpgdWorkspaceBytes, &session);
+    if (result != JDR_OK) {
+        if (result == JDR_FMT3) {
+            ESP_LOGW(TAG, "TJpgDec rejected unsupported JPEG standard for %s, trying libjpeg-turbo", path.c_str());
+            free(workspace);
+            return decode_jpeg_with_libjpeg_turbo(path, input_buffer, input_size, destination, destination_width, destination_height);
+        }
+        ESP_LOGE(TAG, "TJpgDec prepare failed for %s: %s", path.c_str(), tjpgd_result_to_string(result));
+        free(workspace);
+        return false;
+    }
+
+    const uint8_t scale = choose_tjpgd_scale(decoder.width, decoder.height, destination_width, destination_height);
+    session.decoded_width = std::max<uint32_t>(1U, (static_cast<uint32_t>(decoder.width) + ((1U << scale) - 1U)) >> scale);
+    session.decoded_height = std::max<uint32_t>(1U, (static_cast<uint32_t>(decoder.height) + ((1U << scale) - 1U)) >> scale);
+    const size_t decoded_rgb888_bytes = static_cast<size_t>(session.decoded_width) * session.decoded_height * 3U;
+    session.decoded_rgb888 = static_cast<uint8_t *>(heap_caps_malloc(decoded_rgb888_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (session.decoded_rgb888 == nullptr) {
+        ESP_LOGE(TAG,
+                 "Failed to allocate TJpgDec PSRAM buffer for %s (%u x %u, %u bytes)",
+                 path.c_str(),
+                 static_cast<unsigned>(session.decoded_width),
+                 static_cast<unsigned>(session.decoded_height),
+                 static_cast<unsigned>(decoded_rgb888_bytes));
+        free(workspace);
+        return false;
+    }
+    memset(session.decoded_rgb888, 0, decoded_rgb888_bytes);
+
+    session.input_offset = 0;
+    result = jd_decomp(&decoder, tjpgd_output_callback, scale);
+    if (result != JDR_OK) {
+        ESP_LOGE(TAG, "TJpgDec decode failed for %s: %s", path.c_str(), tjpgd_result_to_string(result));
+        free(session.decoded_rgb888);
+        free(workspace);
+        return false;
+    }
+
+    render_rgb888_to_buffer(session.decoded_rgb888,
+                            session.decoded_width,
+                            session.decoded_height,
+                            destination,
+                            destination_width,
+                            destination_height);
+    ESP_LOGI(TAG,
+             "TJpgDec fallback decoded %s at scale=%u source=%ux%u decoded=%ux%u",
+             path.c_str(),
+             static_cast<unsigned>(scale),
+             static_cast<unsigned>(decoder.width),
+             static_cast<unsigned>(decoder.height),
+             static_cast<unsigned>(session.decoded_width),
+             static_cast<unsigned>(session.decoded_height));
+    free(session.decoded_rgb888);
+    free(workspace);
+    return true;
+}
+
+static bool decode_jpeg_with_libjpeg_turbo(const std::string &path,
+                                           const uint8_t *input_buffer,
+                                           size_t input_size,
+                                           lv_color_t *destination,
+                                           uint32_t destination_width,
+                                           uint32_t destination_height)
+{
+    if ((input_buffer == nullptr) || (input_size == 0U) || (destination == nullptr)) {
+        return false;
+    }
+
+    jpeg_decompress_struct decoder = {};
+    LibjpegErrorManager error_manager = {};
+    decoder.err = jpeg_std_error(&error_manager.base);
+    error_manager.base.error_exit = libjpeg_error_exit;
+
+    if (setjmp(error_manager.jump_buffer) != 0) {
+        jpeg_destroy_decompress(&decoder);
+        ESP_LOGE(TAG, "libjpeg-turbo decode failed for %s", path.c_str());
+        return false;
+    }
+
+    jpeg_create_decompress(&decoder);
+    jpeg_mem_src(&decoder, const_cast<unsigned char *>(input_buffer), static_cast<unsigned long>(input_size));
+    const int header_result = jpeg_read_header(&decoder, TRUE);
+    if (header_result != JPEG_HEADER_OK) {
+        jpeg_destroy_decompress(&decoder);
+        ESP_LOGE(TAG, "libjpeg-turbo header parse failed for %s", path.c_str());
+        return false;
+    }
+
+    const uint8_t scale = choose_tjpgd_scale(static_cast<uint16_t>(decoder.image_width),
+                                             static_cast<uint16_t>(decoder.image_height),
+                                             destination_width,
+                                             destination_height);
+    decoder.scale_num = 1;
+    decoder.scale_denom = 1U << scale;
+    decoder.out_color_space = JCS_RGB;
+
+    if (jpeg_start_decompress(&decoder) != TRUE) {
+        jpeg_destroy_decompress(&decoder);
+        ESP_LOGE(TAG, "libjpeg-turbo start failed for %s", path.c_str());
+        return false;
+    }
+
+    const size_t row_stride = static_cast<size_t>(decoder.output_width) * decoder.output_components;
+    const size_t decoded_bytes = row_stride * decoder.output_height;
+    uint8_t *decoded_rgb888 = static_cast<uint8_t *>(heap_caps_malloc(decoded_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (decoded_rgb888 == nullptr) {
+        jpeg_finish_decompress(&decoder);
+        jpeg_destroy_decompress(&decoder);
+        ESP_LOGE(TAG,
+                 "Failed to allocate libjpeg-turbo PSRAM buffer for %s (%u x %u, %u bytes)",
+                 path.c_str(),
+                 static_cast<unsigned>(decoder.output_width),
+                 static_cast<unsigned>(decoder.output_height),
+                 static_cast<unsigned>(decoded_bytes));
+        return false;
+    }
+
+    while (decoder.output_scanline < decoder.output_height) {
+        JSAMPROW row_pointer = decoded_rgb888 + (static_cast<size_t>(decoder.output_scanline) * row_stride);
+        if (jpeg_read_scanlines(&decoder, &row_pointer, 1) != 1U) {
+            free(decoded_rgb888);
+            jpeg_finish_decompress(&decoder);
+            jpeg_destroy_decompress(&decoder);
+            ESP_LOGE(TAG, "libjpeg-turbo scanline decode failed for %s", path.c_str());
+            return false;
+        }
+    }
+
+    jpeg_finish_decompress(&decoder);
+    jpeg_destroy_decompress(&decoder);
+    render_rgb888_to_buffer(decoded_rgb888,
+                            decoder.output_width,
+                            decoder.output_height,
+                            destination,
+                            destination_width,
+                            destination_height);
+    ESP_LOGI(TAG,
+             "libjpeg-turbo decoded %s at scale=%u source=%ux%u decoded=%ux%u",
+             path.c_str(),
+             static_cast<unsigned>(scale),
+             static_cast<unsigned>(decoder.image_width),
+             static_cast<unsigned>(decoder.image_height),
+             static_cast<unsigned>(decoder.output_width),
+             static_cast<unsigned>(decoder.output_height));
+    free(decoded_rgb888);
+    return true;
+}
+
+static bool decode_png_to_buffer(const std::string &path,
+                                 lv_color_t *destination,
+                                 uint32_t destination_width,
+                                 uint32_t destination_height)
+{
+    uint8_t *png_bytes = nullptr;
+    size_t png_size = 0;
+    if (!read_file_to_psram_buffer(path, &png_bytes, &png_size)) {
+        return false;
+    }
+
+    lv_img_dsc_t raw_png = {};
+    raw_png.header.cf = LV_IMG_CF_RAW_ALPHA;
+    raw_png.data_size = static_cast<uint32_t>(png_size);
+    raw_png.data = png_bytes;
+
+    lv_img_decoder_dsc_t decoder_dsc = {};
+    const lv_res_t result = lv_img_decoder_open(&decoder_dsc, &raw_png, lv_color_white(), 0);
+    if ((result != LV_RES_OK) || (decoder_dsc.img_data == nullptr)) {
+        free(png_bytes);
+        ESP_LOGE(TAG, "PNG decode failed through LVGL for %s", path.c_str());
+        return false;
+    }
+
+    render_rgb565a8_to_buffer(decoder_dsc.img_data,
+                              decoder_dsc.header.w,
+                              decoder_dsc.header.h,
+                              destination,
+                              destination_width,
+                              destination_height);
+    lv_img_decoder_close(&decoder_dsc);
+    free(png_bytes);
+    return true;
+}
+
+static bool decode_image_to_buffer(const std::string &path,
+                                   lv_color_t *destination,
+                                   uint32_t destination_width,
+                                   uint32_t destination_height)
+{
+    if (destination == nullptr) {
+        return false;
+    }
+
+    if (is_png_path(path)) {
+        return decode_png_to_buffer(path, destination, destination_width, destination_height);
+    }
+    return decode_jpeg_to_buffer(path, destination, destination_width, destination_height);
+}
+
+static void draw_preview_placeholder(lv_obj_t *canvas, lv_color_t *preview_buffer, const std::string &path)
+{
+    if ((canvas == nullptr) || (preview_buffer == nullptr)) {
+        return;
+    }
+
+    memset(preview_buffer, 0, static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t));
+    lv_draw_rect_dsc_t rect = {};
+    lv_draw_rect_dsc_init(&rect);
+    rect.bg_color = tile_color_for_path(path);
+    rect.bg_grad.dir = LV_GRAD_DIR_VER;
+    rect.bg_grad.stops[0].color = tile_color_for_path(path);
+    rect.bg_grad.stops[1].color = lv_color_hex(0x05070A);
+    lv_canvas_draw_rect(canvas, 0, 0, kTilePreviewWidth, kTilePreviewHeight, &rect);
+    lv_obj_invalidate(canvas);
+}
+
+static void anim_set_x(void *object, int32_t value)
+{
+    lv_obj_set_x(static_cast<lv_obj_t *>(object), value);
+}
+
+static void anim_set_y(void *object, int32_t value)
+{
+    lv_obj_set_y(static_cast<lv_obj_t *>(object), value);
+}
+
+static void anim_set_opa(void *object, int32_t value)
+{
+    lv_obj_set_style_opa(static_cast<lv_obj_t *>(object), static_cast<lv_opa_t>(value), 0);
+}
+
+static void anim_set_zoom(void *object, int32_t value)
+{
+    lv_obj_set_style_transform_zoom(static_cast<lv_obj_t *>(object), static_cast<lv_coord_t>(value), 0);
+}
+
+static void anim_set_angle(void *object, int32_t value)
+{
+    lv_obj_set_style_transform_angle(static_cast<lv_obj_t *>(object), static_cast<lv_coord_t>(value), 0);
+}
+
+static void animate_value(void *target, lv_anim_exec_xcb_t exec_cb, int32_t start, int32_t end)
+{
+    if (start == end) {
+        exec_cb(target, end);
+        return;
+    }
+
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, target);
+    lv_anim_set_exec_cb(&animation, exec_cb);
+    lv_anim_set_values(&animation, start, end);
+    lv_anim_set_time(&animation, kTransitionDurationMs);
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_in_out);
+    lv_anim_start(&animation);
+}
+
+static void reset_canvas_transform(lv_obj_t *canvas)
+{
+    if (canvas == nullptr) {
+        return;
+    }
+
+    lv_anim_del(canvas, nullptr);
+    lv_obj_set_pos(canvas, 0, 0);
+    lv_obj_set_style_opa(canvas, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_transform_zoom(canvas, 256, 0);
+    lv_obj_set_style_transform_angle(canvas, 0, 0);
+    lv_obj_set_style_transform_pivot_x(canvas, kScreenWidth / 2, 0);
+    lv_obj_set_style_transform_pivot_y(canvas, kScreenHeight / 2, 0);
+}
+
+static int choose_transition_index()
+{
+    if (kTransitionCount <= 1) {
+        return 0;
+    }
+
+    int transition_index = static_cast<int>(esp_random() % kTransitionCount);
+    if (transition_index == s_last_transition) {
+        transition_index = (transition_index + 1) % kTransitionCount;
+    }
+    s_last_transition = transition_index;
+    return transition_index;
+}
+
+static void apply_transition(int transition_index, lv_obj_t *outgoing, lv_obj_t *incoming)
+{
+    const TransitionRecipe &recipe = kTransitionRecipes[transition_index % kTransitionCount];
+
+    reset_canvas_transform(outgoing);
+    reset_canvas_transform(incoming);
+    lv_obj_clear_flag(outgoing, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(incoming, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(incoming);
+
+    lv_obj_set_pos(incoming, recipe.incomingStartX, recipe.incomingStartY);
+    lv_obj_set_style_opa(incoming, static_cast<lv_opa_t>(recipe.incomingStartOpa), 0);
+    lv_obj_set_style_transform_zoom(incoming, static_cast<lv_coord_t>(recipe.incomingStartZoom), 0);
+    lv_obj_set_style_transform_angle(incoming, static_cast<lv_coord_t>(recipe.incomingStartAngle), 0);
+
+    animate_value(incoming, anim_set_x, recipe.incomingStartX, 0);
+    animate_value(incoming, anim_set_y, recipe.incomingStartY, 0);
+    animate_value(incoming, anim_set_opa, recipe.incomingStartOpa, LV_OPA_COVER);
+    animate_value(incoming, anim_set_zoom, recipe.incomingStartZoom, 256);
+    animate_value(incoming, anim_set_angle, recipe.incomingStartAngle, 0);
+
+    animate_value(outgoing, anim_set_x, 0, recipe.outgoingEndX);
+    animate_value(outgoing, anim_set_y, 0, recipe.outgoingEndY);
+    animate_value(outgoing, anim_set_opa, LV_OPA_COVER, recipe.outgoingEndOpa);
+    animate_value(outgoing, anim_set_zoom, 256, recipe.outgoingEndZoom);
+    animate_value(outgoing, anim_set_angle, 0, recipe.outgoingEndAngle);
+}
+
+static bool ensure_viewer_buffers()
+{
+    const size_t buffer_bytes = static_cast<size_t>(kScreenWidth) * static_cast<size_t>(kScreenHeight) * sizeof(lv_color_t);
+    for (int index = 0; index < 2; ++index) {
+        if (s_viewer_buffers[index] != nullptr) {
+            continue;
+        }
+
+        s_viewer_buffers[index] = static_cast<lv_color_t *>(heap_caps_malloc(buffer_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (s_viewer_buffers[index] == nullptr) {
+            s_viewer_buffers[index] = static_cast<lv_color_t *>(heap_caps_malloc(buffer_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            ESP_LOGW(TAG, "Falling back to internal RAM for viewer buffer %d", index);
+        }
+        if (s_viewer_buffers[index] == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate viewer buffer %d", index);
+            return false;
+        }
+        memset(s_viewer_buffers[index], 0, buffer_bytes);
+    }
+    return true;
+}
+
+static void update_viewer_title(const std::string &path, int transition_index)
+{
+    if (s_viewer_title != nullptr) {
+        lv_label_set_text(s_viewer_title, base_name(path));
+    }
+    if (s_transition_badge != nullptr) {
+        lv_label_set_text_fmt(s_transition_badge, "%s", kTransitionNames[transition_index % kTransitionCount]);
+    }
+}
+
+static bool show_image_index(AppImageDisplay *app, int index, bool animate)
+{
+    if ((app == nullptr) || (index < 0) || (index >= static_cast<int>(app->imagePathCount()))) {
+        ESP_LOGW(TAG, "show_image_index rejected app=%p index=%d count=%u",
+                 app,
+                 index,
+                 app == nullptr ? 0U : static_cast<unsigned>(app->imagePathCount()));
+        return false;
+    }
+    if (!ensure_viewer_buffers()) {
+        ESP_LOGE(TAG, "show_image_index failed to allocate viewer buffers for index=%d", index);
+        return false;
+    }
+
+    const int target_canvas = animate ? (1 - s_visible_canvas) : s_visible_canvas;
+    const std::string &path = app->imagePathAt(static_cast<size_t>(index));
+    if (!decode_image_to_buffer(path, s_viewer_buffers[target_canvas], kScreenWidth, kScreenHeight)) {
+        ESP_LOGE(TAG, "show_image_index failed to decode image index=%d path=%s", index, path.c_str());
+        return false;
+    }
+
+    ESP_LOGI(TAG,
+             "show_image_index opening index=%d animate=%s target_canvas=%d current_index=%d path=%s",
+             index,
+             animate ? "yes" : "no",
+             target_canvas,
+             s_current_index,
+             path.c_str());
+
+    bsp_display_lock(0);
+    lv_canvas_set_buffer(s_viewer_canvas[target_canvas], s_viewer_buffers[target_canvas], kScreenWidth, kScreenHeight, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_clear_flag(s_viewer_layer, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_viewer_layer);
+    s_fullscreen_visible = true;
+
+    int transition_index = 0;
+    if ((s_current_index >= 0) && animate) {
+        transition_index = choose_transition_index();
+        apply_transition(transition_index, s_viewer_canvas[s_visible_canvas], s_viewer_canvas[target_canvas]);
+        s_visible_canvas = target_canvas;
+    } else {
+        transition_index = (s_last_transition >= 0) ? s_last_transition : 0;
+        reset_canvas_transform(s_viewer_canvas[target_canvas]);
+        lv_obj_clear_flag(s_viewer_canvas[target_canvas], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_opa(s_viewer_canvas[target_canvas], LV_OPA_COVER, 0);
+        lv_obj_move_foreground(s_viewer_canvas[target_canvas]);
+        lv_obj_add_flag(s_viewer_canvas[1 - target_canvas], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_opa(s_viewer_canvas[1 - target_canvas], LV_OPA_TRANSP, 0);
+        s_visible_canvas = target_canvas;
+    }
+
+    if (s_viewer_topbar != nullptr) {
+        lv_obj_clear_flag(s_viewer_topbar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_viewer_topbar);
+    }
+    if (s_viewer_hint != nullptr) {
+        lv_obj_clear_flag(s_viewer_hint, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_viewer_hint);
+    }
+
+    update_viewer_title(path, transition_index);
+    lv_obj_invalidate(s_viewer_layer);
+    lv_obj_invalidate(s_viewer_canvas[target_canvas]);
+    bsp_display_unlock();
+
+    s_current_index = index;
+    note_viewer_interaction();
+    return true;
+}
+
+static void show_image_index_async(void *context)
+{
+    std::unique_ptr<PendingViewerRequest> request(static_cast<PendingViewerRequest *>(context));
+    if ((request == nullptr) || (request->app == nullptr) || (image_muxe == nullptr)) {
+        ESP_LOGW(TAG, "show_image_index_async ignored request=%p app=%p mutex=%p",
+                 request.get(),
+                 request == nullptr ? nullptr : request->app,
+                 image_muxe);
+        return;
+    }
+
+    ESP_LOGI(TAG,
+             "show_image_index_async reason=%s index=%d animate=%s",
+             request->reason == nullptr ? "unknown" : request->reason,
+             request->index,
+             request->animate ? "yes" : "no");
+    if (xSemaphoreTakeRecursive(image_muxe, pdMS_TO_TICKS(50)) == pdTRUE) {
+        const bool opened = show_image_index(request->app, request->index, request->animate);
+        ESP_LOGI(TAG, "show_image_index_async result=%s index=%d", opened ? "ok" : "failed", request->index);
+        xSemaphoreGiveRecursive(image_muxe);
+    } else {
+        ESP_LOGW(TAG, "show_image_index_async mutex timeout index=%d", request->index);
+    }
+}
+
+static void close_viewer()
+{
+    stop_idle_slideshow();
+    ESP_LOGI(TAG, "close_viewer current_index=%d", s_current_index);
+    s_fullscreen_visible = false;
+    if (s_viewer_layer != nullptr) {
+        lv_obj_add_flag(s_viewer_layer, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void viewer_interaction_cb(lv_event_t *event)
+{
+    const lv_event_code_t code = lv_event_get_code(event);
+    ESP_LOGI(TAG, "viewer_interaction_cb code=%d current_index=%d", static_cast<int>(code), s_current_index);
+    if ((code == LV_EVENT_PRESSED) || (code == LV_EVENT_CLICKED)) {
+        note_viewer_interaction();
+    }
+}
+
+static void viewer_close_cb(lv_event_t *event)
+{
+    if (lv_event_get_code(event) == LV_EVENT_CLICKED) {
+        close_viewer();
+    }
+}
+
+static void tile_open_cb(lv_event_t *event)
+{
+    const lv_event_code_t code = lv_event_get_code(event);
+    if ((code != LV_EVENT_PRESSED) && (code != LV_EVENT_PRESSING) && (code != LV_EVENT_RELEASED) && (code != LV_EVENT_PRESS_LOST)) {
+        return;
+    }
+
+    const int index = static_cast<int>(reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
+    lv_obj_t *target = lv_event_get_target(event);
+    lv_indev_t *indev = lv_event_get_indev(event);
+
+    if (code == LV_EVENT_PRESSED) {
+        s_tile_press_target = target;
+        s_tile_press_index = index;
+        s_tile_press_moved = false;
+        if (indev != nullptr) {
+            lv_indev_get_point(indev, &s_tile_press_point);
+        } else {
+            s_tile_press_point.x = 0;
+            s_tile_press_point.y = 0;
+        }
+        ESP_LOGI(TAG, "tile_open_cb pressed index=%d target=%p point=(%d,%d)", index, target, s_tile_press_point.x, s_tile_press_point.y);
+        return;
+    }
+
+    if (code == LV_EVENT_PRESSING) {
+        if ((target == s_tile_press_target) && (index == s_tile_press_index) && (indev != nullptr) && !s_tile_press_moved) {
+            lv_point_t point;
+            lv_indev_get_point(indev, &point);
+            const int dx = point.x - s_tile_press_point.x;
+            const int dy = point.y - s_tile_press_point.y;
+            if ((dx > kTileTapSlopPx) || (dx < -kTileTapSlopPx) || (dy > kTileTapSlopPx) || (dy < -kTileTapSlopPx)) {
+                s_tile_press_moved = true;
+                ESP_LOGI(TAG, "tile_open_cb move cancel index=%d target=%p point=(%d,%d) start=(%d,%d)",
+                         index,
+                         target,
+                         point.x,
+                         point.y,
+                         s_tile_press_point.x,
+                         s_tile_press_point.y);
+            }
+        }
+        return;
+    }
+
+    if (code == LV_EVENT_PRESS_LOST) {
+        ESP_LOGI(TAG, "tile_open_cb press lost index=%d target=%p moved=%s", index, target, s_tile_press_moved ? "yes" : "no");
+        if ((target == s_tile_press_target) && (index == s_tile_press_index)) {
+            reset_tile_press_state();
+        }
+        return;
+    }
+
+    if ((target != s_tile_press_target) || (index != s_tile_press_index)) {
+        ESP_LOGI(TAG, "tile_open_cb release ignored index=%d target=%p tracked_index=%d tracked_target=%p",
+                 index,
+                 target,
+                 s_tile_press_index,
+                 s_tile_press_target);
+        return;
+    }
+
+    if ((s_active_app == nullptr) || (image_muxe == nullptr)) {
+        ESP_LOGW(TAG, "tile_open_cb ignored active_app=%p image_muxe=%p", s_active_app, image_muxe);
+        reset_tile_press_state();
+        return;
+    }
+
+    bool is_tap = !s_tile_press_moved;
+    if ((indev != nullptr) && is_tap) {
+        lv_point_t point;
+        lv_indev_get_point(indev, &point);
+        const int dx = point.x - s_tile_press_point.x;
+        const int dy = point.y - s_tile_press_point.y;
+        is_tap = (dx <= kTileTapSlopPx) && (dx >= -kTileTapSlopPx) && (dy <= kTileTapSlopPx) && (dy >= -kTileTapSlopPx);
+        if (!is_tap) {
+            ESP_LOGI(TAG, "tile_open_cb release cancel index=%d target=%p point=(%d,%d) start=(%d,%d)",
+                     index,
+                     target,
+                     point.x,
+                     point.y,
+                     s_tile_press_point.x,
+                     s_tile_press_point.y);
+        }
+    }
+
+    ESP_LOGI(TAG, "tile_open_cb code=%d index=%d current_index=%d count=%u",
+             static_cast<int>(code),
+             index,
+             s_current_index,
+             static_cast<unsigned>(s_active_app->imagePathCount()));
+
+    reset_tile_press_state();
+    if (!is_tap) {
+        return;
+    }
+
+    if (!queue_viewer_request(s_active_app, index, s_current_index >= 0, "tile-open")) {
+        ESP_LOGW(TAG, "tile_open_cb async queue failed index=%d", index);
+    }
+}
+
+static void register_tile_open_target(lv_obj_t *object, size_t index)
+{
+    if (object == nullptr) {
+        return;
+    }
+
+    lv_obj_add_flag(object, LV_OBJ_FLAG_CLICKABLE);
+    void *user_data = reinterpret_cast<void *>(static_cast<uintptr_t>(index));
+    lv_obj_add_event_cb(object, tile_open_cb, LV_EVENT_PRESSED, user_data);
+    lv_obj_add_event_cb(object, tile_open_cb, LV_EVENT_PRESSING, user_data);
+    lv_obj_add_event_cb(object, tile_open_cb, LV_EVENT_RELEASED, user_data);
+    lv_obj_add_event_cb(object, tile_open_cb, LV_EVENT_PRESS_LOST, user_data);
+}
+
+static void create_gallery_tile(AppImageDisplay *app, size_t index)
+{
+    lv_obj_t *tile = lv_btn_create(s_gallery_grid);
+    lv_obj_set_size(tile, kTileWidth, kTileHeight);
+    lv_obj_set_style_radius(tile, 22, 0);
+    lv_obj_set_style_bg_color(tile, lv_color_hex(0x151A22), 0);
+    lv_obj_set_style_bg_grad_color(tile, lv_color_hex(0x0B0F15), 0);
+    lv_obj_set_style_bg_grad_dir(tile, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_border_width(tile, 1, 0);
+    lv_obj_set_style_border_color(tile, lv_color_hex(0x2C3543), 0);
+    lv_obj_set_style_shadow_width(tile, 14, 0);
+    lv_obj_set_style_shadow_color(tile, lv_color_hex(0x05070A), 0);
+    lv_obj_set_style_pad_all(tile, 12, 0);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    register_tile_open_target(tile, index);
+
+    const std::string &path = app->imagePathAt(index);
+    lv_obj_t *preview = lv_obj_create(tile);
+    lv_obj_set_size(preview, kTilePreviewWidth, kTilePreviewHeight);
+    lv_obj_align(preview, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_radius(preview, 16, 0);
+    lv_obj_set_style_border_width(preview, 0, 0);
+    lv_obj_set_style_bg_color(preview, tile_color_for_path(path), 0);
+    lv_obj_set_style_bg_grad_color(preview, lv_color_hex(0x05070A), 0);
+    lv_obj_set_style_bg_grad_dir(preview, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_pad_all(preview, 0, 0);
+    lv_obj_set_style_clip_corner(preview, true, 0);
+    lv_obj_clear_flag(preview, LV_OBJ_FLAG_SCROLLABLE);
+    register_tile_open_target(preview, index);
+
+    lv_color_t *preview_buffer = static_cast<lv_color_t *>(heap_caps_malloc(static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (preview_buffer == nullptr) {
+        preview_buffer = static_cast<lv_color_t *>(heap_caps_malloc(static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+
+    if (preview_buffer != nullptr) {
+        s_tile_preview_buffers.push_back(preview_buffer);
+        lv_obj_t *preview_canvas = lv_canvas_create(preview);
+        lv_obj_set_size(preview_canvas, kTilePreviewWidth, kTilePreviewHeight);
+        lv_obj_center(preview_canvas);
+        register_tile_open_target(preview_canvas, index);
+        lv_canvas_set_buffer(preview_canvas, preview_buffer, kTilePreviewWidth, kTilePreviewHeight, LV_IMG_CF_TRUE_COLOR);
+        draw_preview_placeholder(preview_canvas, preview_buffer, path);
+
+        lv_obj_t *status = lv_label_create(preview);
+        lv_label_set_text(status, "Loading...");
+        lv_obj_set_style_text_font(status, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(status, lv_color_white(), 0);
+        lv_obj_set_style_bg_color(status, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(status, LV_OPA_50, 0);
+        lv_obj_set_style_radius(status, 10, 0);
+        lv_obj_set_style_pad_left(status, 8, 0);
+        lv_obj_set_style_pad_right(status, 8, 0);
+        lv_obj_set_style_pad_top(status, 4, 0);
+        lv_obj_set_style_pad_bottom(status, 4, 0);
+        register_tile_open_target(status, index);
+        lv_obj_align(status, LV_ALIGN_BOTTOM_RIGHT, -8, -8);
+
+        s_pending_previews.push_back(PendingPreview{
+            .index = index,
+            .preview = preview,
+            .canvas = preview_canvas,
+            .status = status,
+            .buffer = preview_buffer,
+        });
+        ESP_LOGI(TAG, "tile[%u] queued lazy preview path=%s", static_cast<unsigned>(index), path.c_str());
+
+        lv_obj_t *extension = lv_label_create(preview);
+        lv_label_set_text_fmt(extension, "%s", file_extension_label(path).c_str());
+        lv_obj_set_style_text_font(extension, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(extension, lv_color_white(), 0);
+        lv_obj_set_style_bg_color(extension, lv_color_hex(0x000000), 0);
+        lv_obj_set_style_bg_opa(extension, LV_OPA_50, 0);
+        lv_obj_set_style_radius(extension, 10, 0);
+        lv_obj_set_style_pad_left(extension, 8, 0);
+        lv_obj_set_style_pad_right(extension, 8, 0);
+        lv_obj_set_style_pad_top(extension, 4, 0);
+        lv_obj_set_style_pad_bottom(extension, 4, 0);
+        register_tile_open_target(extension, index);
+        lv_obj_align(extension, LV_ALIGN_TOP_LEFT, 8, 8);
+    } else {
+        ESP_LOGW(TAG, "tile[%u] preview buffer allocation failed path=%s",
+                 static_cast<unsigned>(index),
+                 path.c_str());
+    }
+
+    lv_obj_t *name = lv_label_create(tile);
+    lv_obj_set_width(name, kTileWidth - 26);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+    lv_label_set_text_fmt(name, "%s", base_name(path));
+    lv_obj_set_style_text_font(name, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(name, lv_color_hex(0xF5F7FA), 0);
+    register_tile_open_target(name, index);
+    lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, kTilePreviewHeight + 16);
+
+    lv_obj_t *meta = lv_label_create(tile);
+    lv_label_set_text_fmt(meta, "Tile %u", static_cast<unsigned>(index + 1));
+    lv_obj_set_style_text_font(meta, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(meta, lv_color_hex(0x8B97A8), 0);
+    register_tile_open_target(meta, index);
+    lv_obj_align(meta, LV_ALIGN_BOTTOM_LEFT, 0, -2);
+}
+
+static void build_gallery_ui(AppImageDisplay *app)
+{
+    s_gallery_screen = app_image_screen;
+    lv_obj_clean(s_gallery_screen);
+    lv_obj_set_style_bg_color(s_gallery_screen, lv_color_hex(0x090B10), 0);
+    lv_obj_set_style_bg_opa(s_gallery_screen, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_gallery_screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_gallery_header = lv_obj_create(s_gallery_screen);
+    lv_obj_set_size(s_gallery_header, kScreenWidth - 24, kHeaderHeight);
+    lv_obj_align(s_gallery_header, LV_ALIGN_TOP_MID, 0, 12);
+    lv_obj_set_style_radius(s_gallery_header, 24, 0);
+    lv_obj_set_style_border_width(s_gallery_header, 0, 0);
+    lv_obj_set_style_bg_color(s_gallery_header, lv_color_hex(0x111823), 0);
+    lv_obj_set_style_bg_grad_color(s_gallery_header, lv_color_hex(0x1C2635), 0);
+    lv_obj_set_style_bg_grad_dir(s_gallery_header, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_pad_all(s_gallery_header, 16, 0);
+    lv_obj_clear_flag(s_gallery_header, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_gallery_header);
+    lv_label_set_text(title, "Image Gallery");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    s_gallery_grid = lv_obj_create(s_gallery_screen);
+    lv_obj_set_size(s_gallery_grid, kScreenWidth, kScreenHeight - (kHeaderHeight + 28));
+    lv_obj_align(s_gallery_grid, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(s_gallery_grid, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_gallery_grid, 0, 0);
+    lv_obj_set_style_pad_left(s_gallery_grid, 14, 0);
+    lv_obj_set_style_pad_right(s_gallery_grid, 14, 0);
+    lv_obj_set_style_pad_top(s_gallery_grid, 12, 0);
+    lv_obj_set_style_pad_bottom(s_gallery_grid, 28, 0);
+    lv_obj_set_style_pad_row(s_gallery_grid, 12, 0);
+    lv_obj_set_style_pad_column(s_gallery_grid, 12, 0);
+    lv_obj_set_layout(s_gallery_grid, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(s_gallery_grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(s_gallery_grid, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    s_pending_previews.clear();
+    s_next_pending_preview = 0;
+
+    for (size_t index = 0; index < app->imagePathCount(); ++index) {
+        create_gallery_tile(app, index);
+    }
+
+    s_viewer_layer = lv_obj_create(s_gallery_screen);
+    lv_obj_set_size(s_viewer_layer, kScreenWidth, kScreenHeight);
+    lv_obj_set_pos(s_viewer_layer, 0, 0);
+    lv_obj_set_style_bg_color(s_viewer_layer, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_viewer_layer, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_viewer_layer, 0, 0);
+    lv_obj_set_style_pad_all(s_viewer_layer, 0, 0);
+    lv_obj_add_flag(s_viewer_layer, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_viewer_layer, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_viewer_layer, viewer_interaction_cb, LV_EVENT_PRESSED, nullptr);
+    lv_obj_add_event_cb(s_viewer_layer, AppImageDisplay::image_change_cb, LV_EVENT_GESTURE, app);
+
+    for (int canvas_index = 0; canvas_index < 2; ++canvas_index) {
+        s_viewer_canvas[canvas_index] = lv_canvas_create(s_viewer_layer);
+        lv_obj_set_size(s_viewer_canvas[canvas_index], kScreenWidth, kScreenHeight);
+        lv_obj_set_pos(s_viewer_canvas[canvas_index], 0, 0);
+        lv_obj_set_style_border_width(s_viewer_canvas[canvas_index], 0, 0);
+        lv_obj_set_style_bg_opa(s_viewer_canvas[canvas_index], LV_OPA_TRANSP, 0);
+        reset_canvas_transform(s_viewer_canvas[canvas_index]);
+    }
+
+    s_viewer_topbar = lv_obj_create(s_viewer_layer);
+    lv_obj_set_size(s_viewer_topbar, kScreenWidth - 20, 58);
+    lv_obj_align(s_viewer_topbar, LV_ALIGN_TOP_MID, 0, 10);
+    lv_obj_set_style_radius(s_viewer_topbar, 18, 0);
+    lv_obj_set_style_bg_color(s_viewer_topbar, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_viewer_topbar, 170, 0);
+    lv_obj_set_style_border_width(s_viewer_topbar, 0, 0);
+    lv_obj_set_style_pad_all(s_viewer_topbar, 10, 0);
+    lv_obj_clear_flag(s_viewer_topbar, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *close_button = lv_btn_create(s_viewer_topbar);
+    lv_obj_set_size(close_button, 68, 36);
+    lv_obj_align(close_button, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(close_button, 14, 0);
+    lv_obj_set_style_bg_color(close_button, lv_color_hex(0x202A37), 0);
+    lv_obj_add_event_cb(close_button, viewer_close_cb, LV_EVENT_CLICKED, nullptr);
+
+    lv_obj_t *close_label = lv_label_create(close_button);
+    lv_label_set_text(close_label, "Back");
+    lv_obj_center(close_label);
+
+    s_viewer_title = lv_label_create(s_viewer_topbar);
+    lv_obj_set_width(s_viewer_title, 210);
+    lv_label_set_long_mode(s_viewer_title, LV_LABEL_LONG_DOT);
+    lv_label_set_text(s_viewer_title, "");
+    lv_obj_set_style_text_font(s_viewer_title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_viewer_title, lv_color_white(), 0);
+    lv_obj_align(s_viewer_title, LV_ALIGN_LEFT_MID, 82, 0);
+
+    s_transition_badge = lv_label_create(s_viewer_topbar);
+    lv_label_set_text(s_transition_badge, "Fade");
+    lv_obj_set_style_text_font(s_transition_badge, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_transition_badge, lv_color_hex(0xD7DFEA), 0);
+    lv_obj_align(s_transition_badge, LV_ALIGN_RIGHT_MID, 0, 0);
+
+    s_viewer_hint = lv_label_create(s_viewer_layer);
+    lv_label_set_text(s_viewer_hint, "Swipe left or right. If idle, fullscreen switches to a random image every 15 seconds.");
+    lv_obj_set_width(s_viewer_hint, kScreenWidth - 36);
+    lv_label_set_long_mode(s_viewer_hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_viewer_hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_viewer_hint, lv_color_hex(0xD7DFEA), 0);
+    lv_obj_align(s_viewer_hint, LV_ALIGN_BOTTOM_MID, 0, -18);
+
+    start_thumbnail_loader();
+}
+
+static void stop_thumbnail_loader()
+{
+    if (s_thumbnail_loader_timer != nullptr) {
+        lv_timer_del(s_thumbnail_loader_timer);
+        s_thumbnail_loader_timer = nullptr;
+    }
+}
+
+static void start_thumbnail_loader()
+{
+    stop_thumbnail_loader();
+    if (s_pending_previews.empty()) {
+        return;
+    }
+
+    s_thumbnail_loader_timer = lv_timer_create(thumbnail_loader_timer_cb, 40, nullptr);
+    if (s_thumbnail_loader_timer != nullptr) {
+        lv_timer_set_repeat_count(s_thumbnail_loader_timer, -1);
+        lv_timer_ready(s_thumbnail_loader_timer);
+        ESP_LOGI(TAG, "thumbnail loader started queued=%u", static_cast<unsigned>(s_pending_previews.size()));
+    } else {
+        ESP_LOGW(TAG, "thumbnail loader timer creation failed queued=%u", static_cast<unsigned>(s_pending_previews.size()));
+    }
+}
+
+static void thumbnail_loader_timer_cb(lv_timer_t *timer)
+{
+    if ((s_active_app == nullptr) || (s_next_pending_preview >= s_pending_previews.size())) {
+        ESP_LOGI(TAG, "thumbnail loader complete processed=%u", static_cast<unsigned>(s_next_pending_preview));
+        stop_thumbnail_loader();
+        return;
+    }
+
+    PendingPreview &pending = s_pending_previews[s_next_pending_preview++];
+    if ((pending.canvas == nullptr) || (pending.buffer == nullptr) || (pending.index >= s_active_app->imagePathCount())) {
+        ESP_LOGW(TAG, "thumbnail loader skipped invalid pending item index=%u", static_cast<unsigned>(pending.index));
+        return;
+    }
+
+    const std::string &path = s_active_app->imagePathAt(pending.index);
+    ESP_LOGI(TAG,
+             "thumbnail loader decode start tile=%u remaining=%u path=%s",
+             static_cast<unsigned>(pending.index),
+             static_cast<unsigned>(s_pending_previews.size() - s_next_pending_preview),
+             path.c_str());
+    const bool decoded = decode_image_to_buffer(path, pending.buffer, kTilePreviewWidth, kTilePreviewHeight);
+    if (!decoded) {
+        draw_preview_placeholder(pending.canvas, pending.buffer, path);
+    } else {
+        lv_obj_invalidate(pending.canvas);
+    }
+    if (pending.status != nullptr) {
+        lv_label_set_text(pending.status, decoded ? "Ready" : "Fallback");
+    }
+    ESP_LOGI(TAG, "thumbnail loader decode done tile=%u result=%s", static_cast<unsigned>(pending.index), decoded ? "ok" : "failed");
+
+    if ((pending.status != nullptr) && (timer != nullptr)) {
+        lv_obj_add_flag(pending.status, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+} // namespace
 
 LV_IMG_DECLARE(img_app_img_display);
 
 AppImageDisplay::AppImageDisplay():
     ESP_Brookesia_PhoneApp("Image", &img_app_img_display, true),
-    _image_name(NULL),
-    _image_file_iterator(NULL)
+    _image_name(nullptr),
+    _image_file_iterator(nullptr)
 {
 }
 
@@ -116,30 +1781,8 @@ AppImageDisplay::~AppImageDisplay()
 
 bool AppImageDisplay::run(void)
 {
-    if ((_image_file_iterator == nullptr) || (image_count <= 0)) {
-        lv_obj_t *title = lv_label_create(lv_scr_act());
-        lv_label_set_text(title, "Image Viewer");
-        lv_obj_set_style_text_font(title, &lv_font_montserrat_28, 0);
-        lv_obj_align(title, LV_ALIGN_TOP_LEFT, 20, 18);
-
-        lv_obj_t *message = lv_label_create(lv_scr_act());
-        lv_obj_set_width(message, 420);
-        lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(message,
-                  "No JPG images were found yet. Add files under /sdcard/image.");
-        lv_obj_set_style_text_font(message, &lv_font_montserrat_16, 0);
-        lv_obj_align(message, LV_ALIGN_TOP_LEFT, 20, 86);
-        return true;
-    }
-
-    if (image_event_group == nullptr) {
-        image_event_group = xEventGroupCreate();
-        if (image_event_group == nullptr) {
-            ESP_LOGE(TAG, "Failed to create image event group");
-            return false;
-        }
-        xEventGroupClearBits(image_event_group, IMAGE_EVENT_TASK_RUN | IMAGE_EVENT_DELETE | IMAGE_EVENT_DIR);
-    }
+    s_active_app = this;
+    ESP_LOGI(TAG, "run begin image_count=%u", static_cast<unsigned>(imagePathCount()));
 
     if (image_task_event == nullptr) {
         image_task_event = xSemaphoreCreateBinary();
@@ -157,281 +1800,248 @@ bool AppImageDisplay::run(void)
         }
     }
 
-    if (time_refer_handle == NULL) {
-        const esp_timer_create_args_t time_arg = {
+    if (time_refer_handle == nullptr) {
+        const esp_timer_create_args_t timer_args = {
             .callback = &timer_refersh_task,
-            .name = "refersh"
+            .name = "image_idle"
         };
-        ESP_ERROR_CHECK(esp_timer_create(&time_arg, &time_refer_handle));
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &time_refer_handle));
     }
 
-    static bool s_image_worker_started = false;
-    if (!s_image_worker_started) {
-        if (create_background_task_prefer_psram((TaskFunction_t)image_delay_change, "Image Init", 2048, this, 3, nullptr, 0) != pdPASS) {
-            ESP_LOGE(TAG, "Failed to start image background task");
+    static bool s_worker_started = false;
+    if (!s_worker_started) {
+        if (create_background_task_prefer_psram(reinterpret_cast<TaskFunction_t>(image_delay_change),
+                                                "ImageFrame",
+                                                4096,
+                                                this,
+                                                3,
+                                                nullptr,
+                                                0) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to start image worker");
             return false;
         }
-        s_image_worker_started = true;
+        s_worker_started = true;
     }
 
     app_image_display_init();
+    build_gallery_ui(this);
 
-    lv_obj_add_event_cb(lv_scr_act(),image_change_cb,LV_EVENT_GESTURE,this);
-    xEventGroupClearBits(image_event_group, IMAGE_EVENT_DELETE);
-    xEventGroupSetBits(image_event_group, IMAGE_EVENT_TASK_RUN);
+    if (imagePathCount() == 0U) {
+        lv_obj_t *empty_card = lv_obj_create(s_gallery_grid);
+        lv_obj_set_size(empty_card, kScreenWidth - 44, 180);
+        lv_obj_set_style_radius(empty_card, 26, 0);
+        lv_obj_set_style_border_width(empty_card, 0, 0);
+        lv_obj_set_style_bg_color(empty_card, lv_color_hex(0x141A24), 0);
+        lv_obj_set_style_pad_all(empty_card, 18, 0);
+        lv_obj_clear_flag(empty_card, LV_OBJ_FLAG_SCROLLABLE);
 
-    for(int i=0;i<APP_IMAMG_BUF;i++)
-    {
-        output_buf_size[i] = 0;
-        output_buf[i] = (uint8_t*)jpeg_alloc_decoder_mem(800 * 480 *2 , &rx_mem_cfg, &output_buf_size[i]);
+        lv_obj_t *empty_title = lv_label_create(empty_card);
+        lv_label_set_text(empty_title, "No supported images found");
+        lv_obj_set_style_text_font(empty_title, &lv_font_montserrat_22, 0);
+        lv_obj_set_style_text_color(empty_title, lv_color_white(), 0);
+        lv_obj_align(empty_title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+        lv_obj_t *empty_text = lv_label_create(empty_card);
+        lv_obj_set_width(empty_text, kScreenWidth - 88);
+        lv_label_set_long_mode(empty_text, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(empty_text,
+                          "Put JPG, JPEG, or PNG files in /sdcard/image or /sdcard/imagefolder. JPG and JPEG open through the hardware decoder. PNG is also supported in this firmware.");
+        lv_obj_set_style_text_font(empty_text, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(empty_text, lv_color_hex(0xC6D0DB), 0);
+        lv_obj_align(empty_text, LV_ALIGN_TOP_LEFT, 0, 44);
     }
 
-    ESP_ERROR_CHECK(esp_timer_start_periodic(time_refer_handle,5000000));
-    vTaskDelay(pdMS_TO_TICKS(50));
-
-    if(xSemaphoreTakeRecursive(image_muxe,pdMS_TO_TICKS(10)) == pdTRUE)
-    {
-        image_change_display(_image_file_iterator,count_now);
-        xSemaphoreGiveRecursive(image_muxe);
-    }
-
-    // xSemaphoreTakeRecursive(image_muxe,portMAX_DELAY);
-    // image_change_display(_image_file_iterator,count_now);
-    // xSemaphoreGiveRecursive(image_muxe);
-    
-
-    xEventGroupSetBits(image_event_group, IMAGE_EVENT_TASK_RUN);
-    
-
+    s_current_index = -1;
+    s_fullscreen_visible = false;
+    stop_idle_slideshow();
+    maybe_queue_debug_open(this);
+    ESP_LOGI(TAG, "run ready lazy_previews=%u", static_cast<unsigned>(s_pending_previews.size()));
     return true;
 }
 
 bool AppImageDisplay::pause(void)
 {
-    // app_image_display_pause();
-    if (!image_runtime_ready()) {
-        return true;
-    }
-
-    xEventGroupClearBits(image_event_group, IMAGE_EVENT_TASK_RUN);
-
+    stop_idle_slideshow();
+    ESP_LOGI(TAG, "pause current_index=%d", s_current_index);
     return true;
 }
 
 bool AppImageDisplay::resume(void)
 {
-    // app_image_display_resume();
-    if (!image_runtime_ready()) {
-        return true;
-    }
-
-    xEventGroupSetBits(image_event_group, IMAGE_EVENT_DIR);
-    xEventGroupSetBits(image_event_group, IMAGE_EVENT_TASK_RUN);
+    ESP_LOGI(TAG, "resume current_index=%d visible=%s", s_current_index, s_fullscreen_visible ? "yes" : "no");
+    maybe_queue_debug_open(this);
+    note_viewer_interaction();
     return true;
 }
 
 bool AppImageDisplay::back(void)
 {
+    if (s_fullscreen_visible) {
+        close_viewer();
+        return true;
+    }
     return notifyCoreClosed();
 }
 
 bool AppImageDisplay::close(void)
 {
-    // app_image_display_close();
-    if (!image_runtime_ready()) {
-        return true;
-    }
+    stop_idle_slideshow();
+    stop_thumbnail_loader();
+    s_fullscreen_visible = false;
+    s_current_index = -1;
+    s_active_app = nullptr;
+    s_pending_previews.clear();
+    s_next_pending_preview = 0;
 
-    xEventGroupSetBits(image_event_group, IMAGE_EVENT_DELETE);
-    if (time_refer_handle != NULL) {
-        esp_err_t ret = esp_timer_stop(time_refer_handle);
-        if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
-            ESP_LOGW(TAG, "Failed to stop image refresh timer: %s", esp_err_to_name(ret));
-        }
+    for (int index = 0; index < 2; ++index) {
+        free(s_viewer_buffers[index]);
+        s_viewer_buffers[index] = nullptr;
     }
-
-    for (int i = 0; i < APP_IMAMG_BUF; i++) {
-        free(output_buf[i]);
-        output_buf[i] = NULL;
-        output_buf_size[i] = 0;
+    for (lv_color_t *buffer : s_tile_preview_buffers) {
+        free(buffer);
     }
+    s_tile_preview_buffers.clear();
     return true;
 }
 
 bool AppImageDisplay::init(void)
 {
     _image_file_iterator = nullptr;
-    image_count = 0;
+    _image_paths.clear();
 
     const char *directories[] = {
         IMAGE_DIR,
+        IMAGE_DIR_FALLBACK,
     };
 
-    for (size_t index = 0; index < (sizeof(directories) / sizeof(directories[0])); ++index) {
-        if (!app_storage_ensure_sdcard_available()) {
-            continue;
-        }
-        if (bsp_extra_file_instance_init(directories[index], &_image_file_iterator) != ESP_OK) {
-            continue;
-        }
-        image_count = file_iterator_get_count(_image_file_iterator);
-        if (image_count > 0) {
-            ESP_LOGI(TAG, "Using image directory %s with %d JPG files", directories[index], image_count);
-            return true;
-        }
+    if (!app_storage_ensure_sdcard_available()) {
+        ESP_LOGW(TAG, "SD card is unavailable for image scan");
+        return true;
     }
 
-    ESP_LOGW(TAG, "No JPG images found under /sdcard/image. Showing empty-state viewer.");
+    for (size_t index = 0; index < (sizeof(directories) / sizeof(directories[0])); ++index) {
+        ESP_LOGI(TAG, "Scanning image directory %s", directories[index]);
+        scan_supported_images_in_directory(directories[index], _image_paths);
+    }
 
+    std::sort(_image_paths.begin(), _image_paths.end());
+    _image_paths.erase(std::unique(_image_paths.begin(), _image_paths.end()), _image_paths.end());
+    ESP_LOGI(TAG, "Found %u supported images on SD card", static_cast<unsigned>(_image_paths.size()));
+    for (size_t index = 0; index < _image_paths.size(); ++index) {
+        ESP_LOGI(TAG, "image[%u]=%s", static_cast<unsigned>(index), _image_paths[index].c_str());
+    }
     return true;
 }
-static int img_cnt =0;
 
-static void image_change_display(file_iterator_instance_t *ft,int index)
+size_t AppImageDisplay::imagePathCount() const
 {
-    // ESP_ERROR_CHECK(esp_timer_stop(time_refer_handle));
-    
-    ESP_ERROR_CHECK(jpeg_new_decoder_engine(&decode_eng_cfg, &jpgd_handle));
-    img_cnt++;
-    if(img_cnt == APP_IMAMG_BUF)
-    {
-        img_cnt = 0;
-    }
-    // if(img_cnt == 0)
-    //     img_cnt = 1;
-    // else
-    //     img_cnt = 0;
-
-    jpeg_decode_picture_info_t image_info;
-
-    const char *image_name = file_iterator_get_name_from_index(ft,index);
-    ESP_LOGI(TAG,"image name = %s",image_name);
-
-    static char image_path[256];
-    file_iterator_get_full_path_from_index(ft,index,image_path,256);
-    ESP_LOGI(TAG,"index = %d",index);
-    ESP_LOGI(TAG,"image path = %s",image_path);
-
-    FILE *image_fp = fopen(image_path,"rb");
-    if(image_fp == NULL)
-    {
-        ESP_LOGE(TAG,"fopen file failed");
-        return;
-    }
-
-    fseek(image_fp,0,SEEK_END);
-    int image_size_fp = ftell(image_fp);
-    fseek(image_fp,0,SEEK_SET);
-
-    size_t input_buffer_size_image = 0;
-    input_buf[img_cnt] =  (uint8_t*)jpeg_alloc_decoder_mem(image_size_fp, &tx_mem_cfg, &input_buffer_size_image);
-    if(input_buf[img_cnt] == NULL)
-    {
-        ESP_LOGE(TAG,"alloc input buf failed");
-        return;
-    }
-    fread(input_buf[img_cnt],1,input_buffer_size_image,image_fp);
-    fclose(image_fp);
-    ESP_ERROR_CHECK(jpeg_decoder_get_info(input_buf[img_cnt],input_buffer_size_image,&image_info));
-    ESP_LOGI(TAG,"image width = %d,image hight = %d",image_info.width,image_info.height);
-
-   
-    if(output_buf[img_cnt] == NULL)
-    {
-        ESP_LOGE(TAG,"alloc output buf failed");
-        return;
-    }
-    uint32_t out_size_image = 0;
-    
-    jpeg_decoder_process(jpgd_handle, &decode_cfg_rgb, input_buf[img_cnt], input_buffer_size_image, output_buf[img_cnt], output_buf_size[img_cnt], &out_size_image);
-
-    bsp_display_lock(0);
-    // lv_img_dsc_t img_dsc = {
-    //     .header ={
-    //         .cf = LV_IMG_CF_TRUE_COLOR,
-    //         .always_zero = 0,
-    //         .reserved = 0,
-    //         .w = image_info.width,
-    //         .h = image_info.height,
-    //     },
-    //     .data_size = out_size_image,
-    //     .data = output_buf,
-    // };
-
-    // lv_img_set_src(app_image_mian,&img_dsc);
-    
-    lv_canvas_set_buffer(app_image_mian, output_buf[img_cnt], image_info.width, image_info.height, LV_IMG_CF_TRUE_COLOR);
-    // lv_refr_now(NULL);
-    bsp_display_unlock();
-
-    free(input_buf[img_cnt]);
-    // free(output_buf);
-    ESP_ERROR_CHECK(jpeg_del_decoder_engine(jpgd_handle));
-
-    // ESP_ERROR_CHECK(esp_timer_start_periodic(time_refer_handle,5000000));
-
+    return _image_paths.size();
 }
 
-void AppImageDisplay::image_change_cb(lv_event_t *e)
+const std::string &AppImageDisplay::imagePathAt(size_t index) const
 {
-    AppImageDisplay *img_dis = (AppImageDisplay *)e ->user_data;
-    lv_event_code_t event = lv_event_get_code(e);
-    if(event == LV_EVENT_GESTURE) {
-        lv_indev_wait_release(lv_indev_get_act());
-        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
-        switch(dir){
-        case LV_DIR_LEFT:
-        count_now ++;
-        if(count_now > image_count-1)
-            count_now = 0;
-        printf("to left\n");
-            break;
-        case LV_DIR_RIGHT:
-            count_now--;
-            if(count_now < 0)
-                count_now = image_count -1;
-            // imganmitoright();
-        printf("to right\n");
-            break;
-        }
-        if(xSemaphoreTakeRecursive(image_muxe,pdMS_TO_TICKS(10)) == pdTRUE)
-        {
-            image_change_display(img_dis ->_image_file_iterator,count_now);
-            xSemaphoreGiveRecursive(image_muxe);
-        }
-        
+    return _image_paths.at(index);
+}
+
+bool AppImageDisplay::debugQueueOpenIndex(size_t index)
+{
+    if (index >= imagePathCount()) {
+        ESP_LOGW(TAG, "debugQueueOpenIndex rejected index=%u count=%u", static_cast<unsigned>(index), static_cast<unsigned>(imagePathCount()));
+        return false;
+    }
+
+    s_debug_pending_open_index = static_cast<int>(index);
+    s_debug_pending_open_animate = false;
+    s_debug_pending_open_reason = "serial-debug-open";
+    ESP_LOGI(TAG,
+             "debugQueueOpenIndex queued index=%u active=%s current_index=%d fullscreen=%s",
+             static_cast<unsigned>(index),
+             (s_active_app == this) ? "yes" : "no",
+             s_current_index,
+             s_fullscreen_visible ? "yes" : "no");
+
+    if (s_active_app == this) {
+        maybe_queue_debug_open(this);
+    }
+    return true;
+}
+
+std::string AppImageDisplay::debugDescribeState() const
+{
+    char buffer[192];
+    snprintf(buffer,
+             sizeof(buffer),
+             "images=%u active=%s fullscreen=%s current_index=%d pending_debug_index=%d",
+             static_cast<unsigned>(imagePathCount()),
+             (s_active_app == this) ? "yes" : "no",
+             s_fullscreen_visible ? "yes" : "no",
+             s_current_index,
+             s_debug_pending_open_index);
+    return std::string(buffer);
+}
+
+void AppImageDisplay::image_change_cb(lv_event_t *event)
+{
+    if ((lv_event_get_code(event) != LV_EVENT_GESTURE) || !s_fullscreen_visible || (s_active_app == nullptr) || (image_muxe == nullptr)) {
+        return;
+    }
+
+    lv_indev_t *input_device = lv_indev_get_act();
+    if (input_device == nullptr) {
+        return;
+    }
+
+    lv_indev_wait_release(input_device);
+    const lv_dir_t direction = lv_indev_get_gesture_dir(input_device);
+    int next_index = s_current_index;
+    if (direction == LV_DIR_LEFT) {
+        next_index = (s_current_index + 1) % static_cast<int>(s_active_app->imagePathCount());
+    } else if (direction == LV_DIR_RIGHT) {
+        next_index = (s_current_index - 1 + static_cast<int>(s_active_app->imagePathCount())) % static_cast<int>(s_active_app->imagePathCount());
+    } else {
+        return;
+    }
+
+    ESP_LOGI(TAG, "image_change_cb direction=%d current_index=%d next_index=%d", static_cast<int>(direction), s_current_index, next_index);
+
+    if (xSemaphoreTakeRecursive(image_muxe, pdMS_TO_TICKS(50)) == pdTRUE) {
+        show_image_index(s_active_app, next_index, true);
+        xSemaphoreGiveRecursive(image_muxe);
     }
 }
 
 void AppImageDisplay::image_delay_change(AppImageDisplay *app)
 {
-    while (1)
-    {
-        xSemaphoreTake(image_task_event,portMAX_DELAY);
-        ESP_LOGI(TAG,"image change");
-        count_now ++;
-        if(count_now > image_count-1)
-            count_now = 0;
-
-        if(xSemaphoreTakeRecursive(image_muxe,pdMS_TO_TICKS(10)) == pdTRUE)
-        {
-            image_change_display(app ->_image_file_iterator,count_now);
-            xSemaphoreGiveRecursive(image_muxe);
+    while (true) {
+        xSemaphoreTake(image_task_event, portMAX_DELAY);
+        if (!s_fullscreen_visible || (app == nullptr) || (app->imagePathCount() < 2U) || (image_muxe == nullptr)) {
+            ESP_LOGI(TAG,
+                     "image_delay_change skip visible=%s app=%p count=%u mutex=%p",
+                     s_fullscreen_visible ? "yes" : "no",
+                     app,
+                     app == nullptr ? 0U : static_cast<unsigned>(app->imagePathCount()),
+                     image_muxe);
+            continue;
         }
-        // xSemaphoreTakeRecursive(image_muxe,pdMS_TO_TICKS(20));
-        // image_change_display(app ->_image_file_iterator,count_now);
-        // xSemaphoreGiveRecursive(image_muxe);
-        
-    }
-    ESP_LOGI(TAG, "Image Display detect task exit");
 
-    vTaskDelete(NULL);
+        int next_index = s_current_index;
+        while (next_index == s_current_index) {
+            next_index = static_cast<int>(esp_random() % app->imagePathCount());
+        }
+
+        ESP_LOGI(TAG, "image_delay_change queue slideshow current_index=%d next_index=%d", s_current_index, next_index);
+        if (!queue_viewer_request(app, next_index, true, "idle-slideshow")) {
+            ESP_LOGW(TAG, "image_delay_change failed to queue slideshow index=%d", next_index);
+        }
+    }
 }
 
 void AppImageDisplay::timer_refersh_task(void *arg)
 {
-    ESP_LOGI(TAG,"give Semaphore");
-    xSemaphoreGive(image_task_event);
+    ESP_LOGI(TAG, "timer_refersh_task fired visible=%s current_index=%d", s_fullscreen_visible ? "yes" : "no", s_current_index);
+    if (image_task_event != nullptr) {
+        xSemaphoreGive(image_task_event);
+    }
 }
 
 

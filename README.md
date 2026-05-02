@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.3.1 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.3.2 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -89,7 +89,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Internal SRAM usage was reduced substantially by moving large SEGA emulator permanent buffers and tables into PSRAM-backed BSS.
 - Additional SEGA emulator permanent RAM, preview buffers, and SMS / Genesis scratch state now live in PSRAM-backed BSS, which cuts fresh-boot internal SRAM pressure before the emulator is launched.
 - Additional boot-time SRAM pressure was removed by deferring heavy Internet Radio, Image Display, and SEGA UI/runtime setup until first launch.
-- Image Viewer now reads images only from `/sdcard/image` instead of scanning SPIFFS or extra fallback folders.
+- Image Viewer now reads images only from `/sdcard/image`, lazy-loads thumbnails, prefers PSRAM-backed decode buffers, falls back across multiple JPEG decode paths, and opens fullscreen/slideshow transitions through the safe LVGL-thread path.
 - The unused camera and deep-learning component stack was removed from the resolved build graph to reduce flash footprint and memory pressure.
 - Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
 - Music Player runtime metadata, library indexes, and long-lived worker stacks now prefer PSRAM, which reduces launch-time and background SRAM pressure.
@@ -121,15 +121,14 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ### Launcher And Native Apps
 
 - Phone-style launcher UI based on ESP-Brookesia and LVGL.
-- Settings, Calculator, Files, Browser, YouTube, E-Reader, MQTT, Music Player, Internet Radio, Image Display, and SEGA Emulator.
+- Settings, Calculator, Files, E-Reader, MQTT, Music Player, Internet Radio, Image Display, and SEGA Emulator.
 - SEGA Emulator app integrated into the launcher instead of living as a separate upstream project.
 
 ### Media And Storage
 
 - Files app can inspect both onboard SPIFFS and the SD card.
-- Browser and YouTube cache heavier network responses to SD card when mounted, otherwise they fall back to PSRAM-backed buffers.
 - E-Reader reads supported files from the SD card.
-- Image Viewer now looks only in `/sdcard/image` for image content.
+- Image Viewer now looks only in `/sdcard/image`, lazy-loads gallery thumbnails, and uses safer fullscreen/slideshow transitions.
 - Music and image sample payloads were removed from SPIFFS to save flash.
 - The firmware updater can scan `/sdcard/firmware` for local `.bin` images or check GitHub releases for OTA-ready `.bin` assets.
 
@@ -193,7 +192,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.3.1 validates at `0x6F1B30`, leaving `0x09E4D0` bytes free in the smaller OTA app slot.
+- Version 1.3.2 validates at `0x751940`, leaving `0x03E6C0` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 
@@ -221,7 +220,7 @@ Current modular switches include:
 
 - Connectivity domains: Wi-Fi, Bluetooth, BLE, ZigBee, internet time/date sync.
 - System domains: hardware info, battery, display, audio, security, OTA, about-device.
-- Launcher apps: Settings, Calculator, SEGA Emulator, Image Viewer, File Manager, Music Player, Internet Radio, Browser, YouTube, E-Reader, MQTT.
+- Launcher apps: Settings, Calculator, SEGA Emulator, Image Viewer, File Manager, Music Player, Internet Radio, E-Reader, MQTT.
 
 Within the Settings app, these feature flags now also gate the actual Settings sections and their supporting runtime work. For example, disabling BLE removes the Bluetooth entry from Settings and skips its startup path, and disabling OTA removes the firmware updater entry and screen.
 

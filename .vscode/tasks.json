@@ -34,9 +34,9 @@
             "problemMatcher": []
         },
         {
-            "label": "JC4880: Publish GitHub Release v1.3.1",
+            "label": "JC4880: Publish GitHub Release v1.3.2",
             "type": "shell",
-            "command": "& '${workspaceFolder}\\tools\\publish_github_release.ps1' -Tag 'v1.3.1' -ReleaseNotesPath '${workspaceFolder}\\release\\v1.3.1\\RELEASE_NOTES_v1.3.1.md' -AssetPaths @('${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_v1.3.1_ota.bin','${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_v1.3.1_full_flash.zip','${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_C6_v1.3.1_merged.bin','${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_C6_v1.3.1_full_flash.zip')",
+            "command": "& '${workspaceFolder}\\tools\\publish_github_release.ps1' -Tag 'v1.3.2' -ReleaseNotesPath '${workspaceFolder}\\release\\v1.3.2\\RELEASE_NOTES_v1.3.2.md' -AssetPaths @('${workspaceFolder}\\release\\v1.3.2\\JC4880P443C_I_W_Remote_v1.3.2_ota.bin','${workspaceFolder}\\release\\v1.3.2\\JC4880P443C_I_W_Remote_v1.3.2_full_flash.zip','${workspaceFolder}\\release\\v1.3.2\\JC4880P443C_I_W_Remote_C6_v1.3.2_merged.bin','${workspaceFolder}\\release\\v1.3.2\\JC4880P443C_I_W_Remote_C6_v1.3.2_full_flash.zip')",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "shell": {

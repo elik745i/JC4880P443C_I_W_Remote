@@ -663,11 +663,24 @@ void AppSettings::refreshAboutWifiUi(void)
         return;
     }
 
+    char ip_address[16] = "Unavailable";
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif != nullptr) {
+        esp_netif_ip_info_t ip_info = {};
+        if ((esp_netif_get_ip_info(sta_netif, &ip_info) == ESP_OK) &&
+            (ip_info.ip.addr != 0)) {
+            if (esp_ip4addr_ntoa(&ip_info.ip, ip_address, sizeof(ip_address)) == nullptr) {
+                snprintf(ip_address, sizeof(ip_address), "Unavailable");
+            }
+        }
+    }
+
     char detail[160];
     snprintf(detail,
              sizeof(detail),
-             "%s\nRSSI %d dBm, channel %u",
+             "%s\nIP %s\nRSSI %d dBm, channel %u",
              reinterpret_cast<const char *>(ap_info.ssid),
+             ip_address,
              static_cast<int>(ap_info.rssi),
              static_cast<unsigned>(ap_info.primary));
     lv_label_set_text(_aboutWifiValueLabel, detail);

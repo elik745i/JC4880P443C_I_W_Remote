@@ -107,7 +107,7 @@ dependencies:
       type: local
     version: 4.1.1
   espressif/esp_audio_codec:
-    component_hash: af4663830bc73eca58febcc34a976d003465e78ed57458aa00a14b231e392ca1
+    component_hash: 16e2880dbdd5a72264051f750f33a6e5a38fd25621c83e3a32a85a152d2d2643
     dependencies:
     - name: idf
       require: private
@@ -115,7 +115,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 2.4.1
+    version: 2.5.0
   espressif/esp_codec_dev:
     component_hash: 014948481bda426cd46714f297fe1891711246c62bea288863a8cc8cf13ef1f0
     dependencies:
@@ -246,6 +246,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 3.0.3
+  espressif/libjpeg-turbo:
+    component_hash: 41100fd5c4fe44e3f4754a60b2828ed018b42ecce799bf0e2993d5a1977c8913
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 3.1.1~1
   espressif/wifi_remote_over_eppp:
     component_hash: 06d8bc15348bbd21f1390daace36ed5adcf6026c93c5b69decc55fa04df2711a
     dependencies:
@@ -290,8 +300,9 @@ direct_dependencies:
 - espressif/esp_lvgl_port
 - espressif/esp_wifi_remote
 - espressif/led_strip
+- espressif/libjpeg-turbo
 - idf
 - lvgl/lvgl
-manifest_hash: 128548ff2202870071d18f0d244fec4434f6617047278d351b6c680cae01dfbd
+manifest_hash: b21907c9307f06b0d4dddd3cc3e3133451b12160c5fc3c8c7b6efec9525f36b5
 target: esp32p4
 version: 2.0.0

@@ -45,6 +45,7 @@
 #include "apps.h"
 #include "storage_access.h"
 #include "system_ui_service.h"
+#include "web_server/WebServerService.hpp"
  
 static const char *TAG = "main";
 static constexpr TickType_t kSdcardMountRetryPeriod = pdMS_TO_TICKS(2000);
@@ -124,6 +125,7 @@ static gpio_num_t s_hapticFeedbackGpio = kDefaultHapticFeedbackGpio;
 static int32_t s_hapticFeedbackLevel = kDefaultHapticFeedbackLevel;
 static uint32_t s_lastTapSoundTick = 0;
 static ESP_Brookesia_Phone *s_phone = nullptr;
+static AppImageDisplay *s_imageDisplayApp = nullptr;
 static std::vector<std::unique_ptr<lv_indev_drv_t>> s_tapSoundDriverCopies;
 static esp_timer_handle_t s_hapticPulseTimer = nullptr;
 static bool s_hapticPwmReady = false;
@@ -816,10 +818,138 @@ static std::string trim_copy(const std::string &value)
     return value.substr(begin, end - begin);
 }
 
+static std::string lowercase_copy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+static ESP_Brookesia_CoreApp *find_installed_app_by_name(const std::string &query)
+{
+    if (s_phone == nullptr) {
+        return nullptr;
+    }
+
+    const std::string normalized_query = lowercase_copy(trim_copy(query));
+    if (normalized_query.empty()) {
+        return nullptr;
+    }
+
+    for (int app_id = 0; app_id < 128; ++app_id) {
+        ESP_Brookesia_CoreApp *app = s_phone->getManager().getInstalledApp(app_id);
+        if ((app == nullptr) || (app->getName() == nullptr)) {
+            continue;
+        }
+
+        const std::string app_name = app->getName();
+        const std::string normalized_name = lowercase_copy(app_name);
+        if ((normalized_name == normalized_query) || (lowercase_copy(trim_copy(app_name)) == normalized_query)) {
+            return app;
+        }
+
+        std::string collapsed_name = normalized_name;
+        collapsed_name.erase(std::remove(collapsed_name.begin(), collapsed_name.end(), ' '), collapsed_name.end());
+
+        std::string collapsed_query = normalized_query;
+        collapsed_query.erase(std::remove(collapsed_query.begin(), collapsed_query.end(), ' '), collapsed_query.end());
+        if (collapsed_name == collapsed_query) {
+            return app;
+        }
+    }
+
+    return nullptr;
+}
+
+static void list_serial_apps(void)
+{
+    if (s_phone == nullptr) {
+        printf("[app] phone unavailable\r\n");
+        return;
+    }
+
+    ESP_Brookesia_CoreApp *active_app = s_phone->getManager().getActiveApp();
+    printf("[app] Installed apps:\r\n");
+    for (int app_id = 0; app_id < 128; ++app_id) {
+        ESP_Brookesia_CoreApp *app = s_phone->getManager().getInstalledApp(app_id);
+        if ((app == nullptr) || (app->getName() == nullptr)) {
+            continue;
+        }
+
+        const bool is_running = (s_phone->getManager().getRunningAppById(app_id) != nullptr);
+        const bool is_active = (active_app == app);
+        printf("[app]   id=%d name=\"%s\" running=%s active=%s\r\n",
+               app->getId(),
+               app->getName(),
+               is_running ? "yes" : "no",
+               is_active ? "yes" : "no");
+    }
+}
+
+static bool start_serial_app(const std::string &query)
+{
+    if (s_phone == nullptr) {
+        printf("[app] phone unavailable\r\n");
+        return false;
+    }
+
+    ESP_Brookesia_CoreApp *app = find_installed_app_by_name(query);
+    if (app == nullptr) {
+        printf("[app] not found: %s\r\n", query.c_str());
+        return false;
+    }
+
+    ESP_Brookesia_CoreAppEventData_t app_event_data = {
+        .id = app->getId(),
+        .type = ESP_BROOKESIA_CORE_APP_EVENT_TYPE_START,
+    };
+
+    bsp_display_lock(0);
+    const bool ok = s_phone->sendAppEvent(&app_event_data);
+    bsp_display_unlock();
+
+    printf("[app] start name=\"%s\" id=%d %s\r\n", app->getName(), app->getId(), ok ? "queued" : "failed");
+    return ok;
+}
+
+static bool start_serial_app_instance(ESP_Brookesia_CoreApp *app, const char *label)
+{
+    if (s_phone == nullptr) {
+        printf("[app] phone unavailable\r\n");
+        return false;
+    }
+
+    if (app == nullptr) {
+        printf("[app] unavailable: %s\r\n", label == nullptr ? "unknown" : label);
+        return false;
+    }
+
+    ESP_Brookesia_CoreAppEventData_t app_event_data = {
+        .id = app->getId(),
+        .type = ESP_BROOKESIA_CORE_APP_EVENT_TYPE_START,
+    };
+
+    bsp_display_lock(0);
+    const bool ok = s_phone->sendAppEvent(&app_event_data);
+    bsp_display_unlock();
+
+    printf("[app] start name=\"%s\" id=%d %s\r\n", label == nullptr ? app->getName() : label, app->getId(), ok ? "queued" : "failed");
+    return ok;
+}
+
 static void print_serial_command_help(void)
 {
     printf("[serial] Commands:\r\n");
     printf("[serial]   help\r\n");
+    printf("[serial]   app.list\r\n");
+    printf("[serial]   app.start <app name>\r\n");
+    printf("[serial]   image.status\r\n");
+    printf("[serial]   image.open <index>\r\n");
+    printf("[serial]   web.status\r\n");
+    printf("[serial]   web.start\r\n");
+    printf("[serial]   web.stop\r\n");
+    printf("[serial]   web.toggle\r\n");
 
 #if CONFIG_JC4880_APP_INTERNET_RADIO
     printf("[serial]   radio.status\r\n");
@@ -839,6 +969,87 @@ static void handle_serial_command(const std::string &raw_command)
     printf("[serial] cmd=%s\r\n", command.c_str());
     if ((command == "help") || (command == "?")) {
         print_serial_command_help();
+        return;
+    }
+
+    if (command == "app.list") {
+        list_serial_apps();
+        return;
+    }
+
+    static constexpr const char *kAppStartPrefix = "app.start ";
+    if (command.rfind(kAppStartPrefix, 0) == 0) {
+        const std::string app_name = trim_copy(command.substr(std::strlen(kAppStartPrefix)));
+        if (app_name.empty()) {
+            printf("[app] usage: app.start <app name>\r\n");
+            return;
+        }
+        start_serial_app(app_name);
+        return;
+    }
+
+    if (command == "image.status") {
+        if (s_imageDisplayApp == nullptr) {
+            printf("[image] app unavailable\r\n");
+            return;
+        }
+
+        const std::string state = s_imageDisplayApp->debugDescribeState();
+        printf("[image] %s\r\n", state.c_str());
+        return;
+    }
+
+    static constexpr const char *kImageOpenPrefix = "image.open ";
+    if (command.rfind(kImageOpenPrefix, 0) == 0) {
+        if (s_imageDisplayApp == nullptr) {
+            printf("[image] app unavailable\r\n");
+            return;
+        }
+
+        const std::string index_text = trim_copy(command.substr(std::strlen(kImageOpenPrefix)));
+        if (index_text.empty()) {
+            printf("[image] usage: image.open <index>\r\n");
+            return;
+        }
+
+        char *end = nullptr;
+        const unsigned long parsed_index = std::strtoul(index_text.c_str(), &end, 10);
+        if ((end == index_text.c_str()) || (*end != '\0')) {
+            printf("[image] invalid index: %s\r\n", index_text.c_str());
+            return;
+        }
+
+        if (!s_imageDisplayApp->debugQueueOpenIndex(static_cast<size_t>(parsed_index))) {
+            printf("[image] open rejected index=%lu\r\n", parsed_index);
+            return;
+        }
+
+        printf("[image] queued open index=%lu\r\n", parsed_index);
+        start_serial_app_instance(s_imageDisplayApp, "image viewer");
+        return;
+    }
+
+    if (command == "web.status") {
+        printf("[web] running=%s\r\n", WebServerService::instance().isRunning() ? "yes" : "no");
+        printf("[web] %s\r\n", WebServerService::instance().statusText().c_str());
+        return;
+    }
+
+    if (command == "web.start") {
+        printf("[web] start %s\r\n", WebServerService::instance().start() ? "ok" : "failed");
+        printf("[web] %s\r\n", WebServerService::instance().statusText().c_str());
+        return;
+    }
+
+    if (command == "web.stop") {
+        printf("[web] stop %s\r\n", WebServerService::instance().stop() ? "ok" : "failed");
+        printf("[web] %s\r\n", WebServerService::instance().statusText().c_str());
+        return;
+    }
+
+    if (command == "web.toggle") {
+        printf("[web] toggle %s\r\n", WebServerService::instance().toggle() ? "ok" : "failed");
+        printf("[web] %s\r\n", WebServerService::instance().statusText().c_str());
         return;
     }
 
@@ -1453,7 +1664,7 @@ extern "C" void app_main(void)
 #endif
 
 #if CONFIG_JC4880_APP_IMAGE_VIEWER
-    install_app_or_delete(*phone, new AppImageDisplay(), "image viewer");
+    s_imageDisplayApp = install_app_or_delete(*phone, new AppImageDisplay(), "image viewer");
 #endif
 
 #if CONFIG_JC4880_APP_FILE_MANAGER
@@ -1470,14 +1681,6 @@ extern "C" void app_main(void)
 
 #if CONFIG_JC4880_APP_INTERNET_RADIO
     s_internetRadioApp = install_app_or_delete(*phone, new InternetRadio(), "internet radio");
-#endif
-
-#if CONFIG_JC4880_APP_P4_BROWSER
-    install_app_or_delete(*phone, new P4Browser(), "browser");
-#endif
-
-#if CONFIG_JC4880_APP_P4_YOUTUBE
-    install_app_or_delete(*phone, new P4YouTube(), "youtube");
 #endif
 
 #if CONFIG_JC4880_APP_EREADER

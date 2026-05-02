@@ -2133,6 +2133,7 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_flag(ui_PanelSettingMainContainerItem3, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelSettingMainContainerItem4, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(ui_PanelSettingMainContainerItem5, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(ui_PanelSettingMainContainer, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(ui_PanelSettingMainContainer, LV_DIR_VER);
     lv_obj_add_flag(ui_PanelSettingMainContainer, LV_OBJ_FLAG_SCROLL_MOMENTUM);
 

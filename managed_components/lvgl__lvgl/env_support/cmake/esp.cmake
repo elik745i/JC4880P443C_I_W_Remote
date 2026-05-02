@@ -1,6 +1,8 @@
 file(GLOB_RECURSE SOURCES ${LVGL_ROOT_DIR}/src/*.c)
 
-idf_build_get_property(LV_MICROPYTHON LV_MICROPYTHON)
+if(NOT DEFINED LV_MICROPYTHON)
+  set(LV_MICROPYTHON FALSE)
+endif()
 
 if(LV_MICROPYTHON)
   idf_component_register(

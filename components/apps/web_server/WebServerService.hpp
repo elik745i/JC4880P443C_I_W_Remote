@@ -24,6 +24,9 @@ public:
     std::string sourceSummary() const;
     std::string mdnsUrl() const;
     ContentRoot resolveContentRoot(bool allowMount) const;
+    std::string recoveryStorageId() const;
+    std::string recoveryPath() const;
+    void rememberRecoveryLocation(const std::string &storageId, const std::string &relativePath);
 
 private:
     WebServerService();
@@ -41,5 +44,7 @@ private:
     void *_server;
     bool _running;
     bool _mdnsStarted;
+    std::string _recoveryStorageId;
+    std::string _recoveryPath;
     char _lastError[160];
 };

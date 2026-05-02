@@ -28,14 +28,6 @@
 #include "internet_radio/InternetRadio.hpp"
 #endif
 
-#if CONFIG_JC4880_APP_P4_BROWSER
-#include "p4_browser/P4Browser.hpp"
-#endif
-
-#if CONFIG_JC4880_APP_P4_YOUTUBE
-#include "p4_youtube/P4YouTube.hpp"
-#endif
-
 #if CONFIG_JC4880_APP_EREADER
 #include "e_reader/EReader.hpp"
 #endif

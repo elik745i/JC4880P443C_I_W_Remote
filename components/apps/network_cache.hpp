@@ -7,6 +7,7 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <strings.h>
 #include <sys/stat.h>
 
 #include "esp_crt_bundle.h"
@@ -204,7 +205,8 @@ inline std::string make_cache_path(const char *cache_dir, const std::string &cac
 
 inline bool fetch_text_with_sd_fallback(const std::string &url, const char *cache_dir, const std::string &cache_key,
                                         size_t sd_threshold_bytes, CachedPayload &output, std::string &error,
-                                        bool prefer_cached_sd = false, int timeout_ms = 15000)
+                                        bool prefer_cached_sd = false, int timeout_ms = 15000,
+                                        const char *user_agent = nullptr, const char *accept = nullptr)
 {
     output.clear();
     error.clear();
@@ -223,17 +225,39 @@ inline bool fetch_text_with_sd_fallback(const std::string &url, const char *cach
         return true;
     }
 
+    struct RedirectCapture {
+        std::string location;
+    } redirect_capture;
+
     esp_http_client_config_t config = {};
     config.url = url.c_str();
     config.timeout_ms = timeout_ms;
     config.crt_bundle_attach = esp_crt_bundle_attach;
-    config.user_agent = "JC4880P4Remote/1.3.1";
-    config.disable_auto_redirect = false;
+    config.user_agent = (user_agent != nullptr) ? user_agent : "JC4880P4Remote/1.3.1";
+    config.disable_auto_redirect = true;
+    config.max_redirection_count = 5;
+    config.user_data = &redirect_capture;
+    config.event_handler = [](esp_http_client_event_t *event) {
+        if ((event == nullptr) || (event->user_data == nullptr)) {
+            return ESP_OK;
+        }
+
+        auto *capture = static_cast<RedirectCapture *>(event->user_data);
+        if ((event->event_id == HTTP_EVENT_ON_HEADER) && (event->header_key != nullptr) && (event->header_value != nullptr) &&
+            (strcasecmp(event->header_key, "Location") == 0)) {
+            capture->location = event->header_value;
+        }
+        return ESP_OK;
+    };
 
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {
         error = "Failed to create HTTP client";
         return false;
+    }
+
+    if (accept != nullptr) {
+        esp_http_client_set_header(client, "Accept", accept);
     }
 
     esp_err_t err = esp_http_client_open(client, 0);
@@ -243,9 +267,47 @@ inline bool fetch_text_with_sd_fallback(const std::string &url, const char *cach
         return false;
     }
 
-    const int status_code = esp_http_client_fetch_headers(client);
-    if (status_code < 0) {
-        error = std::string("HTTP header fetch failed: ") + esp_err_to_name(static_cast<esp_err_t>(status_code));
+    int header_status = esp_http_client_fetch_headers(client);
+    int http_status = esp_http_client_get_status_code(client);
+    int redirect_count = 0;
+    while ((http_status >= 300) && (http_status < 400) && (redirect_count < config.max_redirection_count)) {
+        if (redirect_capture.location.empty()) {
+            error = "HTTP redirect response did not include a Location header";
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+
+        esp_http_client_close(client);
+        err = esp_http_client_set_url(client, redirect_capture.location.c_str());
+        if (err != ESP_OK) {
+            error = std::string("HTTP redirect URL setup failed: ") + esp_err_to_name(err);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+
+        redirect_capture.location.clear();
+        err = esp_http_client_open(client, 0);
+        if (err != ESP_OK) {
+            error = std::string("HTTP redirected open failed: ") + esp_err_to_name(err);
+            esp_http_client_cleanup(client);
+            return false;
+        }
+
+        header_status = esp_http_client_fetch_headers(client);
+        http_status = esp_http_client_get_status_code(client);
+        ++redirect_count;
+    }
+
+    if (header_status < 0) {
+        error = std::string("HTTP header fetch failed: ") + esp_err_to_name(static_cast<esp_err_t>(header_status));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return false;
+    }
+
+    if ((http_status / 100) != 2) {
+        error = std::string("HTTP request failed with status ") + std::to_string(http_status);
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
         return false;

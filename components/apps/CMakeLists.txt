@@ -37,6 +37,7 @@ endif()
 
 if(CONFIG_JC4880_APP_IMAGE_VIEWER)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/image_display)
+    list(APPEND APPS_SRCS ${PROJECT_DIR}/managed_components/lvgl__lvgl/src/extra/libs/sjpg/tjpgd.c)
 endif()
 
 if(CONFIG_JC4880_APP_FILE_MANAGER)
@@ -53,14 +54,6 @@ endif()
 
 if(CONFIG_JC4880_APP_INTERNET_RADIO)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/internet_radio)
-endif()
-
-if(CONFIG_JC4880_APP_P4_BROWSER)
-    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/p4_browser)
-endif()
-
-if(CONFIG_JC4880_APP_P4_YOUTUBE)
-    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/p4_youtube)
 endif()
 
 if(CONFIG_JC4880_APP_EREADER)
@@ -84,7 +77,7 @@ idf_component_register(
                  ${APPS_DIR}/sega_emulator/gwenesis/src/savestate
                  ${APPS_DIR}/sega_emulator/gwenesis/src/sound
                  ${APPS_DIR}/sega_emulator/gwenesis/src/vdp
-    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client esp_http_server json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player app_update esp_partition esp-tls esp_hosted bt mdns mqtt driver led_strip main)
+    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client esp_http_server json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player espressif__libjpeg-turbo app_update esp_partition esp-tls esp_hosted bt mdns mqtt driver led_strip main)
 
 target_compile_options(
     ${COMPONENT_LIB}
@@ -102,3 +95,12 @@ target_compile_options(
     >
     -DLV_LVGL_H_INCLUDE_SIMPLE
 )
+
+if(CONFIG_JC4880_APP_IMAGE_VIEWER)
+    target_compile_definitions(
+        ${COMPONENT_LIB}
+        PRIVATE
+        CONFIG_LV_USE_SJPG=1
+        LV_USE_SJPG=1
+    )
+endif()

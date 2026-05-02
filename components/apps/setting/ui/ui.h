@@ -134,6 +134,7 @@ LV_IMG_DECLARE( ui_img_arrow_png);   // assets/arrow.png
 LV_IMG_DECLARE( ui_img_bluetooth_png);   // assets/BlueTooth.png
 LV_IMG_DECLARE( ui_img_bluetooth_status_png);   // generated Bluetooth status icon
 LV_IMG_DECLARE( ui_img_zigbee_status_png);   // generated ZigBee status icon
+LV_IMG_DECLARE( ui_img_ota_status_png);   // generated OTA status icon
 LV_IMG_DECLARE( ui_img_sound_png);   // assets/Sound.png
 LV_IMG_DECLARE( ui_img_light_png);   // assets/Light.png
 LV_IMG_DECLARE( ui_img_about_png);   // assets/About.png

@@ -34,6 +34,24 @@
             "problemMatcher": []
         },
         {
+            "label": "JC4880: Publish GitHub Release v1.3.1",
+            "type": "shell",
+            "command": "& '${workspaceFolder}\\tools\\publish_github_release.ps1' -Tag 'v1.3.1' -ReleaseNotesPath '${workspaceFolder}\\release\\v1.3.1\\RELEASE_NOTES_v1.3.1.md' -AssetPaths @('${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_v1.3.1_ota.bin','${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_v1.3.1_full_flash.zip','${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_C6_v1.3.1_merged.bin','${workspaceFolder}\\release\\v1.3.1\\JC4880P443C_I_W_Remote_C6_v1.3.1_full_flash.zip')",
+            "options": {
+                "cwd": "${workspaceFolder}",
+                "shell": {
+                    "executable": "powershell.exe",
+                    "args": [
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-Command"
+                    ]
+                }
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "ESP Brookesia: Build",
             "type": "shell",
             "command": "set \"PATH=C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts;%PATH%\" && call \"C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\export.bat\" && set \"PATH=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin;C:\\Users\\Elik\\.espressif\\tools\\ninja\\1.12.1;C:\\Users\\Elik\\.espressif\\tools\\idf-exe\\1.0.3;C:\\Users\\Elik\\.espressif\\tools\\ccache\\4.12.1\\ccache-4.12.1-windows-x86_64;%PATH%\" && set \"CMAKE_C_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && set \"CMAKE_CXX_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-g++.exe\" && set \"CMAKE_ASM_COMPILER=C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe\" && \"C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe\" C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf.py build",

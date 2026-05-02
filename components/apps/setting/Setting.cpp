@@ -8,6 +8,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <limits>
 #include <cstdio>
 #include <cstdint>
@@ -139,6 +140,8 @@ extern "C" bool __attribute__((weak)) jc_security_handle_app_launch_request(int 
 #define NVS_KEY_DISPLAY_TIMEZONE        "disp_tz_min"
 #define NVS_KEY_DISPLAY_TZ_AUTO         "disp_tz_auto"
 #define NVS_KEY_OTA_AUTO_UPDATE         "ota_auto"
+#define NVS_KEY_OTA_RESCHEDULE_UNTIL    "ota_res_at"
+#define NVS_KEY_OTA_RESCHEDULE_VERSION  "ota_res_ver"
 #define NVS_KEY_OTA_PENDING_VERSION     "ota_ver"
 #define NVS_KEY_OTA_PENDING_NOTES       "ota_notes"
 #define NVS_KEY_OTA_PENDING_SHOW        "ota_show"
@@ -176,6 +179,27 @@ static constexpr int kStatusBarOtaIconId = 0x4F5441;
 static constexpr uint64_t kOtaAvailabilityInitialDelayUs = 20ULL * 1000000ULL;
 static constexpr uint64_t kOtaAvailabilitySuccessIntervalUs = 6ULL * 60ULL * 60ULL * 1000000ULL;
 static constexpr uint64_t kOtaAvailabilityRetryIntervalUs = 15ULL * 60ULL * 1000000ULL;
+static constexpr int64_t kValidUnixTimeFloor = 1700000000LL;
+static constexpr int32_t kOtaRescheduleHourOptions[] = {0, 1, 2, 4, 8, 12, 24};
+static constexpr int32_t kOtaRescheduleMinuteOptions[] = {0, 15, 30, 45};
+static constexpr int32_t kOtaRescheduleMinuteFutureOnlyOptions[] = {15, 30, 45};
+
+static string formatDelayMinutes(int32_t total_minutes)
+{
+    const int32_t hours = total_minutes / 60;
+    const int32_t minutes = total_minutes % 60;
+    std::ostringstream stream;
+    if (hours > 0) {
+        stream << hours << "h";
+        if (minutes > 0) {
+            stream << " ";
+        }
+    }
+    if ((minutes > 0) || (hours == 0)) {
+        stream << minutes << "m";
+    }
+    return stream.str();
+}
 
 static void *allocate_psram_preferred_buffer(size_t size)
 {
@@ -1664,14 +1688,26 @@ AppSettings::AppSettings():
     _otaUpdateProgressStatusLabel(nullptr),
     _otaUpdateProgressBar(nullptr),
     _otaUpdateProgressLabel(nullptr),
+    _otaUpdateProgressActionRow(nullptr),
+    _otaUpdateProgressInstallButton(nullptr),
+    _otaUpdateProgressRescheduleButton(nullptr),
+    _otaUpdateProgressCancelButton(nullptr),
+    _otaUpdateProgressCornerCloseButton(nullptr),
+    _otaUpdateReschedulePanel(nullptr),
+    _otaUpdateRescheduleHourDropdown(nullptr),
+    _otaUpdateRescheduleMinuteDropdown(nullptr),
+    _otaUpdateRescheduleApplyButton(nullptr),
     _otaUpdateProgressCloseButton(nullptr),
     _firmwareUpdateInProgress(false),
+    _firmwareCancelRequested(false),
     _firmwareOtaCheckInProgress(false),
     _otaStatusIconInstalled(false),
     _otaUpdateAvailableThisBoot(false),
     _otaUpdatePromptDismissedThisBoot(false),
+    _otaAutoUpdateAwaitingDecision(false),
     _otaAvailabilityCheckInProgress(false),
     _pendingOpenFirmwareScreen(false),
+    _otaDeferredAutoUpdateUntilUs(0),
     _nextOtaAvailabilityCheckUs(0),
     _bluetoothStatusIconInstalled(false),
     _zigbeeStatusIconInstalled(false),
@@ -1758,6 +1794,7 @@ void AppSettings::initializeDefaultNvsParams(void)
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE] = 480;
     _nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO] = 0;
     _nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] = 1;
+    _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL] = 0;
 }
 
 bool AppSettings::run(void)
@@ -3629,6 +3666,11 @@ void AppSettings::ensureFirmwareScreen(void)
     lv_obj_align(_firmwareAutoUpdateSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_add_event_cb(_firmwareAutoUpdateSwitch, onFirmwareAutoUpdateSwitchValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
+    if (_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] != 0) {
+        lv_obj_add_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
+    } else {
+        lv_obj_clear_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
+    }
 
     lv_obj_t *sdSection = createFirmwareSection(firmwarePanel, "Flash from SD Card");
     lv_obj_t *sdHint = lv_label_create(sdSection);
@@ -3797,6 +3839,8 @@ bool AppSettings::loadNvsParam(void)
         return false;
     }
     nvs_close(nvs_handle);
+
+    refreshDeferredOtaScheduleState();
 
     return true;
 }
@@ -4231,7 +4275,7 @@ void AppSettings::refreshRadioStatusBar(void)
             .icon = {
                 .image_num = 1,
                 .images = {
-                    ESP_BROOKESIA_STYLE_IMAGE_RECOLOR_WHITE(&img_app_setting),
+                    ESP_BROOKESIA_STYLE_IMAGE_RECOLOR_WHITE(&ui_img_ota_status_png),
                 },
             },
         };
@@ -4439,6 +4483,7 @@ void AppSettings::ensureOtaUpdateProgressOverlay(void)
     lv_obj_set_style_pad_all(_otaUpdateProgressOverlay, 0, 0);
     lv_obj_add_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(_otaUpdateProgressOverlay, onOtaUpdateProgressCloseEventCallback, LV_EVENT_CLICKED, this);
     lv_obj_center(_otaUpdateProgressOverlay);
     lv_obj_add_flag(_otaUpdateProgressOverlay, LV_OBJ_FLAG_HIDDEN);
 
@@ -4453,6 +4498,22 @@ void AppSettings::ensureOtaUpdateProgressOverlay(void)
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    _otaUpdateProgressCornerCloseButton = lv_btn_create(card);
+    lv_obj_set_size(_otaUpdateProgressCornerCloseButton, 36, 36);
+    lv_obj_align(_otaUpdateProgressCornerCloseButton, LV_ALIGN_TOP_RIGHT, 8, -8);
+    lv_obj_set_style_radius(_otaUpdateProgressCornerCloseButton, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(_otaUpdateProgressCornerCloseButton, 0, 0);
+    lv_obj_set_style_bg_color(_otaUpdateProgressCornerCloseButton, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_set_style_bg_opa(_otaUpdateProgressCornerCloseButton, LV_OPA_COVER, 0);
+    lv_obj_add_flag(_otaUpdateProgressCornerCloseButton, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(_otaUpdateProgressCornerCloseButton, onOtaUpdateProgressCloseEventCallback, LV_EVENT_CLICKED, this);
+
+    lv_obj_t *cornerCloseLabel = lv_label_create(_otaUpdateProgressCornerCloseButton);
+    lv_label_set_text(cornerCloseLabel, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_font(cornerCloseLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(cornerCloseLabel, lv_color_hex(0x0F172A), 0);
+    lv_obj_center(cornerCloseLabel);
 
     lv_obj_t *titleLabel = lv_label_create(card);
     lv_label_set_text(titleLabel, "OTA update");
@@ -4488,6 +4549,108 @@ void AppSettings::ensureOtaUpdateProgressOverlay(void)
     lv_obj_set_style_text_font(_otaUpdateProgressLabel, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_otaUpdateProgressLabel, lv_color_hex(0x64748B), 0);
 
+    _otaUpdateProgressActionRow = lv_obj_create(card);
+    lv_obj_set_width(_otaUpdateProgressActionRow, lv_pct(100));
+    lv_obj_set_height(_otaUpdateProgressActionRow, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(_otaUpdateProgressActionRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(_otaUpdateProgressActionRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(_otaUpdateProgressActionRow, 0, 0);
+    lv_obj_set_style_pad_all(_otaUpdateProgressActionRow, 0, 0);
+    lv_obj_set_style_pad_column(_otaUpdateProgressActionRow, 8, 0);
+    lv_obj_set_style_pad_row(_otaUpdateProgressActionRow, 8, 0);
+    lv_obj_set_flex_flow(_otaUpdateProgressActionRow, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_add_flag(_otaUpdateProgressActionRow, LV_OBJ_FLAG_HIDDEN);
+
+    _otaUpdateProgressInstallButton = lv_btn_create(_otaUpdateProgressActionRow);
+    lv_obj_set_size(_otaUpdateProgressInstallButton, 100, 46);
+    lv_obj_set_style_radius(_otaUpdateProgressInstallButton, 16, 0);
+    lv_obj_set_style_border_width(_otaUpdateProgressInstallButton, 0, 0);
+    lv_obj_set_style_bg_color(_otaUpdateProgressInstallButton, lv_color_hex(0x2563EB), 0);
+    lv_obj_add_event_cb(_otaUpdateProgressInstallButton, onOtaUpdateInstallNowEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *installLabel = lv_label_create(_otaUpdateProgressInstallButton);
+    lv_label_set_text(installLabel, "Install Now");
+    lv_obj_set_style_text_font(installLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(installLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(installLabel);
+
+    _otaUpdateProgressRescheduleButton = lv_btn_create(_otaUpdateProgressActionRow);
+    lv_obj_set_size(_otaUpdateProgressRescheduleButton, 108, 46);
+    lv_obj_set_style_radius(_otaUpdateProgressRescheduleButton, 16, 0);
+    lv_obj_set_style_border_width(_otaUpdateProgressRescheduleButton, 0, 0);
+    lv_obj_set_style_bg_color(_otaUpdateProgressRescheduleButton, lv_color_hex(0xCBD5E1), 0);
+    lv_obj_add_event_cb(_otaUpdateProgressRescheduleButton, onOtaUpdateRescheduleEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *rescheduleLabel = lv_label_create(_otaUpdateProgressRescheduleButton);
+    lv_label_set_text(rescheduleLabel, "Reschedule");
+    lv_obj_set_style_text_font(rescheduleLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(rescheduleLabel, lv_color_hex(0x0F172A), 0);
+    lv_obj_center(rescheduleLabel);
+
+    _otaUpdateProgressCancelButton = lv_btn_create(_otaUpdateProgressActionRow);
+    lv_obj_set_size(_otaUpdateProgressCancelButton, 92, 46);
+    lv_obj_set_style_radius(_otaUpdateProgressCancelButton, 16, 0);
+    lv_obj_set_style_border_width(_otaUpdateProgressCancelButton, 0, 0);
+    lv_obj_set_style_bg_color(_otaUpdateProgressCancelButton, lv_color_hex(0xE2E8F0), 0);
+    lv_obj_add_event_cb(_otaUpdateProgressCancelButton, onOtaUpdateCancelEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *cancelLabel = lv_label_create(_otaUpdateProgressCancelButton);
+    lv_label_set_text(cancelLabel, "Cancel");
+    lv_obj_set_style_text_font(cancelLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(cancelLabel, lv_color_hex(0x0F172A), 0);
+    lv_obj_center(cancelLabel);
+
+    _otaUpdateReschedulePanel = lv_obj_create(card);
+    lv_obj_set_width(_otaUpdateReschedulePanel, lv_pct(100));
+    lv_obj_set_height(_otaUpdateReschedulePanel, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(_otaUpdateReschedulePanel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(_otaUpdateReschedulePanel, 16, 0);
+    lv_obj_set_style_bg_color(_otaUpdateReschedulePanel, lv_color_hex(0xEFF6FF), 0);
+    lv_obj_set_style_bg_opa(_otaUpdateReschedulePanel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(_otaUpdateReschedulePanel, 0, 0);
+    lv_obj_set_style_pad_all(_otaUpdateReschedulePanel, 12, 0);
+    lv_obj_set_style_pad_row(_otaUpdateReschedulePanel, 10, 0);
+    lv_obj_set_flex_flow(_otaUpdateReschedulePanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_add_flag(_otaUpdateReschedulePanel, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *rescheduleHint = lv_label_create(_otaUpdateReschedulePanel);
+    lv_obj_set_width(rescheduleHint, lv_pct(100));
+    lv_label_set_long_mode(rescheduleHint, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(rescheduleHint, "Delay automatic installation until a later time.");
+    lv_obj_set_style_text_font(rescheduleHint, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(rescheduleHint, lv_color_hex(0x334155), 0);
+
+    lv_obj_t *reschedulePickerRow = lv_obj_create(_otaUpdateReschedulePanel);
+    lv_obj_set_width(reschedulePickerRow, lv_pct(100));
+    lv_obj_set_height(reschedulePickerRow, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(reschedulePickerRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_opa(reschedulePickerRow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(reschedulePickerRow, 0, 0);
+    lv_obj_set_style_pad_all(reschedulePickerRow, 0, 0);
+    lv_obj_set_style_pad_column(reschedulePickerRow, 8, 0);
+    lv_obj_set_flex_flow(reschedulePickerRow, LV_FLEX_FLOW_ROW);
+
+    _otaUpdateRescheduleHourDropdown = lv_dropdown_create(reschedulePickerRow);
+    lv_dropdown_set_options(_otaUpdateRescheduleHourDropdown, "0 hours\n1 hour\n2 hours\n4 hours\n8 hours\n12 hours\n24 hours");
+    lv_dropdown_set_selected(_otaUpdateRescheduleHourDropdown, 1);
+    lv_obj_set_width(_otaUpdateRescheduleHourDropdown, 150);
+    lv_obj_add_event_cb(_otaUpdateRescheduleHourDropdown, onOtaUpdateRescheduleHourChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
+
+    _otaUpdateRescheduleMinuteDropdown = lv_dropdown_create(reschedulePickerRow);
+    lv_dropdown_set_options(_otaUpdateRescheduleMinuteDropdown, "0 minutes\n15 minutes\n30 minutes\n45 minutes");
+    lv_dropdown_set_selected(_otaUpdateRescheduleMinuteDropdown, 0);
+    lv_obj_set_width(_otaUpdateRescheduleMinuteDropdown, 150);
+
+    _otaUpdateRescheduleApplyButton = lv_btn_create(_otaUpdateReschedulePanel);
+    lv_obj_set_width(_otaUpdateRescheduleApplyButton, lv_pct(100));
+    lv_obj_set_height(_otaUpdateRescheduleApplyButton, 46);
+    lv_obj_set_style_radius(_otaUpdateRescheduleApplyButton, 16, 0);
+    lv_obj_set_style_border_width(_otaUpdateRescheduleApplyButton, 0, 0);
+    lv_obj_set_style_bg_color(_otaUpdateRescheduleApplyButton, lv_color_hex(0x1D4ED8), 0);
+    lv_obj_add_event_cb(_otaUpdateRescheduleApplyButton, onOtaUpdateRescheduleApplyEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *applyLabel = lv_label_create(_otaUpdateRescheduleApplyButton);
+    lv_label_set_text(applyLabel, "Apply Delay");
+    lv_obj_set_style_text_font(applyLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(applyLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_center(applyLabel);
+
     _otaUpdateProgressCloseButton = lv_btn_create(card);
     lv_obj_set_width(_otaUpdateProgressCloseButton, lv_pct(100));
     lv_obj_set_height(_otaUpdateProgressCloseButton, 48);
@@ -4502,6 +4665,75 @@ void AppSettings::ensureOtaUpdateProgressOverlay(void)
     lv_obj_set_style_text_font(closeLabel, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(closeLabel, lv_color_hex(0x0F172A), 0);
     lv_obj_center(closeLabel);
+}
+
+void AppSettings::updateOtaUpdateOverlayActions(bool waiting_for_decision, bool show_reschedule_picker)
+{
+    _otaAutoUpdateAwaitingDecision = waiting_for_decision;
+    const bool show_action_row = waiting_for_decision || _firmwareUpdateInProgress;
+    const bool allow_manual_dismiss = waiting_for_decision && !_firmwareUpdateInProgress;
+
+    if (lv_obj_ready(_otaUpdateProgressActionRow)) {
+        if (show_action_row) {
+            lv_obj_clear_flag(_otaUpdateProgressActionRow, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(_otaUpdateProgressActionRow, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (lv_obj_ready(_otaUpdateProgressInstallButton)) {
+        if (show_action_row) {
+            lv_obj_clear_flag(_otaUpdateProgressInstallButton, LV_OBJ_FLAG_HIDDEN);
+            if (_firmwareUpdateInProgress) {
+                lv_obj_add_state(_otaUpdateProgressInstallButton, LV_STATE_DISABLED);
+            } else {
+                lv_obj_clear_state(_otaUpdateProgressInstallButton, LV_STATE_DISABLED);
+            }
+        } else {
+            lv_obj_add_flag(_otaUpdateProgressInstallButton, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_state(_otaUpdateProgressInstallButton, LV_STATE_DISABLED);
+        }
+    }
+
+    if (lv_obj_ready(_otaUpdateProgressRescheduleButton)) {
+        if (show_action_row) {
+            lv_obj_clear_flag(_otaUpdateProgressRescheduleButton, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(_otaUpdateProgressRescheduleButton, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (lv_obj_ready(_otaUpdateProgressCancelButton)) {
+        if (show_action_row) {
+            lv_obj_clear_flag(_otaUpdateProgressCancelButton, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(_otaUpdateProgressCancelButton, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (lv_obj_ready(_otaUpdateReschedulePanel)) {
+        if (show_action_row && show_reschedule_picker) {
+            lv_obj_clear_flag(_otaUpdateReschedulePanel, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(_otaUpdateReschedulePanel, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (lv_obj_ready(_otaUpdateProgressCornerCloseButton)) {
+        if (allow_manual_dismiss) {
+            lv_obj_clear_flag(_otaUpdateProgressCornerCloseButton, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(_otaUpdateProgressCornerCloseButton, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    if (lv_obj_ready(_otaUpdateProgressCloseButton)) {
+        if (allow_manual_dismiss) {
+            lv_obj_clear_flag(_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+        } else if (show_action_row) {
+            lv_obj_add_flag(_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 }
 
 void AppSettings::setOtaUpdateProgressOverlayVisible(bool visible)
@@ -4636,6 +4868,163 @@ int AppSettings::compareVersionStrings(const std::string &lhs, const std::string
     }
 
     return 0;
+}
+
+void AppSettings::refreshDeferredOtaScheduleState(void)
+{
+    char version[32] = {};
+    _otaDeferredAutoUpdateUntilUs = 0;
+    _otaDeferredAutoUpdateVersion.clear();
+
+    if (loadNvsStringParam(NVS_KEY_OTA_RESCHEDULE_VERSION, version, sizeof(version)) && (version[0] != '\0')) {
+        _otaDeferredAutoUpdateVersion = trim_copy(version);
+    }
+
+    const int32_t deferred_until_epoch = _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL];
+    const int64_t current_epoch = static_cast<int64_t>(time(nullptr));
+    if (_otaDeferredAutoUpdateVersion.empty() || (deferred_until_epoch <= 0)) {
+        return;
+    }
+
+    if ((current_epoch >= kValidUnixTimeFloor) && (deferred_until_epoch <= current_epoch)) {
+        clearDeferredOtaSchedule(true);
+        return;
+    }
+
+    if ((current_epoch >= kValidUnixTimeFloor) && (deferred_until_epoch > current_epoch)) {
+        const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+        _otaDeferredAutoUpdateUntilUs = now_us + (static_cast<uint64_t>(deferred_until_epoch - current_epoch) * 1000000ULL);
+        if ((_nextOtaAvailabilityCheckUs == 0) || (_otaDeferredAutoUpdateUntilUs < _nextOtaAvailabilityCheckUs)) {
+            _nextOtaAvailabilityCheckUs = _otaDeferredAutoUpdateUntilUs;
+        }
+    }
+}
+
+void AppSettings::clearDeferredOtaSchedule(bool persist)
+{
+    _otaDeferredAutoUpdateUntilUs = 0;
+    _otaDeferredAutoUpdateVersion.clear();
+    if (!persist) {
+        return;
+    }
+
+    _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL] = 0;
+    setNvsParam(NVS_KEY_OTA_RESCHEDULE_UNTIL, 0);
+    setNvsStringParam(NVS_KEY_OTA_RESCHEDULE_VERSION, "");
+}
+
+void AppSettings::deferOtaUpdateForEntry(const FirmwareEntry_t &entry, uint32_t delay_seconds)
+{
+    const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+    _otaDeferredAutoUpdateUntilUs = now_us + (static_cast<uint64_t>(delay_seconds) * 1000000ULL);
+    _otaDeferredAutoUpdateVersion = entry.version;
+    _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL] = 0;
+
+    const int64_t current_epoch = static_cast<int64_t>(time(nullptr));
+    if (current_epoch >= kValidUnixTimeFloor) {
+        const int64_t deferred_epoch = current_epoch + static_cast<int64_t>(delay_seconds);
+        if (deferred_epoch <= std::numeric_limits<int32_t>::max()) {
+            _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL] = static_cast<int32_t>(deferred_epoch);
+        }
+    }
+
+    setNvsParam(NVS_KEY_OTA_RESCHEDULE_UNTIL, _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL]);
+    setNvsStringParam(NVS_KEY_OTA_RESCHEDULE_VERSION, _otaDeferredAutoUpdateVersion.c_str());
+    _nextOtaAvailabilityCheckUs = (_nextOtaAvailabilityCheckUs == 0)
+                                    ? _otaDeferredAutoUpdateUntilUs
+                                    : std::min(_nextOtaAvailabilityCheckUs, _otaDeferredAutoUpdateUntilUs);
+}
+
+bool AppSettings::shouldSuppressDeferredOtaUpdate(const FirmwareEntry_t &entry, uint64_t now_us)
+{
+    if (_otaDeferredAutoUpdateVersion.empty() || (_otaDeferredAutoUpdateVersion != entry.version)) {
+        return false;
+    }
+
+    if ((_otaDeferredAutoUpdateUntilUs != 0) && (now_us < _otaDeferredAutoUpdateUntilUs)) {
+        _nextOtaAvailabilityCheckUs = (_nextOtaAvailabilityCheckUs == 0)
+                                        ? _otaDeferredAutoUpdateUntilUs
+                                        : std::min(_nextOtaAvailabilityCheckUs, _otaDeferredAutoUpdateUntilUs);
+        return true;
+    }
+
+    const int32_t deferred_until_epoch = _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL];
+    const int64_t current_epoch = static_cast<int64_t>(time(nullptr));
+    if ((deferred_until_epoch > 0) && (current_epoch >= kValidUnixTimeFloor) && (deferred_until_epoch > current_epoch)) {
+        _otaDeferredAutoUpdateUntilUs = now_us + (static_cast<uint64_t>(deferred_until_epoch - current_epoch) * 1000000ULL);
+        _nextOtaAvailabilityCheckUs = (_nextOtaAvailabilityCheckUs == 0)
+                                        ? _otaDeferredAutoUpdateUntilUs
+                                        : std::min(_nextOtaAvailabilityCheckUs, _otaDeferredAutoUpdateUntilUs);
+        return true;
+    }
+
+    return false;
+}
+
+bool AppSettings::shouldResumeDeferredOtaUpdate(const FirmwareEntry_t &entry, uint64_t now_us)
+{
+    if (_otaDeferredAutoUpdateVersion.empty() || (_otaDeferredAutoUpdateVersion != entry.version)) {
+        return false;
+    }
+
+    if ((_otaDeferredAutoUpdateUntilUs != 0) && (now_us >= _otaDeferredAutoUpdateUntilUs)) {
+        return true;
+    }
+
+    const int32_t deferred_until_epoch = _nvs_param_map[NVS_KEY_OTA_RESCHEDULE_UNTIL];
+    const int64_t current_epoch = static_cast<int64_t>(time(nullptr));
+    return (deferred_until_epoch > 0) && (current_epoch >= kValidUnixTimeFloor) && (deferred_until_epoch <= current_epoch);
+}
+
+void AppSettings::updateOtaRescheduleMinuteOptions()
+{
+    if (!lv_obj_ready(_otaUpdateRescheduleHourDropdown) || !lv_obj_ready(_otaUpdateRescheduleMinuteDropdown)) {
+        return;
+    }
+
+    const uint16_t hour_index = lv_dropdown_get_selected(_otaUpdateRescheduleHourDropdown);
+    const size_t hour_slot = std::min<size_t>(hour_index, std::size(kOtaRescheduleHourOptions) - 1);
+    if (kOtaRescheduleHourOptions[hour_slot] == 0) {
+        lv_dropdown_set_options(_otaUpdateRescheduleMinuteDropdown, "15 minutes\n30 minutes\n45 minutes");
+        if (lv_dropdown_get_selected(_otaUpdateRescheduleMinuteDropdown) > 2) {
+            lv_dropdown_set_selected(_otaUpdateRescheduleMinuteDropdown, 0);
+        }
+        return;
+    }
+
+    const uint16_t previous_index = lv_dropdown_get_selected(_otaUpdateRescheduleMinuteDropdown);
+    lv_dropdown_set_options(_otaUpdateRescheduleMinuteDropdown, "0 minutes\n15 minutes\n30 minutes\n45 minutes");
+    lv_dropdown_set_selected(_otaUpdateRescheduleMinuteDropdown, std::min<uint16_t>(previous_index, 3));
+}
+
+uint32_t AppSettings::getSelectedOtaRescheduleDelaySeconds(void) const
+{
+    const uint16_t hour_index = lv_obj_ready(_otaUpdateRescheduleHourDropdown) ? lv_dropdown_get_selected(_otaUpdateRescheduleHourDropdown) : 0;
+    const uint16_t minute_index = lv_obj_ready(_otaUpdateRescheduleMinuteDropdown) ? lv_dropdown_get_selected(_otaUpdateRescheduleMinuteDropdown) : 0;
+    const size_t hour_slot = std::min<size_t>(hour_index, std::size(kOtaRescheduleHourOptions) - 1);
+    const bool zero_hours = kOtaRescheduleHourOptions[hour_slot] == 0;
+    if (zero_hours) {
+        const size_t minute_slot = std::min<size_t>(minute_index, std::size(kOtaRescheduleMinuteFutureOnlyOptions) - 1);
+        return static_cast<uint32_t>((kOtaRescheduleMinuteFutureOnlyOptions[minute_slot]) * 60);
+    }
+
+    const size_t minute_slot = std::min<size_t>(minute_index, std::size(kOtaRescheduleMinuteOptions) - 1);
+    return static_cast<uint32_t>((kOtaRescheduleHourOptions[hour_slot] * 60 + kOtaRescheduleMinuteOptions[minute_slot]) * 60);
+}
+
+void AppSettings::showAutoUpdateDecisionOverlay(const FirmwareEntry_t &entry)
+{
+    setOtaUpdateProgressOverlayVisible(true);
+    updateOtaUpdateOverlayActions(true, false);
+    setFirmwareStatus(std::string("Auto update is ready for ") + entry.version + ".", false);
+    setFirmwareProgress(0, "Install now, reschedule, or cancel this automatic update.", false);
+    if (lv_obj_ready(_otaUpdateRescheduleHourDropdown)) {
+        lv_dropdown_set_selected(_otaUpdateRescheduleHourDropdown, 1);
+    }
+    if (lv_obj_ready(_otaUpdateRescheduleMinuteDropdown)) {
+        lv_dropdown_set_selected(_otaUpdateRescheduleMinuteDropdown, 0);
+    }
+    updateOtaRescheduleMinuteOptions();
 }
 
 std::string AppSettings::formatFirmwareLabel(const FirmwareEntry_t &entry) const
@@ -5142,18 +5531,32 @@ void AppSettings::applyAsyncOtaAvailabilityResult(void *arg)
         return;
     }
 
-    if (app->_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] != 0) {
-        app->_otaUpdatePromptDismissedThisBoot = true;
-        app->startPreferredOtaUpdate();
-        return;
-    }
-
     const int preferred_index = app->findPreferredOtaEntryIndex(true);
     if (preferred_index < 0) {
         return;
     }
 
     const FirmwareEntry_t &entry = app->_otaFirmwareEntries[preferred_index];
+    const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+
+    if (app->_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] != 0) {
+        if (app->shouldSuppressDeferredOtaUpdate(entry, now_us)) {
+            return;
+        }
+
+        if (app->shouldResumeDeferredOtaUpdate(entry, now_us)) {
+            app->clearDeferredOtaSchedule(true);
+            app->_otaUpdatePromptDismissedThisBoot = true;
+            app->startPreferredOtaUpdate();
+            return;
+        }
+
+        app->setSelectedOtaFirmwareIndex(preferred_index);
+        app->_otaUpdatePromptDismissedThisBoot = true;
+        app->startPreferredOtaUpdate();
+        return;
+    }
+
     const std::string message = std::string("Current firmware: ") + app->getCurrentFirmwareVersion() +
                                 "\nNew firmware: " + entry.version +
                                 "\n\nStart the OTA update now?";
@@ -5176,6 +5579,10 @@ void AppSettings::maybeRunOtaAvailabilityCheck(void)
     return;
 #else
     const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+    if ((_otaDeferredAutoUpdateUntilUs != 0) && ((_nextOtaAvailabilityCheckUs == 0) || (_otaDeferredAutoUpdateUntilUs < _nextOtaAvailabilityCheckUs))) {
+        _nextOtaAvailabilityCheckUs = _otaDeferredAutoUpdateUntilUs;
+    }
+
     if (_otaAvailabilityCheckInProgress || _firmwareUpdateInProgress || _firmwareOtaCheckInProgress || (now_us < _nextOtaAvailabilityCheckUs)) {
         return;
     }
@@ -5218,6 +5625,14 @@ void AppSettings::refreshFirmwareUi(void)
 #if !CONFIG_JC4880_FEATURE_OTA
     return;
 #endif
+    if (lv_obj_ready(_firmwareAutoUpdateSwitch)) {
+        if (_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] != 0) {
+            lv_obj_add_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
+        }
+    }
+
     populateFirmwareDropdown(_firmwareSdDropdown, _sdFirmwareEntries, "No SD firmware found");
     rebuildFirmwareOtaList();
 
@@ -5294,10 +5709,14 @@ void AppSettings::applyAsyncFirmwareUiUpdate(void *arg)
         return;
     }
 
+    const bool canceled = !context->busy && !context->is_error &&
+                          (strcmp(context->status, "Firmware update canceled.") == 0);
+
     context->app->_firmwareUpdateInProgress = context->busy;
-    context->app->setOtaUpdateProgressOverlayVisible(context->busy || context->is_error);
+    context->app->updateOtaUpdateOverlayActions(canceled, false);
+    context->app->setOtaUpdateProgressOverlayVisible(context->busy || context->is_error || canceled);
     if (lv_obj_ready(context->app->_otaUpdateProgressCloseButton)) {
-        if (context->busy || !context->is_error) {
+        if (context->busy || (!context->is_error && !canceled)) {
             lv_obj_add_flag(context->app->_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_clear_flag(context->app->_otaUpdateProgressCloseButton, LV_OBJ_FLAG_HIDDEN);
@@ -5307,6 +5726,14 @@ void AppSettings::applyAsyncFirmwareUiUpdate(void *arg)
         context->app->refreshFirmwareUi();
         context->app->setFirmwareStatus(context->status, true);
         context->app->setFirmwareProgress(context->percent, context->status, true);
+        delete context;
+        return;
+    }
+
+    if (canceled) {
+        context->app->setFirmwareStatus(context->status, false);
+        context->app->setFirmwareProgress(0, "Install now, reschedule, or close this automatic update.", false);
+        context->app->refreshFirmwareUi();
         delete context;
         return;
     }
@@ -5401,6 +5828,12 @@ bool AppSettings::flashFirmwareFromFile(const FirmwareEntry_t &entry, std::strin
     }
 
     while (true) {
+        if (_firmwareCancelRequested) {
+            error_message = "Firmware update canceled.";
+            ESP_LOGI(TAG, "SD firmware flash canceled by user");
+            goto cleanup;
+        }
+
         const size_t read_bytes = fread(buffer, 1, 4096, file);
         if (read_bytes == 0) {
             if (feof(file)) {
@@ -5624,6 +6057,12 @@ bool AppSettings::flashFirmwareFromUrl(const FirmwareEntry_t &entry, std::string
     }
 
     while (true) {
+        if (_firmwareCancelRequested) {
+            error_message = "Firmware update canceled.";
+            ESP_LOGI(TAG, "OTA firmware flash canceled by user");
+            goto ota_cleanup;
+        }
+
         const int read_bytes = esp_http_client_read(client, reinterpret_cast<char *>(buffer), 4096);
         if (read_bytes < 0) {
             error_message = "Release asset download failed.";
@@ -5715,7 +6154,9 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
         return false;
     }
 
+    _firmwareCancelRequested = false;
     _firmwareUpdateInProgress = true;
+    updateOtaUpdateOverlayActions(false, false);
     refreshFirmwareUi();
     setFirmwareProgress(0, source == FIRMWARE_UPDATE_SOURCE_OTA ? "Preparing OTA update..." : "Preparing SD flash...");
     setFirmwareStatus(source == FIRMWARE_UPDATE_SOURCE_OTA ? "Starting OTA update..." : "Starting SD flash...");
@@ -5736,6 +6177,8 @@ bool AppSettings::flashFirmwareEntry(const FirmwareEntry_t &entry, FirmwareUpdat
                                 1) != pdPASS) {
         delete context;
         _firmwareUpdateInProgress = false;
+        _firmwareCancelRequested = false;
+        updateOtaUpdateOverlayActions(false, false);
         refreshFirmwareUi();
         setFirmwareStatus("Failed to start firmware update task.", true);
         ESP_LOGE(TAG, "Failed to start firmware update background task");
@@ -5774,7 +6217,11 @@ bool AppSettings::startPreferredOtaUpdate(void)
     }
 
     setSelectedOtaFirmwareIndex(selected);
+    if (!_otaDeferredAutoUpdateVersion.empty() && (_otaDeferredAutoUpdateVersion == _otaFirmwareEntries[selected].version)) {
+        clearDeferredOtaSchedule(true);
+    }
     setOtaUpdateProgressOverlayVisible(true);
+    updateOtaUpdateOverlayActions(false, false);
     setFirmwareStatus("Starting OTA update...");
     setFirmwareProgress(0, "Preparing OTA update...");
     if (lv_obj_ready(_otaUpdateProgressCloseButton)) {
@@ -5804,17 +6251,23 @@ void AppSettings::firmwareUpdateTask(void *arg)
                         : app->flashFirmwareFromFile(entry, error_message);
 
     if (!ok) {
+        const bool canceled = error_message == "Firmware update canceled.";
         ESP_LOGE(TAG,
                  "Firmware update failed: source=%s label='%s' version='%s' reason='%s'",
                  source == FIRMWARE_UPDATE_SOURCE_OTA ? "ota" : "sd",
                  entry.label.c_str(),
                  entry.version.c_str(),
                  error_message.empty() ? "Firmware update failed." : error_message.c_str());
-        app->queueFirmwareUiUpdate(error_message.empty() ? "Firmware update failed." : error_message.c_str(), 0, false, true);
+        app->_firmwareCancelRequested = false;
+        app->queueFirmwareUiUpdate(error_message.empty() ? "Firmware update failed." : error_message.c_str(),
+                                   0,
+                                   false,
+                                   canceled ? false : true);
         vTaskDelete(nullptr);
         return;
     }
 
+    app->_firmwareCancelRequested = false;
     ESP_LOGI(TAG,
              "Firmware update complete, rebooting: source=%s label='%s' version='%s'",
              source == FIRMWARE_UPDATE_SOURCE_OTA ? "ota" : "sd",
@@ -7031,9 +7484,109 @@ void AppSettings::onFirmwareAutoUpdateSwitchValueChangeEventCallback(lv_event_t 
     enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
     app->_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] = enabled ? 1 : 0;
     app->setNvsParam(NVS_KEY_OTA_AUTO_UPDATE, enabled ? 1 : 0);
+    if (!enabled) {
+        app->clearDeferredOtaSchedule(true);
+        app->updateOtaUpdateOverlayActions(false, false);
+    }
 
 end:
     return;
+}
+
+void AppSettings::onOtaUpdateInstallNowEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        return;
+    }
+
+    app->updateOtaUpdateOverlayActions(false, false);
+    app->_otaUpdatePromptDismissedThisBoot = true;
+    app->startPreferredOtaUpdate();
+}
+
+void AppSettings::onOtaUpdateCancelEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        return;
+    }
+
+    app->_otaUpdatePromptDismissedThisBoot = true;
+    if (app->_firmwareUpdateInProgress) {
+        app->_firmwareCancelRequested = true;
+        app->setFirmwareStatus("Canceling firmware update...", false);
+        app->setFirmwareProgress(0, "Canceling firmware update...", false);
+        return;
+    }
+
+    app->updateOtaUpdateOverlayActions(false, false);
+    app->setOtaUpdateProgressOverlayVisible(false);
+    app->setFirmwareStatus("Automatic OTA start canceled.", false);
+    app->setFirmwareProgress(0, "Automatic update canceled for now.", false);
+}
+
+void AppSettings::onOtaUpdateRescheduleEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        return;
+    }
+
+    app->updateOtaUpdateOverlayActions(true, true);
+    app->updateOtaRescheduleMinuteOptions();
+    app->setFirmwareProgress(0, "Choose how long to delay automatic installation.", false);
+}
+
+void AppSettings::onOtaUpdateRescheduleHourChangedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        return;
+    }
+
+    app->updateOtaRescheduleMinuteOptions();
+}
+
+void AppSettings::onOtaUpdateRescheduleApplyEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        return;
+    }
+
+    const uint32_t delay_seconds = app->getSelectedOtaRescheduleDelaySeconds();
+    if (delay_seconds == 0) {
+        app->setFirmwareStatus("Select a delay longer than zero to reschedule.", true);
+        app->setFirmwareProgress(0, "Reschedule requires a future time.", true);
+        return;
+    }
+
+    const int selected = app->findPreferredOtaEntryIndex(true);
+    if ((selected < 0) || (static_cast<size_t>(selected) >= app->_otaFirmwareEntries.size())) {
+        app->setFirmwareStatus("No OTA release is available to reschedule.", true);
+        app->setFirmwareProgress(0, "Reschedule unavailable.", true);
+        return;
+    }
+
+    const FirmwareEntry_t &entry = app->_otaFirmwareEntries[selected];
+    app->deferOtaUpdateForEntry(entry, delay_seconds);
+    if (app->_firmwareUpdateInProgress) {
+        app->_otaUpdatePromptDismissedThisBoot = true;
+        app->_firmwareCancelRequested = true;
+        app->updateOtaUpdateOverlayActions(false, false);
+        app->setFirmwareStatus(std::string("Automatic OTA update deferred for ") +
+                                   formatDelayMinutes(static_cast<int32_t>(delay_seconds / 60)) + ".",
+                               false);
+        app->setFirmwareProgress(0, "Canceling current update and applying the new schedule...", false);
+        return;
+    }
+
+    app->updateOtaUpdateOverlayActions(false, false);
+    app->setOtaUpdateProgressOverlayVisible(false);
+    app->setFirmwareStatus(std::string("Automatic OTA update deferred for ") + formatDelayMinutes(static_cast<int32_t>(delay_seconds / 60)) + ".",
+                           false);
+    app->setFirmwareProgress(0, "Automatic update rescheduled.", false);
 }
 
 void AppSettings::onOtaUpdateProgressCloseEventCallback(lv_event_t *e)
@@ -7045,6 +7598,18 @@ void AppSettings::onOtaUpdateProgressCloseEventCallback(lv_event_t *e)
 
     if (app->_firmwareUpdateInProgress) {
         return;
+    }
+
+    if (!app->_otaAutoUpdateAwaitingDecision) {
+        return;
+    }
+
+    lv_obj_t *current_target = lv_event_get_current_target(e);
+    if (current_target == app->_otaUpdateProgressOverlay) {
+        lv_obj_t *target = lv_event_get_target(e);
+        if (target != app->_otaUpdateProgressOverlay) {
+            return;
+        }
     }
 
     app->setOtaUpdateProgressOverlayVisible(false);

@@ -51,7 +51,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Firmware screen factory reset button with confirmation and settings wipe.
 - Firmware releases now publish OTA-detectable `.bin` assets directly instead of ZIP-only packages.
 - GitHub OTA updates now follow release-asset redirects correctly, keep visible status during checks and flashes, preserve failure messages, and keep the final OTA verification worker on an internal stack so the update no longer panics at the end of flashing.
-- OTA update awareness now runs in the background, supports automatic update start from the Firmware OTA page, keeps a passive update-available icon in the top bar, and can roll back automatically if a freshly updated image crashes before it is marked healthy.
+- OTA update awareness now runs in the background, supports default-enabled automatic update start from the Firmware OTA page, keeps a passive update-available icon in the top bar, can reschedule or cancel from the OTA modal, and can roll back automatically if a freshly updated image crashes before it is marked healthy.
 - Power management now enables tickless idle and runtime light-sleep configuration on the main ESP32-P4 firmware so idle CPU utilization can drop instead of staying artificially high.
 - Safer SD-card boot behavior so video playback is only enabled when MJPEG content is actually present.
 - SPIFFS cleanup that removes bundled demo media and frees flash for larger OTA-safe application images.
@@ -185,7 +185,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.3.1 validates at `0x6EF1F0`, leaving `0x0A0E10` bytes free in the smaller OTA app slot.
+- Version 1.3.1 validates at `0x6F1B30`, leaving `0x09E4D0` bytes free in the smaller OTA app slot.
 
 ## SD Card Layout
 

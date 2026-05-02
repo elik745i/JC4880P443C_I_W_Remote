@@ -12,8 +12,8 @@ if(CONFIG_JC4880_FEATURE_BATTERY)
 endif()
 
 function(jc4880_append_app_sources out_var dir_path)
-    file(GLOB_RECURSE APP_C_SRCS ${dir_path}/*.c)
-    file(GLOB_RECURSE APP_CPP_SRCS ${dir_path}/*.cpp)
+    file(GLOB_RECURSE APP_C_SRCS CONFIGURE_DEPENDS ${dir_path}/*.c)
+    file(GLOB_RECURSE APP_CPP_SRCS CONFIGURE_DEPENDS ${dir_path}/*.cpp)
     set(${out_var} ${${out_var}} ${APP_C_SRCS} ${APP_CPP_SRCS} PARENT_SCOPE)
 endfunction()
 

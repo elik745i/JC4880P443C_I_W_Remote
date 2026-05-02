@@ -187,6 +187,7 @@ private:
     void ensureFirmwareScreen(void);
     void ensureFirmwareOtaCheckOverlay(void);
     void ensureOtaUpdateProgressOverlay(void);
+    void updateOtaUpdateOverlayActions(bool waiting_for_decision, bool show_reschedule_picker);
     void setFirmwareProgress(int32_t percent, const std::string &phase, bool is_error = false);
     void setFirmwareOtaCheckOverlayVisible(bool visible, const std::string &status = std::string());
     void setOtaUpdateProgressOverlayVisible(bool visible);
@@ -216,6 +217,14 @@ private:
     void requestFirmwareScreenOpen(bool prefer_newer);
     void openFirmwareScreenIfPending(void);
     int findPreferredOtaEntryIndex(bool prefer_newer) const;
+    void refreshDeferredOtaScheduleState(void);
+    void clearDeferredOtaSchedule(bool persist = true);
+    void deferOtaUpdateForEntry(const FirmwareEntry_t &entry, uint32_t delay_seconds);
+    bool shouldSuppressDeferredOtaUpdate(const FirmwareEntry_t &entry, uint64_t now_us);
+    bool shouldResumeDeferredOtaUpdate(const FirmwareEntry_t &entry, uint64_t now_us);
+    void updateOtaRescheduleMinuteOptions();
+    uint32_t getSelectedOtaRescheduleDelaySeconds(void) const;
+    void showAutoUpdateDecisionOverlay(const FirmwareEntry_t &entry);
     bool startPreferredOtaUpdate(void);
     static void firmwareUpdateTask(void *arg);
     static void applyAsyncFirmwareUiUpdate(void *arg);
@@ -312,6 +321,11 @@ private:
     static void onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e);
     static void onFirmwareAutoUpdateSwitchValueChangeEventCallback(lv_event_t *e);
     static void onOtaUpdateAvailablePopupEventCallback(lv_event_t *e);
+    static void onOtaUpdateInstallNowEventCallback(lv_event_t *e);
+    static void onOtaUpdateCancelEventCallback(lv_event_t *e);
+    static void onOtaUpdateRescheduleEventCallback(lv_event_t *e);
+    static void onOtaUpdateRescheduleHourChangedEventCallback(lv_event_t *e);
+    static void onOtaUpdateRescheduleApplyEventCallback(lv_event_t *e);
     static void onOtaUpdateProgressCloseEventCallback(lv_event_t *e);
     // Audio
     static void onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e);
@@ -515,15 +529,28 @@ private:
     lv_obj_t *_otaUpdateProgressStatusLabel;
     lv_obj_t *_otaUpdateProgressBar;
     lv_obj_t *_otaUpdateProgressLabel;
+    lv_obj_t *_otaUpdateProgressActionRow;
+    lv_obj_t *_otaUpdateProgressInstallButton;
+    lv_obj_t *_otaUpdateProgressRescheduleButton;
+    lv_obj_t *_otaUpdateProgressCancelButton;
+    lv_obj_t *_otaUpdateProgressCornerCloseButton;
+    lv_obj_t *_otaUpdateReschedulePanel;
+    lv_obj_t *_otaUpdateRescheduleHourDropdown;
+    lv_obj_t *_otaUpdateRescheduleMinuteDropdown;
+    lv_obj_t *_otaUpdateRescheduleApplyButton;
     lv_obj_t *_otaUpdateProgressCloseButton;
     bool _firmwareUpdateInProgress;
+    bool _firmwareCancelRequested;
     bool _firmwareOtaCheckInProgress;
     bool _otaStatusIconInstalled;
     bool _otaUpdateAvailableThisBoot;
     bool _otaUpdatePromptDismissedThisBoot;
+    bool _otaAutoUpdateAwaitingDecision;
     bool _otaAvailabilityCheckInProgress;
     bool _pendingOpenFirmwareScreen;
+    uint64_t _otaDeferredAutoUpdateUntilUs;
     uint64_t _nextOtaAvailabilityCheckUs;
+    std::string _otaDeferredAutoUpdateVersion;
     bool _bluetoothStatusIconInstalled;
     bool _zigbeeStatusIconInstalled;
     struct SecurityToggleContext {

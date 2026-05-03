@@ -80,6 +80,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Battery sampling now detaches from ADC2 while the Local Controller is active so analog local inputs can run without the previous ADC2 ownership conflict.
 - The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
+- UI tap sounds now reuse the shared audio policy more effectively, so idle taps no longer sound noticeably weaker than taps triggered while media is already playing.
 - Hardware Monitor now keeps one hour of background history in PSRAM for CPU load, SRAM, PSRAM, Wi-Fi, battery, and CPU temperature instead of sampling only while the page is open.
 - Hardware Monitor SD-card status now follows the app-wide storage mount state, so it no longer disagrees with File Manager when the card is mounted and browsable.
 - The Hardware Monitor page now relies on the common system back gesture instead of its own dedicated back button, and the duplicate non-functional temperature card was removed.
@@ -93,6 +94,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Music Player runtime metadata, library indexes, and long-lived worker stacks now prefer PSRAM, which reduces launch-time and background SRAM pressure.
 - Music Player playlist confirmation dialogs now use safe LVGL async-close handling to avoid the panic that could occur when deleting or cancelling from the modal.
 - Quick-access controls now stay available while apps are open, with a full-width power-and-audio curtain, smaller launcher row icons, and richer live Music Player detail in the strip.
+- The quick-access `Close All` action now uses a taller button with a larger touch hit area so it can be triggered more reliably on-device.
 - Internet Radio now mirrors Music Player-style top-bar quick actions for country station lists, including previous / next station controls and live buffering detail while the quick-access sheet is open.
 - Internet Radio now exposes a live buffered-stream meter, larger playback modal layout, deeper PSRAM-first buffering, and delayed startup until the stream cache reaches a safer prefill level.
 - Internet Radio steady-state downloading now refills in the background instead of blocking the audio playback path, which reduces refill-time audio dropouts on slow stations.
@@ -190,7 +192,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides two balanced OTA app slots of `0x7C0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage is `0x040000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
-- Version 1.3.2 validates at `0x6FBE60`, leaving `0x0C41A0` bytes free in either OTA app slot.
+- Version 1.3.2 validates at `0x6FBFB0`, leaving `0x0C4050` bytes free in either OTA app slot.
 - Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout

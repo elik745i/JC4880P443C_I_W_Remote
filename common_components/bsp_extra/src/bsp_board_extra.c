@@ -210,11 +210,7 @@ static int audio_get_output_target_volume_locked(void)
 {
     int target = _vloume_intensity;
     if (s_audio_mix_state.notification_active) {
-        if (s_audio_mix_state.notification_direct_task_running) {
-            target = s_system_volume_intensity;
-        } else {
-            target = (target > s_system_volume_intensity) ? target : s_system_volume_intensity;
-        }
+        target = (target > s_system_volume_intensity) ? target : s_system_volume_intensity;
     }
     return audio_clamp_volume(target);
 }
@@ -664,12 +660,29 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
 
 esp_err_t bsp_extra_codec_set_fs_play(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)
 {
+    bool format_unchanged = false;
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        format_unchanged = (s_audio_mix_state.sample_rate == rate) &&
+                           (s_audio_mix_state.bits_per_sample == bits_cfg) &&
+                           (s_audio_mix_state.channel_mode == ch);
+        audio_mix_unlock();
+    }
+
+    if (format_unchanged && s_codec_devices_open) {
+        ESP_LOGI(TAG,
+                 "Skipping play codec reconfigure for unchanged format rate=%" PRId32 " bits=%" PRId32 " ch=%d",
+                 rate,
+                 bits_cfg,
+                 (int)ch);
+        return ESP_OK;
+    }
+
     esp_err_t ret = ESP_OK;
     ESP_LOGI(TAG,"rate = %" PRId32 "bits_cfg = %" PRId32, rate,bits_cfg);
 
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = rate,
-        .channel = CODEC_DEFAULT_CHANNEL,
+        .channel = ch,
         .bits_per_sample = bits_cfg,
     };
 
@@ -680,6 +693,15 @@ esp_err_t bsp_extra_codec_set_fs_play(uint32_t rate, uint32_t bits_cfg, i2s_slot
     if (play_dev_handle) {
         ret |= esp_codec_dev_open(play_dev_handle, &fs);
     }
+
+    if (ret == ESP_OK && audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.sample_rate = rate;
+        s_audio_mix_state.bits_per_sample = bits_cfg;
+        s_audio_mix_state.channel_mode = ch;
+        audio_mix_unlock();
+    }
+
+    s_codec_devices_open = (ret == ESP_OK);
 
     ESP_LOGI(TAG,"ret = 0x%x , %s",ret,strerror(ret));
     return ret;

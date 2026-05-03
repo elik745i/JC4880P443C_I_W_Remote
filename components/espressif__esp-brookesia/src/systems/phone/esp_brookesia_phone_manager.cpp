@@ -583,7 +583,8 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
 
     _quick_access_close_all_button = lv_btn_create(_quick_access_app_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_close_all_button, false, "Create quick access close-all button failed");
-    lv_obj_set_size(_quick_access_close_all_button, lv_pct(100), 44);
+    lv_obj_set_size(_quick_access_close_all_button, lv_pct(100), 52);
+    lv_obj_set_ext_click_area(_quick_access_close_all_button, 12);
     lv_obj_align(_quick_access_close_all_button, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_radius(_quick_access_close_all_button, 18, 0);
     lv_obj_set_style_bg_color(_quick_access_close_all_button, lv_color_hex(0xDC2626), 0);

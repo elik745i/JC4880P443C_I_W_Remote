@@ -39,8 +39,6 @@ Joystick circuit draft:
 Compared with the stock Espressif-based firmware stack used for this hardware profile, this build adds or changes the following:
 
 - Files app for browsing both `/sdcard` and SPIFFS directly on the device.
-- Browser app for lightweight DuckDuckGo Lite web search with SD-card cache when available and PSRAM fallback otherwise.
-- YouTube app for lightweight search and metadata browsing through public Invidious mirrors with SD-card cache when available and PSRAM fallback otherwise.
 - E-Reader app for reading text-oriented files from the SD card.
 - MQTT app with launch-page broker, credentials, client ID, and topic settings for quick connection testing.
 - Internet Radio app with station discovery by popularity, country, language, and category.
@@ -89,7 +87,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Internal SRAM usage was reduced substantially by moving large SEGA emulator permanent buffers and tables into PSRAM-backed BSS.
 - Additional SEGA emulator permanent RAM, preview buffers, and SMS / Genesis scratch state now live in PSRAM-backed BSS, which cuts fresh-boot internal SRAM pressure before the emulator is launched.
 - Additional boot-time SRAM pressure was removed by deferring heavy Internet Radio, Image Display, and SEGA UI/runtime setup until first launch.
-- Image Viewer now reads images only from `/sdcard/image`, lazy-loads thumbnails, prefers PSRAM-backed decode buffers, falls back across multiple JPEG decode paths, and opens fullscreen/slideshow transitions through the safe LVGL-thread path.
+- Image Viewer now reads images only from `/sdcard/image`, lazy-loads thumbnails, maintains a dynamic `/sdcard/sys/thumbs` cache, prefers PSRAM-backed decode buffers, falls back across multiple JPEG decode paths, and opens fullscreen/slideshow transitions through the safe LVGL-thread path.
 - The unused camera and deep-learning component stack was removed from the resolved build graph to reduce flash footprint and memory pressure.
 - Settings shutdown and modal-close flows were hardened against stale LVGL object updates that could previously trigger a panic during screen teardown.
 - Music Player runtime metadata, library indexes, and long-lived worker stacks now prefer PSRAM, which reduces launch-time and background SRAM pressure.
@@ -128,7 +126,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 
 - Files app can inspect both onboard SPIFFS and the SD card.
 - E-Reader reads supported files from the SD card.
-- Image Viewer now looks only in `/sdcard/image`, lazy-loads gallery thumbnails, and uses safer fullscreen/slideshow transitions.
+- Image Viewer now looks only in `/sdcard/image`, lazy-loads gallery thumbnails, keeps a dynamic `/sdcard/sys/thumbs` cache in sync with the image folder, and uses safer fullscreen/slideshow transitions.
 - Music and image sample payloads were removed from SPIFFS to save flash.
 - The firmware updater can scan `/sdcard/firmware` for local `.bin` images or check GitHub releases for OTA-ready `.bin` assets.
 
@@ -189,15 +187,17 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ## Storage And OTA Layout
 
 - Flash size is configured for 16 MB.
-- Partition table provides OTA app slots of `0x7B0000` and `0x790000`, with the smaller slot defining the real OTA size ceiling.
+- Partition table provides two balanced OTA app slots of `0x7C0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
-- SPIFFS storage remains `0x080000` while preserving the remaining onboard filesystem features.
-- Version 1.3.2 validates at `0x751940`, leaving `0x03E6C0` bytes free in the smaller OTA app slot.
+- SPIFFS storage is `0x040000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
+- Version 1.3.2 validates at `0x6FBE60`, leaving `0x0C41A0` bytes free in either OTA app slot.
+- Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout
 
 - `/sdcard/music` for music content.
 - `/sdcard/image` for image content.
+- `/sdcard/sys/thumbs` for cached Image Viewer thumbnails.
 - `/sdcard/sega_games` for SEGA ROMs.
 - `/sdcard/saved_games` for SEGA manual save-state folders and preview thumbnails.
 - `/sdcard/firmware` for local `.bin` firmware packages.

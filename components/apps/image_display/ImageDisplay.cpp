@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include <setjmp.h>
 #include <algorithm>
 #include <cctype>
@@ -8,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <dirent.h>
+#include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
@@ -27,6 +29,8 @@
 
 #define IMAGE_DIR "/sdcard/image"
 #define IMAGE_DIR_FALLBACK "/sdcard/imagefolder"
+#define IMAGE_SYS_DIR "/sdcard/sys"
+#define IMAGE_THUMB_CACHE_DIR "/sdcard/sys/thumbs"
 
 namespace {
 
@@ -37,18 +41,24 @@ constexpr int kTileHeight = 168;
 constexpr int kTilePreviewWidth = kTileWidth - 24;
 constexpr int kTilePreviewHeight = 96;
 constexpr int kHeaderHeight = 82;
-constexpr int kTileTapSlopPx = 18;
+constexpr int kTileTapSlopPx = 24;
+constexpr uint32_t kImageDirectoryPollMs = 2000;
 constexpr uint32_t kTransitionDurationMs = 420;
 constexpr int64_t kIdleSlideshowUs = 15LL * 1000LL * 1000LL;
 constexpr int kTransitionCount = 20;
 constexpr size_t kTjpgdWorkspaceBytes = 16U * 1024U;
+constexpr uint32_t kThumbnailCacheMagic = 0x54484D42U;
+constexpr uint32_t kThumbnailCacheVersion = 1U;
 
 SemaphoreHandle_t image_task_event = nullptr;
 SemaphoreHandle_t image_muxe = nullptr;
+SemaphoreHandle_t s_thumbnail_decode_event = nullptr;
+SemaphoreHandle_t s_thumbnail_decode_mutex = nullptr;
 esp_timer_handle_t time_refer_handle = nullptr;
 
 lv_obj_t *s_gallery_screen = nullptr;
 lv_obj_t *s_gallery_header = nullptr;
+lv_obj_t *s_gallery_count_label = nullptr;
 lv_obj_t *s_gallery_grid = nullptr;
 lv_obj_t *s_viewer_layer = nullptr;
 lv_obj_t *s_viewer_topbar = nullptr;
@@ -68,7 +78,7 @@ bool s_fullscreen_visible = false;
 int s_debug_pending_open_index = -1;
 bool s_debug_pending_open_animate = false;
 const char *s_debug_pending_open_reason = nullptr;
-lv_obj_t *s_tile_press_target = nullptr;
+bool s_gallery_rebuild_pending = false;
 int s_tile_press_index = -1;
 lv_point_t s_tile_press_point = {0, 0};
 bool s_tile_press_moved = false;
@@ -104,8 +114,48 @@ struct PendingViewerRequest {
     const char *reason = nullptr;
 };
 
+struct PendingImageListRefresh {
+    AppImageDisplay *app = nullptr;
+    std::vector<std::string> image_paths;
+};
+
+struct ThumbnailDecodeRequest {
+    AppImageDisplay *app = nullptr;
+    size_t index = 0;
+    uint32_t generation = 0;
+    lv_obj_t *canvas = nullptr;
+    lv_obj_t *status = nullptr;
+    lv_color_t *target_buffer = nullptr;
+    std::string path;
+};
+
+struct ThumbnailDecodeResult {
+    AppImageDisplay *app = nullptr;
+    size_t index = 0;
+    uint32_t generation = 0;
+    lv_obj_t *canvas = nullptr;
+    lv_obj_t *status = nullptr;
+    lv_color_t *target_buffer = nullptr;
+    lv_color_t *decoded_buffer = nullptr;
+    bool decoded = false;
+    bool cache_hit = false;
+};
+
+struct ThumbnailCacheHeader {
+    uint32_t magic = kThumbnailCacheMagic;
+    uint32_t version = kThumbnailCacheVersion;
+    uint32_t width = kTilePreviewWidth;
+    uint32_t height = kTilePreviewHeight;
+    uint32_t pixel_size = sizeof(lv_color_t);
+    uint64_t source_size = 0;
+    int64_t source_mtime = 0;
+};
+
 std::vector<PendingPreview> s_pending_previews;
 size_t s_next_pending_preview = 0;
+ThumbnailDecodeRequest s_thumbnail_decode_request;
+bool s_thumbnail_decode_in_flight = false;
+uint32_t s_thumbnail_generation = 1;
 
 static void render_rgb565_to_buffer(const uint16_t *source,
                                     uint32_t source_width,
@@ -120,6 +170,12 @@ static void render_rgb888_to_buffer(const uint8_t *source,
                                     lv_color_t *destination,
                                     uint32_t destination_width,
                                     uint32_t destination_height);
+static void render_cmyk_to_buffer(const uint8_t *source,
+                                  uint32_t source_width,
+                                  uint32_t source_height,
+                                  lv_color_t *destination,
+                                  uint32_t destination_width,
+                                  uint32_t destination_height);
 static void render_rgb565a8_to_buffer(const uint8_t *source,
                                       uint32_t source_width,
                                       uint32_t source_height,
@@ -152,10 +208,22 @@ static void show_image_index_async(void *context);
 static void thumbnail_loader_timer_cb(lv_timer_t *timer);
 static void start_thumbnail_loader();
 static void stop_thumbnail_loader();
+static void build_gallery_ui(AppImageDisplay *app);
+static void free_tile_preview_buffers();
+static void populate_gallery_tiles(AppImageDisplay *app);
+static void update_gallery_count_label(size_t image_count);
+static void apply_image_path_refresh_async(void *context);
+static void image_directory_refresh_task(void *context);
+static void apply_thumbnail_decode_async(void *context);
+static void thumbnail_decode_task(void *context);
 static bool decode_image_to_buffer(const std::string &path,
                                    lv_color_t *destination,
                                    uint32_t destination_width,
                                    uint32_t destination_height);
+static bool load_or_generate_thumbnail(const std::string &path,
+                                       lv_color_t *destination,
+                                       bool *cache_hit);
+static void prune_thumbnail_cache(const std::vector<std::string> &active_paths);
 
 struct TransitionRecipe {
     int32_t incomingStartX;
@@ -272,6 +340,35 @@ static void scan_supported_images_in_directory(const char *directory_path, std::
     closedir(directory);
 }
 
+static std::vector<std::string> scan_supported_image_paths()
+{
+    std::vector<std::string> image_paths;
+
+    const char *directories[] = {
+        IMAGE_DIR,
+        IMAGE_DIR_FALLBACK,
+    };
+
+    if (!app_storage_ensure_sdcard_available()) {
+        ESP_LOGW(TAG, "SD card is unavailable for image scan");
+        return image_paths;
+    }
+
+    for (size_t index = 0; index < (sizeof(directories) / sizeof(directories[0])); ++index) {
+        ESP_LOGI(TAG, "Scanning image directory %s", directories[index]);
+        scan_supported_images_in_directory(directories[index], image_paths);
+    }
+
+    std::sort(image_paths.begin(), image_paths.end());
+    image_paths.erase(std::unique(image_paths.begin(), image_paths.end()), image_paths.end());
+    ESP_LOGI(TAG, "Found %u supported images on SD card", static_cast<unsigned>(image_paths.size()));
+    for (size_t index = 0; index < image_paths.size(); ++index) {
+        ESP_LOGI(TAG, "image[%u]=%s", static_cast<unsigned>(index), image_paths[index].c_str());
+    }
+
+    return image_paths;
+}
+
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
                                                       const uint32_t stack_depth,
@@ -322,6 +419,217 @@ static std::string file_extension_label(const std::string &path)
         return static_cast<char>(std::toupper(value));
     });
     return label;
+}
+
+static bool ensure_directory_exists(const char *path)
+{
+    if ((path == nullptr) || (*path == '\0')) {
+        return false;
+    }
+
+    struct stat info = {};
+    if (stat(path, &info) == 0) {
+        return S_ISDIR(info.st_mode);
+    }
+
+    if (mkdir(path, 0777) == 0) {
+        return true;
+    }
+
+    if (errno == EEXIST) {
+        return stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+    }
+
+    ESP_LOGW(TAG, "Failed to create directory %s errno=%d", path, errno);
+    return false;
+}
+
+static bool ensure_thumbnail_cache_dirs()
+{
+    if (!app_storage_ensure_sdcard_available()) {
+        return false;
+    }
+
+    return ensure_directory_exists(IMAGE_SYS_DIR) && ensure_directory_exists(IMAGE_THUMB_CACHE_DIR);
+}
+
+static bool get_file_metadata(const std::string &path, uint64_t *file_size, int64_t *mtime)
+{
+    if ((file_size == nullptr) || (mtime == nullptr)) {
+        return false;
+    }
+
+    struct stat info = {};
+    if (stat(path.c_str(), &info) != 0) {
+        ESP_LOGW(TAG, "stat failed for %s errno=%d", path.c_str(), errno);
+        return false;
+    }
+
+    *file_size = static_cast<uint64_t>(info.st_size);
+    *mtime = static_cast<int64_t>(info.st_mtime);
+    return true;
+}
+
+static uint64_t stable_path_hash(const std::string &path)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    for (unsigned char value : path) {
+        hash ^= value;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static std::string thumbnail_cache_path_for_image(const std::string &path)
+{
+    char buffer[96] = {};
+    snprintf(buffer,
+             sizeof(buffer),
+             "%s/%016llx.thm",
+             IMAGE_THUMB_CACHE_DIR,
+             static_cast<unsigned long long>(stable_path_hash(path)));
+    return std::string(buffer);
+}
+
+static bool load_thumbnail_cache(const std::string &path, lv_color_t *destination)
+{
+    if (destination == nullptr) {
+        return false;
+    }
+
+    uint64_t source_size = 0;
+    int64_t source_mtime = 0;
+    if (!get_file_metadata(path, &source_size, &source_mtime)) {
+        return false;
+    }
+
+    FILE *file = fopen(thumbnail_cache_path_for_image(path).c_str(), "rb");
+    if (file == nullptr) {
+        return false;
+    }
+
+    ThumbnailCacheHeader header = {};
+    const bool valid_header = fread(&header, sizeof(header), 1, file) == 1 &&
+                              header.magic == kThumbnailCacheMagic &&
+                              header.version == kThumbnailCacheVersion &&
+                              header.width == kTilePreviewWidth &&
+                              header.height == kTilePreviewHeight &&
+                              header.pixel_size == sizeof(lv_color_t) &&
+                              header.source_size == source_size &&
+                              header.source_mtime == source_mtime;
+    if (!valid_header) {
+        fclose(file);
+        return false;
+    }
+
+    const size_t thumbnail_bytes = static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t);
+    const bool read_ok = fread(destination, 1, thumbnail_bytes, file) == thumbnail_bytes;
+    fclose(file);
+    return read_ok;
+}
+
+static void store_thumbnail_cache(const std::string &path, const lv_color_t *source)
+{
+    if ((source == nullptr) || !ensure_thumbnail_cache_dirs()) {
+        return;
+    }
+
+    ThumbnailCacheHeader header = {};
+    if (!get_file_metadata(path, &header.source_size, &header.source_mtime)) {
+        return;
+    }
+
+    const std::string cache_path = thumbnail_cache_path_for_image(path);
+    const std::string temp_path = cache_path + ".tmp";
+    FILE *file = fopen(temp_path.c_str(), "wb");
+    if (file == nullptr) {
+        ESP_LOGW(TAG, "Failed to create thumbnail cache %s", temp_path.c_str());
+        return;
+    }
+
+    const size_t thumbnail_bytes = static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t);
+    const bool write_ok = fwrite(&header, sizeof(header), 1, file) == 1 &&
+                          fwrite(source, 1, thumbnail_bytes, file) == thumbnail_bytes;
+    fclose(file);
+    if (!write_ok) {
+        std::remove(temp_path.c_str());
+        ESP_LOGW(TAG, "Failed to write thumbnail cache for %s", path.c_str());
+        return;
+    }
+
+    std::remove(cache_path.c_str());
+    if (rename(temp_path.c_str(), cache_path.c_str()) != 0) {
+        std::remove(temp_path.c_str());
+        ESP_LOGW(TAG, "Failed to finalize thumbnail cache for %s errno=%d", path.c_str(), errno);
+    }
+}
+
+static bool load_or_generate_thumbnail(const std::string &path,
+                                       lv_color_t *destination,
+                                       bool *cache_hit)
+{
+    if (cache_hit != nullptr) {
+        *cache_hit = false;
+    }
+
+    if (load_thumbnail_cache(path, destination)) {
+        if (cache_hit != nullptr) {
+            *cache_hit = true;
+        }
+        return true;
+    }
+
+    if (!decode_image_to_buffer(path, destination, kTilePreviewWidth, kTilePreviewHeight)) {
+        return false;
+    }
+
+    store_thumbnail_cache(path, destination);
+    return true;
+}
+
+static void prune_thumbnail_cache(const std::vector<std::string> &active_paths)
+{
+    if (!ensure_thumbnail_cache_dirs()) {
+        return;
+    }
+
+    std::vector<std::string> expected_paths;
+    expected_paths.reserve(active_paths.size());
+    for (const std::string &path : active_paths) {
+        expected_paths.push_back(thumbnail_cache_path_for_image(path));
+    }
+    std::sort(expected_paths.begin(), expected_paths.end());
+    expected_paths.erase(std::unique(expected_paths.begin(), expected_paths.end()), expected_paths.end());
+
+    DIR *directory = opendir(IMAGE_THUMB_CACHE_DIR);
+    if (directory == nullptr) {
+        return;
+    }
+
+    size_t removed_count = 0;
+    struct dirent *entry = nullptr;
+    while ((entry = readdir(directory)) != nullptr) {
+        if ((strcmp(entry->d_name, ".") == 0) || (strcmp(entry->d_name, "..") == 0)) {
+            continue;
+        }
+
+        const std::string candidate = std::string(IMAGE_THUMB_CACHE_DIR) + "/" + entry->d_name;
+        if (std::binary_search(expected_paths.begin(), expected_paths.end(), candidate)) {
+            continue;
+        }
+
+        if (std::remove(candidate.c_str()) == 0) {
+            ++removed_count;
+        }
+    }
+
+    closedir(directory);
+    if (removed_count > 0U) {
+        ESP_LOGI(TAG,
+                 "thumbnail cache pruned removed=%u active=%u",
+                 static_cast<unsigned>(removed_count),
+                 static_cast<unsigned>(active_paths.size()));
+    }
 }
 
 static lv_color_t tile_color_for_path(const std::string &path)
@@ -381,7 +689,6 @@ static void note_viewer_interaction()
 
 static void reset_tile_press_state()
 {
-    s_tile_press_target = nullptr;
     s_tile_press_index = -1;
     s_tile_press_point.x = 0;
     s_tile_press_point.y = 0;
@@ -680,6 +987,54 @@ static void render_rgb888_to_buffer(const uint8_t *source,
     }
 }
 
+static void render_cmyk_to_buffer(const uint8_t *source,
+                                  uint32_t source_width,
+                                  uint32_t source_height,
+                                  lv_color_t *destination,
+                                  uint32_t destination_width,
+                                  uint32_t destination_height)
+{
+    if ((source == nullptr) || (destination == nullptr) || (source_width == 0U) || (source_height == 0U)) {
+        return;
+    }
+
+    uint16_t *destination_pixels = reinterpret_cast<uint16_t *>(destination);
+    memset(destination_pixels, 0, destination_width * destination_height * sizeof(uint16_t));
+
+    const uint32_t width_limited_height = (source_height * destination_width) / source_width;
+    uint32_t scaled_width = destination_width;
+    uint32_t scaled_height = width_limited_height;
+    if (scaled_height > destination_height) {
+        scaled_height = destination_height;
+        scaled_width = (source_width * destination_height) / source_height;
+    }
+
+    if (scaled_width == 0U) {
+        scaled_width = 1U;
+    }
+    if (scaled_height == 0U) {
+        scaled_height = 1U;
+    }
+
+    const int32_t offset_x = (static_cast<int32_t>(destination_width) - static_cast<int32_t>(scaled_width)) / 2;
+    const int32_t offset_y = (static_cast<int32_t>(destination_height) - static_cast<int32_t>(scaled_height)) / 2;
+
+    for (uint32_t y = 0; y < scaled_height; ++y) {
+        const uint32_t source_y = (y * source_height) / scaled_height;
+        uint16_t *destination_row = destination_pixels + ((offset_y + static_cast<int32_t>(y)) * destination_width);
+        for (uint32_t x = 0; x < scaled_width; ++x) {
+            const uint32_t source_x = (x * source_width) / scaled_width;
+            const uint8_t *source_pixel = source + ((static_cast<size_t>(source_y) * source_width + source_x) * 4U);
+            const uint8_t red = static_cast<uint8_t>((static_cast<uint16_t>(source_pixel[0]) * source_pixel[3] + 127U) / 255U);
+            const uint8_t green = static_cast<uint8_t>((static_cast<uint16_t>(source_pixel[1]) * source_pixel[3] + 127U) / 255U);
+            const uint8_t blue = static_cast<uint8_t>((static_cast<uint16_t>(source_pixel[2]) * source_pixel[3] + 127U) / 255U);
+            destination_row[offset_x + static_cast<int32_t>(x)] = static_cast<uint16_t>(((red & 0xF8U) << 8U) |
+                                                                                          ((green & 0xFCU) << 3U) |
+                                                                                          (blue >> 3U));
+        }
+    }
+}
+
 static void render_rgb565a8_to_buffer(const uint8_t *source,
                                       uint32_t source_width,
                                       uint32_t source_height,
@@ -892,7 +1247,10 @@ static bool decode_jpeg_with_tjpgd(const std::string &path,
         return false;
     }
 
-    uint8_t *workspace = static_cast<uint8_t *>(heap_caps_malloc(kTjpgdWorkspaceBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    uint8_t *workspace = static_cast<uint8_t *>(heap_caps_malloc(kTjpgdWorkspaceBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (workspace == nullptr) {
+        workspace = static_cast<uint8_t *>(heap_caps_malloc(kTjpgdWorkspaceBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
     if (workspace == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate TJpgDec workspace for %s", path.c_str());
         return false;
@@ -997,11 +1355,16 @@ static bool decode_jpeg_with_libjpeg_turbo(const std::string &path,
                                              destination_height);
     decoder.scale_num = 1;
     decoder.scale_denom = 1U << scale;
-    decoder.out_color_space = JCS_RGB;
+    const bool cmyk_source = (decoder.jpeg_color_space == JCS_CMYK) || (decoder.jpeg_color_space == JCS_YCCK);
+    decoder.out_color_space = cmyk_source ? JCS_CMYK : JCS_RGB;
 
     if (jpeg_start_decompress(&decoder) != TRUE) {
         jpeg_destroy_decompress(&decoder);
-        ESP_LOGE(TAG, "libjpeg-turbo start failed for %s", path.c_str());
+        ESP_LOGE(TAG,
+                 "libjpeg-turbo start failed for %s (jpeg_color_space=%d out_color_space=%d)",
+                 path.c_str(),
+                 static_cast<int>(decoder.jpeg_color_space),
+                 static_cast<int>(decoder.out_color_space));
         return false;
     }
 
@@ -1033,20 +1396,31 @@ static bool decode_jpeg_with_libjpeg_turbo(const std::string &path,
 
     jpeg_finish_decompress(&decoder);
     jpeg_destroy_decompress(&decoder);
-    render_rgb888_to_buffer(decoded_rgb888,
-                            decoder.output_width,
-                            decoder.output_height,
-                            destination,
-                            destination_width,
-                            destination_height);
+    if (cmyk_source) {
+        render_cmyk_to_buffer(decoded_rgb888,
+                              decoder.output_width,
+                              decoder.output_height,
+                              destination,
+                              destination_width,
+                              destination_height);
+    } else {
+        render_rgb888_to_buffer(decoded_rgb888,
+                                decoder.output_width,
+                                decoder.output_height,
+                                destination,
+                                destination_width,
+                                destination_height);
+    }
     ESP_LOGI(TAG,
-             "libjpeg-turbo decoded %s at scale=%u source=%ux%u decoded=%ux%u",
+             "libjpeg-turbo decoded %s at scale=%u source=%ux%u decoded=%ux%u components=%u color_space=%d",
              path.c_str(),
              static_cast<unsigned>(scale),
              static_cast<unsigned>(decoder.image_width),
              static_cast<unsigned>(decoder.image_height),
              static_cast<unsigned>(decoder.output_width),
-             static_cast<unsigned>(decoder.output_height));
+             static_cast<unsigned>(decoder.output_height),
+             static_cast<unsigned>(decoder.output_components),
+             static_cast<int>(decoder.jpeg_color_space));
     free(decoded_rgb888);
     return true;
 }
@@ -1281,6 +1655,12 @@ static bool show_image_index(AppImageDisplay *app, int index, bool animate)
     bsp_display_lock(0);
     lv_canvas_set_buffer(s_viewer_canvas[target_canvas], s_viewer_buffers[target_canvas], kScreenWidth, kScreenHeight, LV_IMG_CF_TRUE_COLOR);
     lv_obj_clear_flag(s_viewer_layer, LV_OBJ_FLAG_HIDDEN);
+    if (s_gallery_header != nullptr) {
+        lv_obj_add_flag(s_gallery_header, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_gallery_grid != nullptr) {
+        lv_obj_add_flag(s_gallery_grid, LV_OBJ_FLAG_HIDDEN);
+    }
     lv_obj_move_foreground(s_viewer_layer);
     s_fullscreen_visible = true;
 
@@ -1349,8 +1729,19 @@ static void close_viewer()
     stop_idle_slideshow();
     ESP_LOGI(TAG, "close_viewer current_index=%d", s_current_index);
     s_fullscreen_visible = false;
+    if (s_gallery_header != nullptr) {
+        lv_obj_clear_flag(s_gallery_header, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_gallery_grid != nullptr) {
+        lv_obj_clear_flag(s_gallery_grid, LV_OBJ_FLAG_HIDDEN);
+    }
     if (s_viewer_layer != nullptr) {
         lv_obj_add_flag(s_viewer_layer, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_gallery_rebuild_pending && (s_active_app != nullptr)) {
+        ESP_LOGI(TAG, "close_viewer applying deferred gallery rebuild count=%u", static_cast<unsigned>(s_active_app->imagePathCount()));
+        build_gallery_ui(s_active_app);
+        s_gallery_rebuild_pending = false;
     }
 }
 
@@ -1382,7 +1773,6 @@ static void tile_open_cb(lv_event_t *event)
     lv_indev_t *indev = lv_event_get_indev(event);
 
     if (code == LV_EVENT_PRESSED) {
-        s_tile_press_target = target;
         s_tile_press_index = index;
         s_tile_press_moved = false;
         if (indev != nullptr) {
@@ -1396,7 +1786,7 @@ static void tile_open_cb(lv_event_t *event)
     }
 
     if (code == LV_EVENT_PRESSING) {
-        if ((target == s_tile_press_target) && (index == s_tile_press_index) && (indev != nullptr) && !s_tile_press_moved) {
+        if ((index == s_tile_press_index) && (indev != nullptr) && !s_tile_press_moved) {
             lv_point_t point;
             lv_indev_get_point(indev, &point);
             const int dx = point.x - s_tile_press_point.x;
@@ -1417,18 +1807,17 @@ static void tile_open_cb(lv_event_t *event)
 
     if (code == LV_EVENT_PRESS_LOST) {
         ESP_LOGI(TAG, "tile_open_cb press lost index=%d target=%p moved=%s", index, target, s_tile_press_moved ? "yes" : "no");
-        if ((target == s_tile_press_target) && (index == s_tile_press_index)) {
+        if (index == s_tile_press_index) {
             reset_tile_press_state();
         }
         return;
     }
 
-    if ((target != s_tile_press_target) || (index != s_tile_press_index)) {
-        ESP_LOGI(TAG, "tile_open_cb release ignored index=%d target=%p tracked_index=%d tracked_target=%p",
+    if (index != s_tile_press_index) {
+        ESP_LOGI(TAG, "tile_open_cb release ignored index=%d target=%p tracked_index=%d",
                  index,
                  target,
-                 s_tile_press_index,
-                 s_tile_press_target);
+                 s_tile_press_index);
         return;
     }
 
@@ -1591,6 +1980,8 @@ static void create_gallery_tile(AppImageDisplay *app, size_t index)
 
 static void build_gallery_ui(AppImageDisplay *app)
 {
+    stop_thumbnail_loader();
+    free_tile_preview_buffers();
     s_gallery_screen = app_image_screen;
     lv_obj_clean(s_gallery_screen);
     lv_obj_set_style_bg_color(s_gallery_screen, lv_color_hex(0x090B10), 0);
@@ -1614,6 +2005,12 @@ static void build_gallery_ui(AppImageDisplay *app)
     lv_obj_set_style_text_color(title, lv_color_white(), 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
+    s_gallery_count_label = lv_label_create(s_gallery_header);
+    lv_obj_set_style_text_font(s_gallery_count_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_gallery_count_label, lv_color_hex(0xB7C2D0), 0);
+    lv_obj_align(s_gallery_count_label, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    update_gallery_count_label(app == nullptr ? 0U : app->imagePathCount());
+
     s_gallery_grid = lv_obj_create(s_gallery_screen);
     lv_obj_set_size(s_gallery_grid, kScreenWidth, kScreenHeight - (kHeaderHeight + 28));
     lv_obj_align(s_gallery_grid, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -1629,12 +2026,7 @@ static void build_gallery_ui(AppImageDisplay *app)
     lv_obj_set_flex_flow(s_gallery_grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_gallery_grid, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    s_pending_previews.clear();
-    s_next_pending_preview = 0;
-
-    for (size_t index = 0; index < app->imagePathCount(); ++index) {
-        create_gallery_tile(app, index);
-    }
+    populate_gallery_tiles(app);
 
     s_viewer_layer = lv_obj_create(s_gallery_screen);
     lv_obj_set_size(s_viewer_layer, kScreenWidth, kScreenHeight);
@@ -1703,6 +2095,70 @@ static void build_gallery_ui(AppImageDisplay *app)
     start_thumbnail_loader();
 }
 
+static void free_tile_preview_buffers()
+{
+    s_pending_previews.clear();
+    s_next_pending_preview = 0;
+    ++s_thumbnail_generation;
+    if (s_thumbnail_generation == 0U) {
+        s_thumbnail_generation = 1U;
+    }
+
+    for (lv_color_t *buffer : s_tile_preview_buffers) {
+        free(buffer);
+    }
+    s_tile_preview_buffers.clear();
+}
+
+static void update_gallery_count_label(size_t image_count)
+{
+    if (s_gallery_count_label == nullptr) {
+        return;
+    }
+
+    lv_label_set_text_fmt(s_gallery_count_label,
+                          "%u %s",
+                          static_cast<unsigned>(image_count),
+                          image_count == 1U ? "file" : "files");
+}
+
+static void populate_gallery_tiles(AppImageDisplay *app)
+{
+    s_pending_previews.clear();
+    s_next_pending_preview = 0;
+
+    const size_t image_count = app == nullptr ? 0U : app->imagePathCount();
+    if (image_count == 0U) {
+        lv_obj_t *empty_card = lv_obj_create(s_gallery_grid);
+        lv_obj_set_size(empty_card, kScreenWidth - 44, 180);
+        lv_obj_set_style_radius(empty_card, 26, 0);
+        lv_obj_set_style_border_width(empty_card, 0, 0);
+        lv_obj_set_style_bg_color(empty_card, lv_color_hex(0x141A24), 0);
+        lv_obj_set_style_pad_all(empty_card, 18, 0);
+        lv_obj_clear_flag(empty_card, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *empty_title = lv_label_create(empty_card);
+        lv_label_set_text(empty_title, "No supported images found");
+        lv_obj_set_style_text_font(empty_title, &lv_font_montserrat_22, 0);
+        lv_obj_set_style_text_color(empty_title, lv_color_white(), 0);
+        lv_obj_align(empty_title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+        lv_obj_t *empty_text = lv_label_create(empty_card);
+        lv_obj_set_width(empty_text, kScreenWidth - 88);
+        lv_label_set_long_mode(empty_text, LV_LABEL_LONG_WRAP);
+        lv_label_set_text(empty_text,
+                          "Put JPG, JPEG, or PNG files in /sdcard/image or /sdcard/imagefolder. New files are picked up automatically while this screen stays open.");
+        lv_obj_set_style_text_font(empty_text, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(empty_text, lv_color_hex(0xC6D0DB), 0);
+        lv_obj_align(empty_text, LV_ALIGN_TOP_LEFT, 0, 44);
+        return;
+    }
+
+    for (size_t index = 0; index < image_count; ++index) {
+        create_gallery_tile(app, index);
+    }
+}
+
 static void stop_thumbnail_loader()
 {
     if (s_thumbnail_loader_timer != nullptr) {
@@ -1730,7 +2186,51 @@ static void start_thumbnail_loader()
 
 static void thumbnail_loader_timer_cb(lv_timer_t *timer)
 {
-    if ((s_active_app == nullptr) || (s_next_pending_preview >= s_pending_previews.size())) {
+    if (s_active_app == nullptr) {
+        ESP_LOGI(TAG, "thumbnail loader complete processed=%u", static_cast<unsigned>(s_next_pending_preview));
+        stop_thumbnail_loader();
+        return;
+    }
+
+    if ((s_thumbnail_decode_event == nullptr) || (s_thumbnail_decode_mutex == nullptr)) {
+        if (s_next_pending_preview >= s_pending_previews.size()) {
+            ESP_LOGI(TAG, "thumbnail loader complete processed=%u", static_cast<unsigned>(s_next_pending_preview));
+            stop_thumbnail_loader();
+            return;
+        }
+
+        PendingPreview &pending = s_pending_previews[s_next_pending_preview++];
+        if ((pending.canvas == nullptr) || (pending.buffer == nullptr) || (pending.index >= s_active_app->imagePathCount())) {
+            ESP_LOGW(TAG, "thumbnail loader skipped invalid pending item index=%u", static_cast<unsigned>(pending.index));
+            return;
+        }
+
+        const std::string &path = s_active_app->imagePathAt(pending.index);
+        bool cache_hit = false;
+        const bool decoded = load_or_generate_thumbnail(path, pending.buffer, &cache_hit);
+        if (!decoded) {
+            draw_preview_placeholder(pending.canvas, pending.buffer, path);
+        } else {
+            lv_obj_invalidate(pending.canvas);
+        }
+        if (pending.status != nullptr) {
+            lv_label_set_text(pending.status, decoded ? (cache_hit ? "Cached" : "Ready") : "Fallback");
+            lv_obj_add_flag(pending.status, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+
+    if (xSemaphoreTake(s_thumbnail_decode_mutex, 0) != pdTRUE) {
+        return;
+    }
+
+    if (s_thumbnail_decode_in_flight) {
+        xSemaphoreGive(s_thumbnail_decode_mutex);
+        return;
+    }
+
+    if (s_next_pending_preview >= s_pending_previews.size()) {
+        xSemaphoreGive(s_thumbnail_decode_mutex);
         ESP_LOGI(TAG, "thumbnail loader complete processed=%u", static_cast<unsigned>(s_next_pending_preview));
         stop_thumbnail_loader();
         return;
@@ -1738,6 +2238,7 @@ static void thumbnail_loader_timer_cb(lv_timer_t *timer)
 
     PendingPreview &pending = s_pending_previews[s_next_pending_preview++];
     if ((pending.canvas == nullptr) || (pending.buffer == nullptr) || (pending.index >= s_active_app->imagePathCount())) {
+        xSemaphoreGive(s_thumbnail_decode_mutex);
         ESP_LOGW(TAG, "thumbnail loader skipped invalid pending item index=%u", static_cast<unsigned>(pending.index));
         return;
     }
@@ -1748,19 +2249,226 @@ static void thumbnail_loader_timer_cb(lv_timer_t *timer)
              static_cast<unsigned>(pending.index),
              static_cast<unsigned>(s_pending_previews.size() - s_next_pending_preview),
              path.c_str());
-    const bool decoded = decode_image_to_buffer(path, pending.buffer, kTilePreviewWidth, kTilePreviewHeight);
-    if (!decoded) {
-        draw_preview_placeholder(pending.canvas, pending.buffer, path);
-    } else {
-        lv_obj_invalidate(pending.canvas);
-    }
-    if (pending.status != nullptr) {
-        lv_label_set_text(pending.status, decoded ? "Ready" : "Fallback");
-    }
-    ESP_LOGI(TAG, "thumbnail loader decode done tile=%u result=%s", static_cast<unsigned>(pending.index), decoded ? "ok" : "failed");
+    s_thumbnail_decode_request = ThumbnailDecodeRequest{
+        .app = s_active_app,
+        .index = pending.index,
+        .generation = s_thumbnail_generation,
+        .canvas = pending.canvas,
+        .status = pending.status,
+        .target_buffer = pending.buffer,
+        .path = path,
+    };
+    s_thumbnail_decode_in_flight = true;
+    xSemaphoreGive(s_thumbnail_decode_mutex);
+    xSemaphoreGive(s_thumbnail_decode_event);
+    (void)timer;
+}
 
-    if ((pending.status != nullptr) && (timer != nullptr)) {
-        lv_obj_add_flag(pending.status, LV_OBJ_FLAG_HIDDEN);
+static void apply_thumbnail_decode_async(void *context)
+{
+    std::unique_ptr<ThumbnailDecodeResult> result(static_cast<ThumbnailDecodeResult *>(context));
+    if (result == nullptr) {
+        return;
+    }
+
+    if ((s_thumbnail_decode_mutex != nullptr) && (xSemaphoreTake(s_thumbnail_decode_mutex, pdMS_TO_TICKS(20)) == pdTRUE)) {
+        s_thumbnail_decode_in_flight = false;
+        xSemaphoreGive(s_thumbnail_decode_mutex);
+    }
+
+    const bool generation_matches = (result->generation == s_thumbnail_generation) && (result->app == s_active_app);
+    if (generation_matches && result->decoded && (result->decoded_buffer != nullptr) && (result->target_buffer != nullptr)) {
+        memcpy(result->target_buffer,
+               result->decoded_buffer,
+               static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t));
+        if (result->canvas != nullptr) {
+            lv_obj_invalidate(result->canvas);
+        }
+    }
+
+    if (generation_matches && (result->status != nullptr)) {
+        lv_label_set_text(result->status,
+                          result->decoded ? (result->cache_hit ? "Cached" : "Ready") : "Fallback");
+        lv_obj_add_flag(result->status, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    ESP_LOGI(TAG,
+             "thumbnail loader decode done tile=%u result=%s cache=%s generation=%u current_generation=%u",
+             static_cast<unsigned>(result->index),
+             result->decoded ? "ok" : "failed",
+             result->cache_hit ? "hit" : "miss",
+             static_cast<unsigned>(result->generation),
+             static_cast<unsigned>(s_thumbnail_generation));
+
+    if (result->decoded_buffer != nullptr) {
+        free(result->decoded_buffer);
+    }
+
+    if (s_thumbnail_loader_timer != nullptr) {
+        lv_timer_ready(s_thumbnail_loader_timer);
+    }
+}
+
+static void thumbnail_decode_task(void *context)
+{
+    (void)context;
+
+    while (true) {
+        xSemaphoreTake(s_thumbnail_decode_event, portMAX_DELAY);
+
+        ThumbnailDecodeRequest request;
+        bool has_request = false;
+        if ((s_thumbnail_decode_mutex != nullptr) && (xSemaphoreTake(s_thumbnail_decode_mutex, pdMS_TO_TICKS(20)) == pdTRUE)) {
+            if (s_thumbnail_decode_in_flight) {
+                request = s_thumbnail_decode_request;
+                has_request = true;
+            }
+            xSemaphoreGive(s_thumbnail_decode_mutex);
+        }
+
+        if (!has_request) {
+            continue;
+        }
+
+        ThumbnailDecodeResult *result = new (std::nothrow) ThumbnailDecodeResult{
+            .app = request.app,
+            .index = request.index,
+            .generation = request.generation,
+            .canvas = request.canvas,
+            .status = request.status,
+            .target_buffer = request.target_buffer,
+            .decoded_buffer = nullptr,
+            .decoded = false,
+            .cache_hit = false,
+        };
+        if (result == nullptr) {
+            ESP_LOGE(TAG, "thumbnail worker alloc failed tile=%u", static_cast<unsigned>(request.index));
+            if ((s_thumbnail_decode_mutex != nullptr) && (xSemaphoreTake(s_thumbnail_decode_mutex, pdMS_TO_TICKS(20)) == pdTRUE)) {
+                s_thumbnail_decode_in_flight = false;
+                xSemaphoreGive(s_thumbnail_decode_mutex);
+            }
+            continue;
+        }
+
+        result->decoded_buffer = static_cast<lv_color_t *>(heap_caps_malloc(static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (result->decoded_buffer == nullptr) {
+            result->decoded_buffer = static_cast<lv_color_t *>(heap_caps_malloc(static_cast<size_t>(kTilePreviewWidth) * static_cast<size_t>(kTilePreviewHeight) * sizeof(lv_color_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
+
+        if (result->decoded_buffer != nullptr) {
+            result->decoded = load_or_generate_thumbnail(request.path,
+                                                         result->decoded_buffer,
+                                                         &result->cache_hit);
+            if (!result->decoded) {
+                free(result->decoded_buffer);
+                result->decoded_buffer = nullptr;
+            }
+        }
+
+        if (!queue_lvgl_async_locked(apply_thumbnail_decode_async, result)) {
+            if (result->decoded_buffer != nullptr) {
+                free(result->decoded_buffer);
+            }
+            delete result;
+            if ((s_thumbnail_decode_mutex != nullptr) && (xSemaphoreTake(s_thumbnail_decode_mutex, pdMS_TO_TICKS(20)) == pdTRUE)) {
+                s_thumbnail_decode_in_flight = false;
+                xSemaphoreGive(s_thumbnail_decode_mutex);
+            }
+        }
+    }
+}
+
+static void apply_image_path_refresh_async(void *context)
+{
+    std::unique_ptr<PendingImageListRefresh> refresh(static_cast<PendingImageListRefresh *>(context));
+    if ((refresh == nullptr) || (refresh->app == nullptr) || (s_active_app != refresh->app)) {
+        return;
+    }
+
+    const std::vector<std::string> previous_paths = refresh->app->imagePathsSnapshot();
+    if (previous_paths == refresh->image_paths) {
+        update_gallery_count_label(previous_paths.size());
+        return;
+    }
+
+    std::string current_path;
+    if ((s_current_index >= 0) && (static_cast<size_t>(s_current_index) < previous_paths.size())) {
+        current_path = previous_paths[static_cast<size_t>(s_current_index)];
+    }
+
+    refresh->app->replaceImagePaths(std::move(refresh->image_paths));
+    update_gallery_count_label(refresh->app->imagePathCount());
+
+    if (!current_path.empty()) {
+        const int updated_index = refresh->app->findImagePathIndex(current_path);
+        if (updated_index >= 0) {
+            s_current_index = updated_index;
+            if (s_fullscreen_visible) {
+                update_viewer_title(refresh->app->imagePathAt(static_cast<size_t>(updated_index)),
+                                    s_last_transition >= 0 ? s_last_transition : 0);
+            }
+        } else if (refresh->app->imagePathCount() == 0U) {
+            close_viewer();
+            s_current_index = -1;
+        } else if (s_current_index >= static_cast<int>(refresh->app->imagePathCount())) {
+            s_current_index = static_cast<int>(refresh->app->imagePathCount()) - 1;
+        }
+    }
+
+    if (s_fullscreen_visible) {
+        s_gallery_rebuild_pending = true;
+    } else {
+        build_gallery_ui(refresh->app);
+        s_gallery_rebuild_pending = false;
+    }
+
+    maybe_queue_debug_open(refresh->app);
+    ESP_LOGI(TAG,
+             "Applied image directory refresh old_count=%u new_count=%u fullscreen=%s",
+             static_cast<unsigned>(previous_paths.size()),
+             static_cast<unsigned>(refresh->app->imagePathCount()),
+             s_fullscreen_visible ? "yes" : "no");
+}
+
+static void image_directory_refresh_task(void *context)
+{
+    AppImageDisplay *app = static_cast<AppImageDisplay *>(context);
+    std::vector<std::string> last_seen_paths = scan_supported_image_paths();
+    prune_thumbnail_cache(last_seen_paths);
+
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(kImageDirectoryPollMs));
+
+        if ((app == nullptr) || (s_active_app != app)) {
+            continue;
+        }
+
+        std::vector<std::string> scanned_paths = scan_supported_image_paths();
+        if (scanned_paths == last_seen_paths) {
+            continue;
+        }
+
+        ESP_LOGI(TAG,
+                 "Detected image directory change old_count=%u new_count=%u",
+                 static_cast<unsigned>(last_seen_paths.size()),
+                 static_cast<unsigned>(scanned_paths.size()));
+        prune_thumbnail_cache(scanned_paths);
+
+        PendingImageListRefresh *refresh = new (std::nothrow) PendingImageListRefresh();
+        if (refresh == nullptr) {
+            ESP_LOGE(TAG, "Failed to allocate image refresh payload");
+            last_seen_paths = std::move(scanned_paths);
+            continue;
+        }
+
+        refresh->app = app;
+        refresh->image_paths = std::move(scanned_paths);
+        last_seen_paths = refresh->image_paths;
+
+        if (!queue_lvgl_async_locked(apply_image_path_refresh_async, refresh)) {
+            ESP_LOGW(TAG, "Failed to queue image directory refresh");
+            delete refresh;
+        }
     }
 }
 
@@ -1771,7 +2479,8 @@ LV_IMG_DECLARE(img_app_img_display);
 AppImageDisplay::AppImageDisplay():
     ESP_Brookesia_PhoneApp("Image", &img_app_img_display, true),
     _image_name(nullptr),
-    _image_file_iterator(nullptr)
+    _image_file_iterator(nullptr),
+    _image_paths_loaded(false)
 {
 }
 
@@ -1782,6 +2491,11 @@ AppImageDisplay::~AppImageDisplay()
 bool AppImageDisplay::run(void)
 {
     s_active_app = this;
+
+    if (!_image_paths_loaded) {
+        replaceImagePaths(scanImagePaths());
+    }
+
     ESP_LOGI(TAG, "run begin image_count=%u", static_cast<unsigned>(imagePathCount()));
 
     if (image_task_event == nullptr) {
@@ -1796,6 +2510,22 @@ bool AppImageDisplay::run(void)
         image_muxe = xSemaphoreCreateRecursiveMutex();
         if (image_muxe == nullptr) {
             ESP_LOGE(TAG, "Failed to create image mutex");
+            return false;
+        }
+    }
+
+    if (s_thumbnail_decode_event == nullptr) {
+        s_thumbnail_decode_event = xSemaphoreCreateBinary();
+        if (s_thumbnail_decode_event == nullptr) {
+            ESP_LOGE(TAG, "Failed to create thumbnail decode event");
+            return false;
+        }
+    }
+
+    if (s_thumbnail_decode_mutex == nullptr) {
+        s_thumbnail_decode_mutex = xSemaphoreCreateMutex();
+        if (s_thumbnail_decode_mutex == nullptr) {
+            ESP_LOGE(TAG, "Failed to create thumbnail decode mutex");
             return false;
         }
     }
@@ -1823,36 +2553,42 @@ bool AppImageDisplay::run(void)
         s_worker_started = true;
     }
 
+    static bool s_directory_worker_started = false;
+    if (!s_directory_worker_started) {
+        if (create_background_task_prefer_psram(image_directory_refresh_task,
+                                                "ImageScan",
+                                                6144,
+                                                this,
+                                                2,
+                                                nullptr,
+                                                0) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to start image directory worker");
+            return false;
+        }
+        s_directory_worker_started = true;
+    }
+
+    static bool s_thumbnail_worker_started = false;
+    if (!s_thumbnail_worker_started) {
+        if (create_background_task_prefer_psram(thumbnail_decode_task,
+                                                "ImageThumb",
+                                                8192,
+                                                nullptr,
+                                                1,
+                                                nullptr,
+                                                0) != pdPASS) {
+            ESP_LOGE(TAG, "Failed to start thumbnail decode worker");
+            return false;
+        }
+        s_thumbnail_worker_started = true;
+    }
+
     app_image_display_init();
     build_gallery_ui(this);
 
-    if (imagePathCount() == 0U) {
-        lv_obj_t *empty_card = lv_obj_create(s_gallery_grid);
-        lv_obj_set_size(empty_card, kScreenWidth - 44, 180);
-        lv_obj_set_style_radius(empty_card, 26, 0);
-        lv_obj_set_style_border_width(empty_card, 0, 0);
-        lv_obj_set_style_bg_color(empty_card, lv_color_hex(0x141A24), 0);
-        lv_obj_set_style_pad_all(empty_card, 18, 0);
-        lv_obj_clear_flag(empty_card, LV_OBJ_FLAG_SCROLLABLE);
-
-        lv_obj_t *empty_title = lv_label_create(empty_card);
-        lv_label_set_text(empty_title, "No supported images found");
-        lv_obj_set_style_text_font(empty_title, &lv_font_montserrat_22, 0);
-        lv_obj_set_style_text_color(empty_title, lv_color_white(), 0);
-        lv_obj_align(empty_title, LV_ALIGN_TOP_LEFT, 0, 0);
-
-        lv_obj_t *empty_text = lv_label_create(empty_card);
-        lv_obj_set_width(empty_text, kScreenWidth - 88);
-        lv_label_set_long_mode(empty_text, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(empty_text,
-                          "Put JPG, JPEG, or PNG files in /sdcard/image or /sdcard/imagefolder. JPG and JPEG open through the hardware decoder. PNG is also supported in this firmware.");
-        lv_obj_set_style_text_font(empty_text, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(empty_text, lv_color_hex(0xC6D0DB), 0);
-        lv_obj_align(empty_text, LV_ALIGN_TOP_LEFT, 0, 44);
-    }
-
     s_current_index = -1;
     s_fullscreen_visible = false;
+    s_gallery_rebuild_pending = false;
     stop_idle_slideshow();
     maybe_queue_debug_open(this);
     ESP_LOGI(TAG, "run ready lazy_previews=%u", static_cast<unsigned>(s_pending_previews.size()));
@@ -1890,17 +2626,13 @@ bool AppImageDisplay::close(void)
     s_fullscreen_visible = false;
     s_current_index = -1;
     s_active_app = nullptr;
-    s_pending_previews.clear();
-    s_next_pending_preview = 0;
+    s_gallery_rebuild_pending = false;
+    free_tile_preview_buffers();
 
     for (int index = 0; index < 2; ++index) {
         free(s_viewer_buffers[index]);
         s_viewer_buffers[index] = nullptr;
     }
-    for (lv_color_t *buffer : s_tile_preview_buffers) {
-        free(buffer);
-    }
-    s_tile_preview_buffers.clear();
     return true;
 }
 
@@ -1908,29 +2640,13 @@ bool AppImageDisplay::init(void)
 {
     _image_file_iterator = nullptr;
     _image_paths.clear();
-
-    const char *directories[] = {
-        IMAGE_DIR,
-        IMAGE_DIR_FALLBACK,
-    };
-
-    if (!app_storage_ensure_sdcard_available()) {
-        ESP_LOGW(TAG, "SD card is unavailable for image scan");
-        return true;
-    }
-
-    for (size_t index = 0; index < (sizeof(directories) / sizeof(directories[0])); ++index) {
-        ESP_LOGI(TAG, "Scanning image directory %s", directories[index]);
-        scan_supported_images_in_directory(directories[index], _image_paths);
-    }
-
-    std::sort(_image_paths.begin(), _image_paths.end());
-    _image_paths.erase(std::unique(_image_paths.begin(), _image_paths.end()), _image_paths.end());
-    ESP_LOGI(TAG, "Found %u supported images on SD card", static_cast<unsigned>(_image_paths.size()));
-    for (size_t index = 0; index < _image_paths.size(); ++index) {
-        ESP_LOGI(TAG, "image[%u]=%s", static_cast<unsigned>(index), _image_paths[index].c_str());
-    }
+    _image_paths_loaded = false;
     return true;
+}
+
+std::vector<std::string> AppImageDisplay::scanImagePaths() const
+{
+    return scan_supported_image_paths();
 }
 
 size_t AppImageDisplay::imagePathCount() const
@@ -1943,8 +2659,32 @@ const std::string &AppImageDisplay::imagePathAt(size_t index) const
     return _image_paths.at(index);
 }
 
+std::vector<std::string> AppImageDisplay::imagePathsSnapshot() const
+{
+    return _image_paths;
+}
+
+void AppImageDisplay::replaceImagePaths(std::vector<std::string> image_paths)
+{
+    _image_paths = std::move(image_paths);
+    _image_paths_loaded = true;
+}
+
+int AppImageDisplay::findImagePathIndex(const std::string &path) const
+{
+    const auto iterator = std::find(_image_paths.begin(), _image_paths.end(), path);
+    if (iterator == _image_paths.end()) {
+        return -1;
+    }
+    return static_cast<int>(std::distance(_image_paths.begin(), iterator));
+}
+
 bool AppImageDisplay::debugQueueOpenIndex(size_t index)
 {
+    if (!_image_paths_loaded) {
+        replaceImagePaths(scanImagePaths());
+    }
+
     if (index >= imagePathCount()) {
         ESP_LOGW(TAG, "debugQueueOpenIndex rejected index=%u count=%u", static_cast<unsigned>(index), static_cast<unsigned>(imagePathCount()));
         return false;
@@ -1968,14 +2708,21 @@ bool AppImageDisplay::debugQueueOpenIndex(size_t index)
 
 std::string AppImageDisplay::debugDescribeState() const
 {
-    char buffer[192];
+    const char *current_name = "none";
+    if ((s_current_index >= 0) && (static_cast<size_t>(s_current_index) < imagePathCount())) {
+        current_name = base_name(imagePathAt(static_cast<size_t>(s_current_index)));
+    }
+
+    char buffer[320];
     snprintf(buffer,
              sizeof(buffer),
-             "images=%u active=%s fullscreen=%s current_index=%d pending_debug_index=%d",
+             "images=%u loaded=%s active=%s fullscreen=%s current_index=%d current_name=%s pending_debug_index=%d",
              static_cast<unsigned>(imagePathCount()),
+             _image_paths_loaded ? "yes" : "no",
              (s_active_app == this) ? "yes" : "no",
              s_fullscreen_visible ? "yes" : "no",
              s_current_index,
+             current_name,
              s_debug_pending_open_index);
     return std::string(buffer);
 }

@@ -65,8 +65,9 @@ static constexpr int kQuickAccessAppFooterHeight = 64;
 static constexpr int kQuickAccessRowBorder = 1;
 static constexpr uint16_t kQuickAccessIconZoom = 128;
 static constexpr int kQuickAccessIconSlotWidth = 28;
-static constexpr int kQuickAccessMusicButtonSize = 34;
-static constexpr int kQuickAccessMusicButtonGap = 8;
+static constexpr int kQuickAccessMusicButtonWidth = 68;
+static constexpr int kQuickAccessMusicButtonHeight = 34;
+static constexpr int kQuickAccessMusicButtonGap = 6;
 static constexpr uint32_t kQuickAccessRefreshMs = 250;
 static constexpr int kQuickAccessPowerButtonSize = 88;
 static constexpr int kQuickAccessPowerButtonGap = 12;
@@ -87,8 +88,8 @@ static lv_obj_t *create_quick_access_symbol_button(lv_obj_t *parent, const char 
         return nullptr;
     }
 
-    lv_obj_set_size(button, kQuickAccessMusicButtonSize, kQuickAccessMusicButtonSize);
-    lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(button, kQuickAccessMusicButtonWidth, kQuickAccessMusicButtonHeight);
+    lv_obj_set_style_radius(button, kQuickAccessMusicButtonHeight / 2, 0);
     lv_obj_set_style_bg_color(button, lv_color_hex(0x3B4B61), 0);
     lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(button, 0, 0);
@@ -870,6 +871,8 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
     _quick_access_close_button_app_id_map.clear();
     _quick_access_row_app_id_map.clear();
     _quick_access_action_button_map.clear();
+    _quick_access_detail_label_map.clear();
+    _quick_access_detail_progress_bar_map.clear();
     lv_obj_clean(_quick_access_app_list);
 
     const int running_app_count = getRunningAppCount();
@@ -893,7 +896,7 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
         const ESP_Brookesia_PhoneQuickAccessDetailData_t quick_access_detail =
             (phone_app != nullptr) ? phone_app->getQuickAccessDetail() : ESP_Brookesia_PhoneQuickAccessDetailData_t{};
 
-        lv_obj_t *row = lv_btn_create(_quick_access_app_list);
+        lv_obj_t *row = lv_obj_create(_quick_access_app_list);
         lv_obj_set_width(row, lv_pct(100));
         lv_obj_set_height(row, 64);
         lv_obj_set_style_radius(row, 16, 0);
@@ -912,12 +915,23 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(row, onQuickAccessAppRowEventCallback, LV_EVENT_CLICKED, this);
-        _quick_access_row_app_id_map[row] = app->getId();
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
 
-        lv_obj_t *icon_slot = lv_obj_create(row);
+        lv_obj_t *icon_button = lv_btn_create(row);
+        lv_obj_set_size(icon_button, 44, 44);
+        lv_obj_set_style_radius(icon_button, 14, 0);
+        lv_obj_set_style_bg_color(icon_button, lv_color_hex(0x243244), 0);
+        lv_obj_set_style_bg_opa(icon_button, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(icon_button, 0, 0);
+        lv_obj_set_style_shadow_width(icon_button, 0, 0);
+        lv_obj_clear_flag(icon_button, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(icon_button, onQuickAccessAppRowEventCallback, LV_EVENT_CLICKED, this);
+        _quick_access_row_app_id_map[icon_button] = app->getId();
+
+        lv_obj_t *icon_slot = lv_obj_create(icon_button);
         lv_obj_remove_style_all(icon_slot);
         lv_obj_set_size(icon_slot, kQuickAccessIconSlotWidth, lv_pct(100));
+        lv_obj_center(icon_slot);
         lv_obj_clear_flag(icon_slot, LV_OBJ_FLAG_SCROLLABLE);
 
         if (icon_resource != nullptr) {
@@ -960,6 +974,7 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
                 lv_obj_set_style_radius(progress_bar, 14, LV_PART_INDICATOR);
                 lv_obj_clear_flag(progress_bar, LV_OBJ_FLAG_CLICKABLE);
                 lv_obj_add_flag(progress_bar, LV_OBJ_FLAG_IGNORE_LAYOUT);
+                _quick_access_detail_progress_bar_map[app->getId()] = progress_bar;
             }
 
             if (!quick_access_detail.text.empty()) {
@@ -976,6 +991,7 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
                 }
                 lv_obj_center(detail_label);
                 lv_obj_add_flag(detail_label, LV_OBJ_FLAG_IGNORE_LAYOUT);
+                _quick_access_detail_label_map[app->getId()] = detail_label;
             }
         }
 
@@ -983,9 +999,9 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
             lv_obj_t *control_bar = lv_obj_create(row);
             lv_obj_remove_style_all(control_bar);
             const int action_count = static_cast<int>(quick_access_actions.size());
-            const int control_bar_width = (kQuickAccessMusicButtonSize * action_count) +
+            const int control_bar_width = (kQuickAccessMusicButtonWidth * action_count) +
                                           (kQuickAccessMusicButtonGap * (action_count - 1));
-            lv_obj_set_size(control_bar, control_bar_width, kQuickAccessMusicButtonSize);
+            lv_obj_set_size(control_bar, control_bar_width, kQuickAccessMusicButtonHeight);
             lv_obj_set_flex_flow(control_bar, LV_FLEX_FLOW_ROW);
             lv_obj_set_flex_align(control_bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_column(control_bar, kQuickAccessMusicButtonGap, 0);
@@ -1018,6 +1034,66 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessAppList(void)
         lv_label_set_text(close_label, "Close");
         lv_obj_set_style_text_color(close_label, lv_color_hex(kQuickAccessText), 0);
         lv_obj_center(close_label);
+    }
+}
+
+void ESP_Brookesia_PhoneManager::refreshQuickAccessAppDetails(void)
+{
+    if ((_quick_access_app_list == nullptr) || !lv_obj_is_valid(_quick_access_app_list)) {
+        return;
+    }
+
+    const int running_app_count = getRunningAppCount();
+    for (int index = 0; index < running_app_count; ++index) {
+        ESP_Brookesia_CoreApp *app = getRunningAppByIdenx(index);
+        if (app == nullptr) {
+            refreshQuickAccessAppList();
+            return;
+        }
+
+        ESP_Brookesia_PhoneApp *phone_app = static_cast<ESP_Brookesia_PhoneApp *>(app);
+        const ESP_Brookesia_PhoneQuickAccessDetailData_t quick_access_detail =
+            (phone_app != nullptr) ? phone_app->getQuickAccessDetail() : ESP_Brookesia_PhoneQuickAccessDetailData_t{};
+
+        auto label_it = _quick_access_detail_label_map.find(app->getId());
+        auto progress_it = _quick_access_detail_progress_bar_map.find(app->getId());
+
+        const bool needs_label = !quick_access_detail.text.empty();
+        const bool has_label = (label_it != _quick_access_detail_label_map.end()) &&
+                               (label_it->second != nullptr) && lv_obj_is_valid(label_it->second);
+        if (needs_label != has_label) {
+            refreshQuickAccessAppList();
+            return;
+        }
+
+        const bool needs_progress = (quick_access_detail.progress_percent >= 0);
+        const bool has_progress = (progress_it != _quick_access_detail_progress_bar_map.end()) &&
+                                  (progress_it->second != nullptr) && lv_obj_is_valid(progress_it->second);
+        if (needs_progress != has_progress) {
+            refreshQuickAccessAppList();
+            return;
+        }
+
+        if (has_label) {
+            lv_obj_t *detail_label = label_it->second;
+            const char *current_text = lv_label_get_text(detail_label);
+            if ((current_text == nullptr) || (strcmp(current_text, quick_access_detail.text.c_str()) != 0)) {
+                lv_label_set_text(detail_label, quick_access_detail.text.c_str());
+            }
+
+            const lv_label_long_mode_t desired_long_mode =
+                quick_access_detail.scroll_text ? LV_LABEL_LONG_SCROLL_CIRCULAR : LV_LABEL_LONG_DOT;
+            if (lv_label_get_long_mode(detail_label) != desired_long_mode) {
+                lv_label_set_long_mode(detail_label, desired_long_mode);
+            }
+        }
+
+        if (has_progress) {
+            lv_obj_t *progress_bar = progress_it->second;
+            if (lv_bar_get_value(progress_bar) != quick_access_detail.progress_percent) {
+                lv_bar_set_value(progress_bar, quick_access_detail.progress_percent, LV_ANIM_OFF);
+            }
+        }
     }
 }
 
@@ -1230,7 +1306,7 @@ void ESP_Brookesia_PhoneManager::onQuickAccessRefreshTimerCallback(lv_timer_t *t
         return;
     }
 
-    manager->refreshQuickAccessAppList();
+    manager->refreshQuickAccessAppDetails();
 }
 
 void ESP_Brookesia_PhoneManager::onQuickAccessOverlayTouchEventCallback(lv_event_t *event)

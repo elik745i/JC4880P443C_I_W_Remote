@@ -85,6 +85,8 @@ public:
     bool resume(void) override;
 
     bool debugPlayStation(const std::string &country, const std::string &station_name);
+    bool debugOpenVisible(void);
+    bool debugOpenStationVisible(const std::string &country, const std::string &station_name, bool auto_play);
     bool debugStopPlayback(void);
     std::string debugDescribeState(void) const;
     void resetStreamBufferMetrics(void);
@@ -189,6 +191,7 @@ private:
     void resetUiPointers(void);
 
     static std::string percentEncode(const std::string &value);
+    int findEntryIndexByTitle(const std::string &title) const;
     bool fetchEntries(const std::string &url, ViewMode next_mode, StationSource next_source, const std::string &status_text,
                       EntryList &out_entries);
     bool fetchJsonArray(const std::string &url, EntryList &out_entries, ViewMode mode);

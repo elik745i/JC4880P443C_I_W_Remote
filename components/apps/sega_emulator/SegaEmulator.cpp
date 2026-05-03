@@ -813,8 +813,7 @@ void SegaEmulator::releaseRuntimeResources()
 bool SegaEmulator::init()
 {
     _playerRotationDegrees = load_saved_rotation_degrees();
-
-    return ensureRuntimeResources();
+    return true;
 }
 
 bool SegaEmulator::run()
@@ -868,10 +867,6 @@ bool SegaEmulator::resume()
 
 bool SegaEmulator::ensureUiReady()
 {
-    if (!ensureRuntimeResources()) {
-        return false;
-    }
-
     if (_browserScreen != nullptr) {
         return true;
     }
@@ -1929,6 +1924,11 @@ void SegaEmulator::startRom(const SegaString &path, const SegaString &name)
     }
 
     _closingApp.store(false);
+
+    if (!ensureRuntimeResources()) {
+        setBrowserStatus("Failed to allocate emulator runtime buffers.");
+        return;
+    }
 
     if ((_playerScreen == nullptr) || (_canvas == nullptr)) {
         if (!startRecordResource()) {

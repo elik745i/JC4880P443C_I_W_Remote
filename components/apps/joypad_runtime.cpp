@@ -8,11 +8,13 @@
 #include <mutex>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "esp_adc/adc_oneshot.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -1206,7 +1208,22 @@ extern "C" void jc4880_joypad_init(void)
     loadConfigLocked();
     s_cachedManualGameplayMask = 0;
     s_cachedManualActionMask = 0;
-    if (xTaskCreate(manualPollTask, "JoypadPoll", kManualPollTaskStack, nullptr, kManualPollTaskPriority, &s_manualPollTask) != pdPASS) {
+    BaseType_t task_created = xTaskCreateWithCaps(manualPollTask,
+                                                  "JoypadPoll",
+                                                  kManualPollTaskStack,
+                                                  nullptr,
+                                                  kManualPollTaskPriority,
+                                                  &s_manualPollTask,
+                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (task_created != pdPASS) {
+        task_created = xTaskCreate(manualPollTask,
+                                   "JoypadPoll",
+                                   kManualPollTaskStack,
+                                   nullptr,
+                                   kManualPollTaskPriority,
+                                   &s_manualPollTask);
+    }
+    if (task_created != pdPASS) {
         ESP_LOGW(kTag, "Failed to start manual joypad poll task");
         s_manualPollTask = nullptr;
     }

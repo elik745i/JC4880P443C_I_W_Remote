@@ -12,13 +12,13 @@
         "0x20000" : "ESP32P4_Remote.bin",
         "0x8000" : "partition_table/partition-table.bin",
         "0xf000" : "ota_data_initial.bin",
-        "0xf80000" : "storage.bin"
+        "0xfc0000" : "storage.bin"
     },
     "bootloader" : { "offset" : "0x2000", "file" : "bootloader/bootloader.bin", "encrypted" : "false" },
     "app" : { "offset" : "0x20000", "file" : "ESP32P4_Remote.bin", "encrypted" : "false" },
     "partition-table" : { "offset" : "0x8000", "file" : "partition_table/partition-table.bin", "encrypted" : "false" },
     "otadata" : { "offset" : "0xf000", "file" : "ota_data_initial.bin", "encrypted" : "false" },
-    "storage" : { "offset" : "0xf80000", "file" : "storage.bin", "encrypted" : "false" },
+    "storage" : { "offset" : "0xfc0000", "file" : "storage.bin", "encrypted" : "false" },
     "extra_esptool_args" : {
         "after"  : "hard_reset",
         "before" : "default_reset",

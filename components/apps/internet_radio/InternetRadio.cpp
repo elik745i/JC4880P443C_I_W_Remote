@@ -69,6 +69,13 @@ struct AsyncStatusContext {
     char text[kAsyncStatusTextCapacity] = {};
 };
 
+struct AsyncDebugUiContext {
+    InternetRadio *app = nullptr;
+    std::string country;
+    std::string station;
+    bool auto_play = false;
+};
+
 struct HttpMp3StreamContext {
     InternetRadio *app = nullptr;
     esp_http_client_handle_t client = nullptr;
@@ -681,23 +688,24 @@ void http_mp3_stream_close(void *user_ctx)
 bool ensure_audio_player_idle(TickType_t timeout)
 {
     TickType_t start = xTaskGetTickCount();
-    bool stop_requested = false;
+    uint32_t stop_attempts = 0;
 
     while (audio_player_get_state() != AUDIO_PLAYER_STATE_IDLE) {
-        if (!stop_requested) {
-            const esp_err_t stop_result = audio_player_stop();
-            if (stop_result == ESP_OK) {
-                stop_requested = true;
-            } else if (stop_result != ESP_ERR_INVALID_STATE) {
-                ESP_LOGW(TAG, "audio_player_stop failed while waiting for idle: %s", esp_err_to_name(stop_result));
-            }
+        const esp_err_t stop_result = audio_player_stop();
+        ++stop_attempts;
+        if ((stop_result != ESP_OK) && (stop_result != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG,
+                     "audio_player_stop failed while waiting for idle: %s (attempt=%u state=%d)",
+                     esp_err_to_name(stop_result),
+                     static_cast<unsigned>(stop_attempts),
+                     static_cast<int>(audio_player_get_state()));
         }
 
         if ((xTaskGetTickCount() - start) >= timeout) {
             ESP_LOGW(TAG,
-                     "Audio player failed to reach idle. state=%d stop_requested=%d",
+                     "Audio player failed to reach idle. state=%d stop_attempts=%u",
                      static_cast<int>(audio_player_get_state()),
-                     stop_requested ? 1 : 0);
+                     static_cast<unsigned>(stop_attempts));
             return false;
         }
 
@@ -2256,6 +2264,137 @@ bool InternetRadio::debugPlayStation(const std::string &country, const std::stri
     return queuePreviewPlayback(*match, true);
 }
 
+bool InternetRadio::debugOpenVisible(void)
+{
+    auto *context = new_psram_preferred<AsyncDebugUiContext>();
+    if (context == nullptr) {
+        ESP_LOGW(TAG, "Failed to allocate async radio UI context");
+        return false;
+    }
+
+    context->app = this;
+
+    auto apply = [](void *user_data) {
+        auto *ui_context = static_cast<AsyncDebugUiContext *>(user_data);
+        if ((ui_context == nullptr) || (ui_context->app == nullptr)) {
+            delete_psram_preferred(ui_context);
+            return;
+        }
+
+        InternetRadio *app = ui_context->app;
+        if (!app->ensureUiReady()) {
+            app->applyStatusText("Failed to build radio UI.");
+            delete_psram_preferred(ui_context);
+            return;
+        }
+
+        audio_player_callback_register(radioAudioCallback, app);
+        lv_scr_load(app->_screen);
+        if (app->_playerDialog != nullptr) {
+            app->closePlayerDialog();
+        }
+        app->showRootMenu();
+        app->applyStatusText("Radio app opened for serial UI control.");
+        delete_psram_preferred(ui_context);
+    };
+
+    bsp_display_lock(0);
+    const lv_res_t result = lv_async_call(apply, context);
+    bsp_display_unlock();
+    if (result != LV_RES_OK) {
+        delete_psram_preferred(context);
+        ESP_LOGW(TAG, "Failed to queue async radio open UI action");
+        return false;
+    }
+
+    return true;
+}
+
+bool InternetRadio::debugOpenStationVisible(const std::string &country, const std::string &station_name, bool auto_play)
+{
+    const std::string normalized_country = normalize_text(country);
+    const std::string normalized_station = normalize_text(station_name);
+    if (normalized_country.empty() || normalized_station.empty()) {
+        ESP_LOGW(TAG, "Visible radio debug rejected because country or station name is empty");
+        setStatusFromTask("Visible radio command requires both a country and station name.");
+        return false;
+    }
+
+    auto *context = new_psram_preferred<AsyncDebugUiContext>();
+    if (context == nullptr) {
+        ESP_LOGW(TAG, "Failed to allocate async visible radio UI context");
+        return false;
+    }
+
+    context->app = this;
+    context->country = normalized_country;
+    context->station = normalized_station;
+    context->auto_play = auto_play;
+
+    auto apply = [](void *user_data) {
+        auto *ui_context = static_cast<AsyncDebugUiContext *>(user_data);
+        if ((ui_context == nullptr) || (ui_context->app == nullptr)) {
+            delete_psram_preferred(ui_context);
+            return;
+        }
+
+        InternetRadio *app = ui_context->app;
+        if (!app->ensureUiReady()) {
+            app->applyStatusText("Failed to build radio UI.");
+            delete_psram_preferred(ui_context);
+            return;
+        }
+
+        audio_player_callback_register(radioAudioCallback, app);
+        lv_scr_load(app->_screen);
+        if (app->_playerDialog != nullptr) {
+            app->closePlayerDialog();
+        }
+
+        app->showRootMenu();
+        app->loadCountries();
+
+        const int country_index = app->findEntryIndexByTitle(ui_context->country);
+        if (country_index >= 0) {
+            app->handleEntrySelection(static_cast<size_t>(country_index));
+        } else {
+            app->loadStationsForFilter(StationSource::Country, ui_context->country, ui_context->country);
+        }
+
+        const int station_index = app->findEntryIndexByTitle(ui_context->station);
+        if (station_index < 0) {
+            app->applyStatusText((std::string("Station not found on screen: ") + ui_context->station).c_str());
+            ESP_LOGW(TAG,
+                     "Visible debug station lookup found no on-screen match for '%s' in '%s'",
+                     ui_context->station.c_str(),
+                     ui_context->country.c_str());
+            delete_psram_preferred(ui_context);
+            return;
+        }
+
+        app->showPlayerDialog(static_cast<size_t>(station_index));
+        if (ui_context->auto_play) {
+            app->applyStatusText((std::string("Visible play requested: ") + app->_entries[static_cast<size_t>(station_index)].title.c_str()).c_str());
+            app->playStationPreview(static_cast<size_t>(station_index));
+        } else {
+            app->applyStatusText((std::string("Visible station opened: ") + app->_entries[static_cast<size_t>(station_index)].title.c_str()).c_str());
+        }
+
+        delete_psram_preferred(ui_context);
+    };
+
+    bsp_display_lock(0);
+    const lv_res_t result = lv_async_call(apply, context);
+    bsp_display_unlock();
+    if (result != LV_RES_OK) {
+        delete_psram_preferred(context);
+        ESP_LOGW(TAG, "Failed to queue async visible radio UI action");
+        return false;
+    }
+
+    return true;
+}
+
 bool InternetRadio::debugStopPlayback(void)
 {
     ESP_LOGI(TAG, "Debug stop requested. %s", debugDescribeState().c_str());
@@ -2268,7 +2407,20 @@ std::string InternetRadio::debugDescribeState(void) const
     stream << "player_state=" << static_cast<int>(audio_player_get_state())
            << " preview_start=" << (_previewStartInProgress.load() ? 1 : 0)
            << " preview_task=" << (_previewTaskHandle != nullptr ? "set" : "null")
-           << " active_station=";
+           << " view=" << static_cast<int>(_viewMode)
+           << " source=" << static_cast<int>(_stationSource)
+           << " entries=" << _entries.size()
+           << " selected_index=" << _selectedStationIndex
+           << " dialog=" << ((_playerDialog != nullptr) ? "yes" : "no")
+           << " filter=";
+
+    if (_activeFilterDisplay.empty()) {
+        stream << "<none>";
+    } else {
+        stream << '"' << _activeFilterDisplay << '"';
+    }
+
+    stream << " active_station=";
 
     if (_activeStationTitle.empty()) {
         stream << "<none>";
@@ -2277,6 +2429,28 @@ std::string InternetRadio::debugDescribeState(void) const
     }
 
     return stream.str();
+}
+
+int InternetRadio::findEntryIndexByTitle(const std::string &title) const
+{
+    const std::string target = lowercase_copy(normalize_text(title));
+    if (target.empty()) {
+        return -1;
+    }
+
+    for (size_t index = 0; index < _entries.size(); ++index) {
+        if (lowercase_copy(normalize_text(_entries[index].title)) == target) {
+            return static_cast<int>(index);
+        }
+    }
+
+    for (size_t index = 0; index < _entries.size(); ++index) {
+        if (lowercase_copy(normalize_text(_entries[index].title)).find(target) != std::string::npos) {
+            return static_cast<int>(index);
+        }
+    }
+
+    return -1;
 }
 
 void InternetRadio::handleEntrySelection(size_t index)
@@ -2468,7 +2642,7 @@ bool InternetRadio::fetchJsonArray(const std::string &url, EntryList &out_entrie
         return false;
     }
 
-    std::string response;
+    PsramString response;
     esp_http_client_config_t config = {};
     config.url = url.c_str();
     config.method = HTTP_METHOD_GET;
@@ -2594,9 +2768,10 @@ esp_err_t InternetRadio::httpEventHandler(esp_http_client_event_t *event)
     }
 
     if ((event->event_id == HTTP_EVENT_ON_DATA) && (event->data != nullptr) && (event->data_len > 0)) {
-        auto *response = static_cast<std::string *>(event->user_data);
+        auto *response = static_cast<PsramString *>(event->user_data);
         response->append(static_cast<const char *>(event->data), event->data_len);
     }
 
     return ESP_OK;
 }
+

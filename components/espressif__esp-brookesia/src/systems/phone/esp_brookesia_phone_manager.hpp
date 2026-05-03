@@ -66,6 +66,7 @@ private:
     bool beginQuickAccessOverlay(void);
     void hideQuickAccessOverlay(bool animate = true);
     void refreshQuickAccessAppList(void);
+    void refreshQuickAccessAppDetails(void);
     void refreshQuickAccessVolumePanel(void);
     void refreshQuickAccessNotificationButton(void);
     int setQuickAccessAirplaneMode(bool enabled);
@@ -177,6 +178,8 @@ private:
     std::unordered_map<lv_obj_t *, int> _quick_access_close_button_app_id_map;
     std::unordered_map<lv_obj_t *, int> _quick_access_row_app_id_map;
     std::unordered_map<lv_obj_t *, QuickAccessActionBinding> _quick_access_action_button_map;
+    std::unordered_map<int, lv_obj_t *> _quick_access_detail_label_map;
+    std::unordered_map<int, lv_obj_t *> _quick_access_detail_progress_bar_map;
     lv_timer_t *_quick_access_refresh_timer;
     lv_timer_t *_quick_access_close_all_timer;
     std::vector<int> _quick_access_close_all_queue;

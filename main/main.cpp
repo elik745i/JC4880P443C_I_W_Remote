@@ -945,7 +945,10 @@ static void print_serial_command_help(void)
     printf("[serial]   app.list\r\n");
     printf("[serial]   app.start <app name>\r\n");
     printf("[serial]   image.status\r\n");
+    printf("[serial]   image.list\r\n");
+    printf("[serial]   image.find <text>\r\n");
     printf("[serial]   image.open <index>\r\n");
+    printf("[serial]   image.openname <text>\r\n");
     printf("[serial]   web.status\r\n");
     printf("[serial]   web.start\r\n");
     printf("[serial]   web.stop\r\n");
@@ -953,6 +956,9 @@ static void print_serial_command_help(void)
 
 #if CONFIG_JC4880_APP_INTERNET_RADIO
     printf("[serial]   radio.status\r\n");
+    printf("[serial]   radio.open\r\n");
+    printf("[serial]   radio.openstation Country|Station\r\n");
+    printf("[serial]   radio.openplay Country|Station\r\n");
     printf("[serial]   radio.stop\r\n");
     printf("[serial]   radio.play Country|Station\r\n");
     printf("[serial] Example: radio.play Azerbaijan|AVTO FM\r\n");
@@ -999,6 +1005,55 @@ static void handle_serial_command(const std::string &raw_command)
         return;
     }
 
+    if (command == "image.list") {
+        if (s_imageDisplayApp == nullptr) {
+            printf("[image] app unavailable\r\n");
+            return;
+        }
+
+        const std::vector<std::string> image_paths = s_imageDisplayApp->scanImagePaths();
+        printf("[image] count=%u\r\n", static_cast<unsigned>(image_paths.size()));
+        for (size_t index = 0; index < image_paths.size(); ++index) {
+            printf("[image]   %u %s\r\n",
+                   static_cast<unsigned>(index),
+                   image_paths[index].c_str());
+        }
+        return;
+    }
+
+    static constexpr const char *kImageFindPrefix = "image.find ";
+    if (command.rfind(kImageFindPrefix, 0) == 0) {
+        if (s_imageDisplayApp == nullptr) {
+            printf("[image] app unavailable\r\n");
+            return;
+        }
+
+        const std::string query = lowercase_copy(trim_copy(command.substr(std::strlen(kImageFindPrefix))));
+        if (query.empty()) {
+            printf("[image] usage: image.find <text>\r\n");
+            return;
+        }
+
+        const std::vector<std::string> image_paths = s_imageDisplayApp->scanImagePaths();
+        size_t matches = 0;
+        for (size_t index = 0; index < image_paths.size(); ++index) {
+            const std::string &image_path = image_paths[index];
+            const size_t slash = image_path.find_last_of('/');
+            const std::string basename = (slash == std::string::npos) ? image_path : image_path.substr(slash + 1);
+            if (lowercase_copy(basename).find(query) == std::string::npos) {
+                continue;
+            }
+
+            ++matches;
+            printf("[image]   match index=%u path=%s\r\n",
+                   static_cast<unsigned>(index),
+                   image_path.c_str());
+        }
+
+        printf("[image] matches=%u query=%s\r\n", static_cast<unsigned>(matches), query.c_str());
+        return;
+    }
+
     static constexpr const char *kImageOpenPrefix = "image.open ";
     if (command.rfind(kImageOpenPrefix, 0) == 0) {
         if (s_imageDisplayApp == nullptr) {
@@ -1025,6 +1080,57 @@ static void handle_serial_command(const std::string &raw_command)
         }
 
         printf("[image] queued open index=%lu\r\n", parsed_index);
+        start_serial_app_instance(s_imageDisplayApp, "image viewer");
+        return;
+    }
+
+    static constexpr const char *kImageOpenNamePrefix = "image.openname ";
+    if (command.rfind(kImageOpenNamePrefix, 0) == 0) {
+        if (s_imageDisplayApp == nullptr) {
+            printf("[image] app unavailable\r\n");
+            return;
+        }
+
+        const std::string query = lowercase_copy(trim_copy(command.substr(std::strlen(kImageOpenNamePrefix))));
+        if (query.empty()) {
+            printf("[image] usage: image.openname <text>\r\n");
+            return;
+        }
+
+        const std::vector<std::string> image_paths = s_imageDisplayApp->scanImagePaths();
+        int matched_index = -1;
+        size_t match_count = 0;
+        for (size_t index = 0; index < image_paths.size(); ++index) {
+            const std::string &image_path = image_paths[index];
+            const size_t slash = image_path.find_last_of('/');
+            const std::string basename = (slash == std::string::npos) ? image_path : image_path.substr(slash + 1);
+            if (lowercase_copy(basename).find(query) == std::string::npos) {
+                continue;
+            }
+
+            matched_index = static_cast<int>(index);
+            ++match_count;
+            if (match_count > 1U) {
+                break;
+            }
+        }
+
+        if (match_count == 0U) {
+            printf("[image] no match for %s\r\n", query.c_str());
+            return;
+        }
+
+        if (match_count > 1U) {
+            printf("[image] ambiguous query %s; use image.find first\r\n", query.c_str());
+            return;
+        }
+
+        if (!s_imageDisplayApp->debugQueueOpenIndex(static_cast<size_t>(matched_index))) {
+            printf("[image] open rejected for %s index=%d\r\n", query.c_str(), matched_index);
+            return;
+        }
+
+        printf("[image] queued open name=%s index=%d\r\n", query.c_str(), matched_index);
         start_serial_app_instance(s_imageDisplayApp, "image viewer");
         return;
     }
@@ -1060,6 +1166,73 @@ static void handle_serial_command(const std::string &raw_command)
             return;
         }
         printf("[radio] %s\r\n", s_internetRadioApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "radio.open") {
+        if (s_internetRadioApp == nullptr) {
+            printf("[radio] app unavailable\r\n");
+            return;
+        }
+
+        printf("[radio] opening app on screen\r\n");
+        start_serial_app_instance(s_internetRadioApp, "internet radio");
+        printf("[radio] open %s\r\n", s_internetRadioApp->debugOpenVisible() ? "queued" : "failed");
+        return;
+    }
+
+    auto parse_radio_country_station = [](const std::string &arguments, std::string *country_out, std::string *station_out) {
+        if ((country_out == nullptr) || (station_out == nullptr)) {
+            return false;
+        }
+
+        const size_t separator = arguments.find('|');
+        if (separator == std::string::npos) {
+            return false;
+        }
+
+        *country_out = trim_copy(arguments.substr(0, separator));
+        *station_out = trim_copy(arguments.substr(separator + 1));
+        return !country_out->empty() && !station_out->empty();
+    };
+
+    static constexpr const char *kOpenStationPrefix = "radio.openstation ";
+    if (command.rfind(kOpenStationPrefix, 0) == 0) {
+        if (s_internetRadioApp == nullptr) {
+            printf("[radio] app unavailable\r\n");
+            return;
+        }
+
+        std::string country;
+        std::string station;
+        if (!parse_radio_country_station(trim_copy(command.substr(std::strlen(kOpenStationPrefix))), &country, &station)) {
+            printf("[radio] usage: radio.openstation Country|Station\r\n");
+            return;
+        }
+
+        printf("[radio] opening visible station country='%s' station='%s'\r\n", country.c_str(), station.c_str());
+        start_serial_app_instance(s_internetRadioApp, "internet radio");
+        printf("[radio] openstation %s\r\n", s_internetRadioApp->debugOpenStationVisible(country, station, false) ? "queued" : "failed");
+        return;
+    }
+
+    static constexpr const char *kOpenPlayPrefix = "radio.openplay ";
+    if (command.rfind(kOpenPlayPrefix, 0) == 0) {
+        if (s_internetRadioApp == nullptr) {
+            printf("[radio] app unavailable\r\n");
+            return;
+        }
+
+        std::string country;
+        std::string station;
+        if (!parse_radio_country_station(trim_copy(command.substr(std::strlen(kOpenPlayPrefix))), &country, &station)) {
+            printf("[radio] usage: radio.openplay Country|Station\r\n");
+            return;
+        }
+
+        printf("[radio] opening visible play country='%s' station='%s'\r\n", country.c_str(), station.c_str());
+        start_serial_app_instance(s_internetRadioApp, "internet radio");
+        printf("[radio] openplay %s\r\n", s_internetRadioApp->debugOpenStationVisible(country, station, true) ? "queued" : "failed");
         return;
     }
 
@@ -1099,7 +1272,9 @@ static void handle_serial_command(const std::string &raw_command)
         return;
     }
 #else
-    if ((command == "radio.status") || (command == "radio.stop") || (command.rfind("radio.play ", 0) == 0)) {
+    if ((command == "radio.status") || (command == "radio.open") || (command == "radio.stop") ||
+        (command.rfind("radio.openstation ", 0) == 0) || (command.rfind("radio.openplay ", 0) == 0) ||
+        (command.rfind("radio.play ", 0) == 0)) {
         printf("[radio] internet radio app is disabled in menuconfig\r\n");
         return;
     }
@@ -1615,8 +1790,8 @@ extern "C" void app_main(void)
 
     bsp_display_cfg_t cfg = {
         .lvgl_port_cfg = ESP_LVGL_PORT_INIT_CONFIG(),
-        .buffer_size = BSP_LCD_H_RES * 80,
-        .double_buffer = false,
+        .buffer_size = BSP_LCD_H_RES * 120,
+        .double_buffer = true,
         .flags = {
             .buff_dma = false,
             .buff_spiram = true,

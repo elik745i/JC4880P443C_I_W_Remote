@@ -5,11 +5,13 @@
 #include <inttypes.h>
 
 #include "esp_event.h"
+#include "esp_heap_caps.h"
 #include "esp_hosted.h"
 #include "esp_hosted_event.h"
 #include "esp_hosted_misc.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "battery_history_service.h"
 #include "joypad_runtime.h"
@@ -41,6 +43,28 @@ std::atomic<int> s_lastLoggedThrottle{-1};
 bool hosted_transport_ready()
 {
     return is_transport_tx_ready() != 0;
+}
+
+BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
+                                               const char *name,
+                                               const uint32_t stack_depth,
+                                               void *arg,
+                                               const UBaseType_t priority,
+                                               const BaseType_t core_id)
+{
+    if (xTaskCreatePinnedToCoreWithCaps(task,
+                                        name,
+                                        stack_depth,
+                                        arg,
+                                        priority,
+                                        nullptr,
+                                        core_id,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
+        return pdPASS;
+    }
+
+    ESP_LOGW(kTag, "Falling back to internal RAM stack for %s", name);
+    return xTaskCreatePinnedToCore(task, name, stack_depth, arg, priority, nullptr, core_id);
 }
 
 void on_hosted_event(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
@@ -256,13 +280,12 @@ bool initialize()
     }
 
     jc4880_joypad_register_config_changed_callback(on_joypad_config_changed, nullptr);
-    if (xTaskCreatePinnedToCore(joypad_transport_task,
-                                "joypad_transport",
-                                kTaskStackSize,
-                                nullptr,
-                                2,
-                                nullptr,
-                                1) != pdPASS) {
+    if (create_background_task_prefer_psram(joypad_transport_task,
+                                            "joypad_transport",
+                                            kTaskStackSize,
+                                            nullptr,
+                                            2,
+                                            1) != pdPASS) {
         s_initialized.store(false);
         ESP_LOGE(kTag, "Failed to start joypad transport task");
         return false;

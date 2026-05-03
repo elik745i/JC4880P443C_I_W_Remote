@@ -15,6 +15,7 @@ private:
     const char *_image_name;
     file_iterator_instance_t *_image_file_iterator;
     std::vector<std::string> _image_paths;
+    bool _image_paths_loaded;
     
 
 
@@ -33,8 +34,12 @@ public:
 
     bool init(void) override;
 
+    std::vector<std::string> scanImagePaths() const;
     size_t imagePathCount() const;
     const std::string &imagePathAt(size_t index) const;
+    std::vector<std::string> imagePathsSnapshot() const;
+    void replaceImagePaths(std::vector<std::string> image_paths);
+    int findImagePathIndex(const std::string &path) const;
     bool debugQueueOpenIndex(size_t index);
     std::string debugDescribeState() const;
 

@@ -7,7 +7,9 @@
 #include <mutex>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include "led_strip.h"
 #include "esp_log.h"
 
@@ -355,7 +357,17 @@ extern "C" void jc4880_neopixel_init(void)
         return;
     }
 
-    if (xTaskCreate(neopixelTask, "NeoPixel", 4096, nullptr, 1, &s_task) != pdPASS) {
+    BaseType_t task_created = xTaskCreateWithCaps(neopixelTask,
+                                                  "NeoPixel",
+                                                  4096,
+                                                  nullptr,
+                                                  1,
+                                                  &s_task,
+                                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (task_created != pdPASS) {
+        task_created = xTaskCreate(neopixelTask, "NeoPixel", 4096, nullptr, 1, &s_task);
+    }
+    if (task_created != pdPASS) {
         ESP_LOGW(kTag, "Failed to start Neopixel task");
         s_task = nullptr;
         return;

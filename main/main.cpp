@@ -63,12 +63,18 @@ static constexpr const char *kNvsKeySystemAudioVolume = "sys_volume";
 static constexpr const char *kNvsKeyTapSound = "tap_sound";
 static constexpr const char *kNvsKeyHapticGpio = "haptic_gpio";
 static constexpr const char *kNvsKeyHapticLevel = "haptic_lvl";
+static constexpr const char *kNvsKeyDisplayOrientation = "disp_rot";
+static constexpr const char *kNvsKeyDisplayOrientationPending = "disp_rot_pend";
+static constexpr const char *kNvsKeyDisplayOrientationPrevious = "disp_rot_prev";
+static constexpr const char *kNvsKeyDisplayOrientationState = "disp_rot_state";
 static constexpr const char *kCrashReportLocalPath = BSP_SPIFFS_MOUNT_POINT "/last_crash_report.txt";
 static constexpr const char *kCrashReportPendingPath = BSP_SPIFFS_MOUNT_POINT "/pending_crash_report.txt";
 static constexpr const char *kCrashReportUploadUrl = "";
 static constexpr TickType_t kCrashReportUploadDelay = pdMS_TO_TICKS(15000);
 static constexpr TickType_t kOtaValidationDelay = pdMS_TO_TICKS(10000);
+static constexpr TickType_t kDisplayRotationPreviewTimeout = pdMS_TO_TICKS(30000);
 static constexpr uint32_t kOtaValidationTaskStack = 4096;
+static constexpr uint32_t kDisplayRotationPreviewTaskStack = 3072;
 static constexpr const char *kSegaEmulatorAppName = "SEGA Emulator";
 static constexpr uint32_t kTapSoundDebounceMs = 80;
 static constexpr gpio_num_t kDefaultHapticFeedbackGpio = GPIO_NUM_49;
@@ -105,9 +111,29 @@ struct PendingInfoPopupContext {
     std::string details;
 };
 
+struct PendingDisplayRotationPopupContext {
+    int32_t pending_degrees = 0;
+    int32_t previous_degrees = 0;
+};
+
 struct CrashReportUploadTaskContext {
     TickType_t delay = 0;
     bool notify_user = false;
+};
+
+enum DisplayRotationPreviewState : int32_t {
+    DISPLAY_ROTATION_PREVIEW_NONE = 0,
+    DISPLAY_ROTATION_PREVIEW_ARMED = 1,
+    DISPLAY_ROTATION_PREVIEW_BOOTED = 2,
+};
+
+struct DisplayRotationBootState {
+    int32_t startup_degrees = 0;
+    int32_t confirmed_degrees = 0;
+    int32_t pending_degrees = 0;
+    int32_t previous_degrees = 0;
+    bool preview_active = false;
+    bool reverted_unconfirmed_preview = false;
 };
 
 static SemaphoreHandle_t s_sdcardMutex = nullptr;
@@ -129,6 +155,7 @@ static AppImageDisplay *s_imageDisplayApp = nullptr;
 static std::vector<std::unique_ptr<lv_indev_drv_t>> s_tapSoundDriverCopies;
 static esp_timer_handle_t s_hapticPulseTimer = nullptr;
 static bool s_hapticPwmReady = false;
+static lv_obj_t *s_displayRotationPreviewMsgbox = nullptr;
 
 static bool sync_sdcard_mount_state(bool try_mount);
 
@@ -472,6 +499,234 @@ static void restore_audio_preferences_from_nvs(void)
     nvs_close(handle);
 }
 
+static bool is_valid_display_orientation_degrees(int32_t orientation_degrees)
+{
+    switch (orientation_degrees) {
+    case 0:
+    case 90:
+    case 180:
+    case 270:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static int32_t sanitize_display_orientation_degrees(int32_t orientation_degrees)
+{
+    return is_valid_display_orientation_degrees(orientation_degrees) ? orientation_degrees : 0;
+}
+
+static bool load_nvs_i32(const char *key, int32_t &value)
+{
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+
+    const esp_err_t err = nvs_get_i32(handle, key, &value);
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
+static lv_disp_rotation_t display_orientation_degrees_to_lv_rotation(int32_t orientation_degrees)
+{
+    switch (sanitize_display_orientation_degrees(orientation_degrees)) {
+    case 90:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_90);
+    case 180:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_180);
+    case 270:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_270);
+    case 0:
+    default:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_NONE);
+    }
+}
+
+static bool is_display_rotation_preview_state(int32_t preview_state)
+{
+    return (preview_state == DISPLAY_ROTATION_PREVIEW_ARMED) || (preview_state == DISPLAY_ROTATION_PREVIEW_BOOTED);
+}
+
+static bool clear_display_rotation_preview_state(nvs_handle_t handle, int32_t confirmed_degrees)
+{
+    const int32_t sanitized_degrees = sanitize_display_orientation_degrees(confirmed_degrees);
+    esp_err_t err = nvs_set_i32(handle, kNvsKeyDisplayOrientation, sanitized_degrees);
+    err = (err == ESP_OK) ? nvs_set_i32(handle, kNvsKeyDisplayOrientationPending, sanitized_degrees) : err;
+    err = (err == ESP_OK) ? nvs_set_i32(handle, kNvsKeyDisplayOrientationPrevious, sanitized_degrees) : err;
+    err = (err == ESP_OK) ? nvs_set_i32(handle, kNvsKeyDisplayOrientationState, DISPLAY_ROTATION_PREVIEW_NONE) : err;
+    err = (err == ESP_OK) ? nvs_commit(handle) : err;
+    return err == ESP_OK;
+}
+
+static DisplayRotationBootState resolve_display_rotation_boot_state(void)
+{
+    DisplayRotationBootState result = {};
+
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return result;
+    }
+
+    int32_t confirmed_degrees = 0;
+    int32_t pending_degrees = 0;
+    int32_t previous_degrees = 0;
+    int32_t preview_state = DISPLAY_ROTATION_PREVIEW_NONE;
+    (void)nvs_get_i32(handle, kNvsKeyDisplayOrientation, &confirmed_degrees);
+    (void)nvs_get_i32(handle, kNvsKeyDisplayOrientationPending, &pending_degrees);
+    (void)nvs_get_i32(handle, kNvsKeyDisplayOrientationPrevious, &previous_degrees);
+    (void)nvs_get_i32(handle, kNvsKeyDisplayOrientationState, &preview_state);
+
+    confirmed_degrees = sanitize_display_orientation_degrees(confirmed_degrees);
+    pending_degrees = sanitize_display_orientation_degrees(pending_degrees);
+    previous_degrees = sanitize_display_orientation_degrees(previous_degrees);
+    if (!is_display_rotation_preview_state(preview_state)) {
+        preview_state = DISPLAY_ROTATION_PREVIEW_NONE;
+    }
+
+    result.confirmed_degrees = confirmed_degrees;
+    result.pending_degrees = pending_degrees;
+    result.previous_degrees = previous_degrees;
+    result.startup_degrees = confirmed_degrees;
+
+    if (preview_state == DISPLAY_ROTATION_PREVIEW_BOOTED) {
+        if (clear_display_rotation_preview_state(handle, previous_degrees)) {
+            result.confirmed_degrees = previous_degrees;
+            result.startup_degrees = previous_degrees;
+            result.reverted_unconfirmed_preview = true;
+        }
+    } else if (preview_state == DISPLAY_ROTATION_PREVIEW_ARMED) {
+        if ((nvs_set_i32(handle, kNvsKeyDisplayOrientationState, DISPLAY_ROTATION_PREVIEW_BOOTED) == ESP_OK) &&
+            (nvs_commit(handle) == ESP_OK)) {
+            result.startup_degrees = pending_degrees;
+            result.preview_active = true;
+        }
+    }
+
+    nvs_close(handle);
+    return result;
+}
+
+static int32_t load_display_orientation_from_nvs(void)
+{
+    int32_t orientation_degrees = 0;
+    if (!load_nvs_i32(kNvsKeyDisplayOrientation, orientation_degrees)) {
+        orientation_degrees = 0;
+    }
+    return sanitize_display_orientation_degrees(orientation_degrees);
+}
+
+static bool save_display_orientation_to_nvs(int32_t orientation_degrees)
+{
+    const int32_t sanitized_degrees = sanitize_display_orientation_degrees(orientation_degrees);
+
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    esp_err_t err = nvs_set_i32(handle, kNvsKeyDisplayOrientation, sanitized_degrees);
+    err = (err == ESP_OK) ? nvs_set_i32(handle, kNvsKeyDisplayOrientationPending, sanitized_degrees) : err;
+    err = (err == ESP_OK) ? nvs_set_i32(handle, kNvsKeyDisplayOrientationPrevious, sanitized_degrees) : err;
+    err = (err == ESP_OK) ? nvs_set_i32(handle, kNvsKeyDisplayOrientationState, DISPLAY_ROTATION_PREVIEW_NONE) : err;
+    err = (err == ESP_OK) ? nvs_commit(handle) : err;
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
+static bool apply_display_orientation_live(int32_t orientation_degrees, bool persist)
+{
+    lv_display_t *display = lv_disp_get_default();
+    if (display == nullptr) {
+        return false;
+    }
+
+    if (!bsp_display_lock(0)) {
+        return false;
+    }
+
+    bsp_display_rotate(display, display_orientation_degrees_to_lv_rotation(orientation_degrees));
+    bsp_display_unlock();
+
+    return !persist || save_display_orientation_to_nvs(orientation_degrees);
+}
+
+static bool request_display_orientation_preview(int32_t orientation_degrees)
+{
+    const int32_t sanitized_degrees = sanitize_display_orientation_degrees(orientation_degrees);
+    const int32_t current_degrees = load_display_orientation_from_nvs();
+
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    const esp_err_t set_err =
+        (nvs_set_i32(handle, kNvsKeyDisplayOrientationPrevious, current_degrees) == ESP_OK) &&
+        (nvs_set_i32(handle, kNvsKeyDisplayOrientationPending, sanitized_degrees) == ESP_OK) &&
+        (nvs_set_i32(handle, kNvsKeyDisplayOrientationState, DISPLAY_ROTATION_PREVIEW_ARMED) == ESP_OK)
+            ? ESP_OK
+            : ESP_FAIL;
+    const esp_err_t commit_err = (set_err == ESP_OK) ? nvs_commit(handle) : set_err;
+    nvs_close(handle);
+    return commit_err == ESP_OK;
+}
+
+static bool confirm_display_orientation_preview(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    int32_t pending_degrees = 0;
+    if (nvs_get_i32(handle, kNvsKeyDisplayOrientationPending, &pending_degrees) != ESP_OK) {
+        pending_degrees = load_display_orientation_from_nvs();
+    }
+    const bool ok = clear_display_rotation_preview_state(handle, pending_degrees);
+    nvs_close(handle);
+    return ok;
+}
+
+static bool revert_display_orientation_preview(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+
+    int32_t previous_degrees = 0;
+    if (nvs_get_i32(handle, kNvsKeyDisplayOrientationPrevious, &previous_degrees) != ESP_OK) {
+        previous_degrees = load_display_orientation_from_nvs();
+    }
+    const bool ok = clear_display_rotation_preview_state(handle, previous_degrees);
+    nvs_close(handle);
+    return ok;
+}
+
+static bool get_display_rotation_preview_state(int32_t &preview_state, int32_t &pending_degrees, int32_t &previous_degrees)
+{
+    preview_state = DISPLAY_ROTATION_PREVIEW_NONE;
+    pending_degrees = load_display_orientation_from_nvs();
+    previous_degrees = pending_degrees;
+
+    nvs_handle_t handle;
+    if (nvs_open(kNvsStorageNamespace, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+
+    (void)nvs_get_i32(handle, kNvsKeyDisplayOrientationState, &preview_state);
+    (void)nvs_get_i32(handle, kNvsKeyDisplayOrientationPending, &pending_degrees);
+    (void)nvs_get_i32(handle, kNvsKeyDisplayOrientationPrevious, &previous_degrees);
+    nvs_close(handle);
+
+    preview_state = is_display_rotation_preview_state(preview_state) ? preview_state : DISPLAY_ROTATION_PREVIEW_NONE;
+    pending_degrees = sanitize_display_orientation_degrees(pending_degrees);
+    previous_degrees = sanitize_display_orientation_degrees(previous_degrees);
+    return preview_state != DISPLAY_ROTATION_PREVIEW_NONE;
+}
+
 static bool load_crash_report_for_upload(std::string &report)
 {
     if (read_text_file(kCrashReportPendingPath, report) && !report.empty()) {
@@ -663,6 +918,110 @@ static void schedule_info_popup(const char *title, const char *details)
 
     bsp_display_lock(0);
     if (lv_async_call(show_info_popup, context) != LV_RES_OK) {
+        bsp_display_unlock();
+        delete context;
+        return;
+    }
+    bsp_display_unlock();
+}
+
+static void on_display_rotation_preview_popup_event(lv_event_t *event)
+{
+    lv_obj_t *target = lv_event_get_current_target(event);
+    if (target == nullptr) {
+        return;
+    }
+
+    if (lv_event_get_code(event) == LV_EVENT_DELETE) {
+        if (s_displayRotationPreviewMsgbox == target) {
+            s_displayRotationPreviewMsgbox = nullptr;
+        }
+        return;
+    }
+
+    const char *button_text = lv_msgbox_get_active_btn_text(target);
+    if (button_text == nullptr) {
+        return;
+    }
+
+    if (std::strcmp(button_text, "OK") == 0) {
+        if (confirm_display_orientation_preview()) {
+            printf("[display] preview confirmed and saved\r\n");
+        } else {
+            printf("[display] failed to confirm preview\r\n");
+        }
+        lv_msgbox_close_async(target);
+        return;
+    }
+
+    if (std::strcmp(button_text, "Revert") == 0) {
+        if (revert_display_orientation_preview()) {
+            printf("[display] preview reverted; restarting\r\n");
+        } else {
+            printf("[display] failed to revert preview; restarting anyway\r\n");
+        }
+        fflush(stdout);
+        esp_restart();
+    }
+}
+
+static void show_display_rotation_preview_popup(void *context)
+{
+    std::unique_ptr<PendingDisplayRotationPopupContext> preview(static_cast<PendingDisplayRotationPopupContext *>(context));
+    if (preview == nullptr) {
+        return;
+    }
+
+    static const char *buttons[] = {"OK", "Revert", ""};
+    char body[224] = {};
+    std::snprintf(body,
+                  sizeof(body),
+                  "Previewing %ld degrees. Tap OK within 30 seconds to keep it.\n\nIf you do nothing, the device will revert to %ld degrees and restart.",
+                  static_cast<long>(preview->pending_degrees),
+                  static_cast<long>(preview->previous_degrees));
+
+    lv_obj_t *msgbox = lv_msgbox_create(lv_layer_top(), "Confirm Rotation", body, buttons, false);
+    if (msgbox == nullptr) {
+        return;
+    }
+
+    s_displayRotationPreviewMsgbox = msgbox;
+    lv_obj_set_width(msgbox, 440);
+    lv_obj_center(msgbox);
+    lv_obj_add_event_cb(msgbox, on_display_rotation_preview_popup_event, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_add_event_cb(msgbox, on_display_rotation_preview_popup_event, LV_EVENT_DELETE, nullptr);
+}
+
+static void display_rotation_preview_timeout_task(void *parameter)
+{
+    (void)parameter;
+    vTaskDelay(kDisplayRotationPreviewTimeout);
+
+    int32_t preview_state = DISPLAY_ROTATION_PREVIEW_NONE;
+    int32_t pending_degrees = 0;
+    int32_t previous_degrees = 0;
+    if (get_display_rotation_preview_state(preview_state, pending_degrees, previous_degrees) &&
+        (preview_state == DISPLAY_ROTATION_PREVIEW_BOOTED)) {
+        ESP_LOGW(TAG,
+                 "Display rotation preview timed out after 30 seconds; reverting from %ld to %ld",
+                 static_cast<long>(pending_degrees),
+                 static_cast<long>(previous_degrees));
+        (void)revert_display_orientation_preview();
+        esp_restart();
+    }
+
+    vTaskDelete(nullptr);
+}
+
+static void schedule_display_rotation_preview_popup(int32_t pending_degrees, int32_t previous_degrees)
+{
+    auto *context = new PendingDisplayRotationPopupContext{pending_degrees, previous_degrees};
+    if (context == nullptr) {
+        return;
+    }
+
+    bsp_display_lock(0);
+    if (lv_async_call(show_display_rotation_preview_popup, context) != LV_RES_OK) {
         bsp_display_unlock();
         delete context;
         return;
@@ -944,6 +1303,8 @@ static void print_serial_command_help(void)
     printf("[serial]   help\r\n");
     printf("[serial]   app.list\r\n");
     printf("[serial]   app.start <app name>\r\n");
+    printf("[serial]   display.status\r\n");
+    printf("[serial]   display.rotate 0|90|180|270\r\n");
     printf("[serial]   image.status\r\n");
     printf("[serial]   image.list\r\n");
     printf("[serial]   image.find <text>\r\n");
@@ -980,6 +1341,48 @@ static void handle_serial_command(const std::string &raw_command)
 
     if (command == "app.list") {
         list_serial_apps();
+        return;
+    }
+
+    if (command == "display.status") {
+        const int32_t confirmed_degrees = load_display_orientation_from_nvs();
+        printf("[display] saved orientation=%ld\r\n", static_cast<long>(confirmed_degrees));
+        printf("[display] runtime live rotation enabled\r\n");
+        return;
+    }
+
+    if (command == "display.confirm") {
+        printf("[display] live rotation mode has no pending preview to confirm\r\n");
+        return;
+    }
+
+    if (command == "display.revert") {
+        printf("[display] live rotation mode has no pending preview to revert\r\n");
+        return;
+    }
+
+    static constexpr const char *kDisplayRotatePrefix = "display.rotate ";
+    if (command.rfind(kDisplayRotatePrefix, 0) == 0) {
+        const std::string degrees_text = trim_copy(command.substr(std::strlen(kDisplayRotatePrefix)));
+        if (degrees_text.empty()) {
+            printf("[display] usage: display.rotate 0|90|180|270\r\n");
+            return;
+        }
+
+        char *end = nullptr;
+        const long parsed_degrees = std::strtol(degrees_text.c_str(), &end, 10);
+        if ((end == degrees_text.c_str()) || (*end != '\0') || !is_valid_display_orientation_degrees(static_cast<int32_t>(parsed_degrees))) {
+            printf("[display] invalid orientation: %s\r\n", degrees_text.c_str());
+            printf("[display] usage: display.rotate 0|90|180|270\r\n");
+            return;
+        }
+
+        if (!apply_display_orientation_live(static_cast<int32_t>(parsed_degrees), true)) {
+            printf("[display] failed to apply live orientation=%ld\r\n", parsed_degrees);
+            return;
+        }
+
+        printf("[display] applied live orientation=%ld\r\n", parsed_degrees);
         return;
     }
 
@@ -1766,9 +2169,15 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    const int32_t saved_display_orientation = load_display_orientation_from_nvs();
+
     initialize_power_management();
 
     restore_audio_preferences_from_nvs();
+    bsp_display_set_startup_rotation(static_cast<lv_disp_rotation_t>(LV_DISP_ROT_NONE));
+    ESP_LOGI(TAG,
+             "Startup display orientation preference=%ld; applying live rotation after display init",
+             static_cast<long>(saved_display_orientation));
 
     s_sdcardMutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_sdcardMutex != nullptr ? ESP_OK : ESP_ERR_NO_MEM);
@@ -1795,11 +2204,12 @@ extern "C" void app_main(void)
         .flags = {
             .buff_dma = false,
             .buff_spiram = true,
-            .sw_rotate = false,
+            .sw_rotate = true,
         }
     };
     cfg.lvgl_port_cfg.task_affinity = 0;
-    bsp_display_start_with_config(&cfg);
+    lv_display_t *display = bsp_display_start_with_config(&cfg);
+    ESP_ERROR_CHECK(display != nullptr ? ESP_OK : ESP_ERR_INVALID_STATE);
     bsp_display_backlight_on();
 
     bsp_display_lock(0);
@@ -1813,6 +2223,13 @@ extern "C" void app_main(void)
     ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->activateStylesheet(*phone_stylesheet), "Activate phone stylesheet failed");
 
     ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->begin(), "Failed to begin phone");
+
+    if ((saved_display_orientation != 0) && !apply_display_orientation_live(saved_display_orientation, false)) {
+        ESP_LOGW(TAG,
+                 "Failed to apply saved live display orientation %ld after phone init; continuing at base orientation",
+                 static_cast<long>(saved_display_orientation));
+    }
+
     if (!system_ui_service::initialize(*phone)) {
         ESP_LOGW(TAG, "System UI service initialization failed");
     }

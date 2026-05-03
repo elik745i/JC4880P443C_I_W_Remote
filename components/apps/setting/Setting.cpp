@@ -137,6 +137,14 @@ extern "C" bool __attribute__((weak)) jc_security_handle_app_launch_request(int 
 #define NVS_KEY_DISPLAY_TIMEOFF_IN_GAME "disp_off_g"
 #define NVS_KEY_DISPLAY_TIMEOFF         "disp_off_sec"
 #define NVS_KEY_DISPLAY_SLEEP           "disp_sleep"
+#define NVS_KEY_DISPLAY_ORIENTATION     "disp_rot"
+#define NVS_KEY_DISPLAY_ORIENTATION_PENDING "disp_rot_pend"
+#define NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS "disp_rot_prev"
+#define NVS_KEY_DISPLAY_ORIENTATION_STATE "disp_rot_state"
+#define NVS_KEY_DISPLAY_AUTOROTATE      "disp_auto_rot"
+#define NVS_KEY_DISPLAY_AUTOROTATE_IMU  "disp_auto_imu"
+#define NVS_KEY_DISPLAY_AUTOROTATE_SDA  "disp_auto_sda"
+#define NVS_KEY_DISPLAY_AUTOROTATE_SCL  "disp_auto_scl"
 #define NVS_KEY_DISPLAY_TIMEZONE        "disp_tz_min"
 #define NVS_KEY_DISPLAY_TZ_AUTO         "disp_tz_auto"
 #define NVS_KEY_OTA_AUTO_UPDATE         "ota_auto"
@@ -1072,6 +1080,10 @@ static constexpr int32_t kDisplayTimeoffOptionsSec[] = {0, 15, 30, 60, 120, 300}
 static constexpr char kDisplayTimeoffOptionsText[] = "Off\n15 sec\n30 sec\n1 min\n2 min\n5 min";
 static constexpr int32_t kDisplaySleepOptionsSec[] = {0, 30, 60, 120, 300, 600, 1800};
 static constexpr char kDisplaySleepOptionsText[] = "Off\n30 sec\n1 min\n2 min\n5 min\n10 min\n30 min";
+static constexpr int32_t kDisplayOrientationOptionsDeg[] = {0, 90, 180, 270};
+static constexpr char kDisplayOrientationOptionsText[] = "0\n90\n180\n270";
+static constexpr int32_t kDisplayAutorotateImuOptions[] = {0, 1, 2};
+static constexpr char kDisplayAutorotateImuOptionsText[] = "BMI160\nMPU9250 + BMP280 (GY-91)\nBNO080 / BNO085";
 static constexpr int32_t kZigbeeChannelOptions[] = {0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26};
 static constexpr char kZigbeeChannelOptionsText[] = "Auto\n11\n12\n13\n14\n15\n16\n17\n18\n19\n20\n21\n22\n23\n24\n25\n26";
 static constexpr int32_t kZigbeePermitJoinOptionsSec[] = {0, 60, 180, 255};
@@ -1422,6 +1434,94 @@ static const TimezoneOption &getTimezoneOptionForOffset(int32_t offset_minutes)
     return getTimezoneOptionForIndex(findTimezoneDropdownIndexForOffset(offset_minutes));
 }
 
+static int32_t sanitizeDisplayOrientationDegrees(int32_t orientation_degrees)
+{
+    switch (orientation_degrees) {
+    case 0:
+    case 90:
+    case 180:
+    case 270:
+        return orientation_degrees;
+    default:
+        return 0;
+    }
+}
+
+static lv_disp_rotation_t displayOrientationDegreesToLvRotation(int32_t orientation_degrees)
+{
+    switch (sanitizeDisplayOrientationDegrees(orientation_degrees)) {
+    case 90:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_90);
+    case 180:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_180);
+    case 270:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_270);
+    case 0:
+    default:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_NONE);
+    }
+}
+
+static bool applyDisplayOrientationLive(int32_t orientation_degrees)
+{
+    lv_display_t *display = lv_disp_get_default();
+    if (display == nullptr) {
+        return false;
+    }
+
+    if (!bsp_display_lock(0)) {
+        return false;
+    }
+
+    bsp_display_rotate(display, displayOrientationDegreesToLvRotation(orientation_degrees));
+    bsp_display_unlock();
+    return true;
+}
+
+static int32_t sanitizeDisplayAutorotateImuType(int32_t imu_type)
+{
+    switch (imu_type) {
+    case 0:
+    case 1:
+    case 2:
+        return imu_type;
+    default:
+        return 0;
+    }
+}
+
+static int32_t sanitizeDisplayAutorotateGpio(int32_t gpio)
+{
+    for (size_t index = 0; index < (sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0])); ++index) {
+        if (kNeopixelGpioOptions[index] == gpio) {
+            return gpio;
+        }
+    }
+
+    return -1;
+}
+
+static int32_t loadPendingDisplayOrientationPreviewDegrees(void)
+{
+    nvs_handle_t nvs_handle;
+    if (nvs_open(NVS_STORAGE_NAMESPACE, NVS_READONLY, &nvs_handle) != ESP_OK) {
+        return -1;
+    }
+
+    int32_t preview_state = 0;
+    int32_t orientation_degrees = -1;
+    if ((nvs_get_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_STATE, &preview_state) == ESP_OK) && (preview_state != 0)) {
+        if (nvs_get_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_PENDING, &orientation_degrees) == ESP_OK) {
+            orientation_degrees = sanitizeDisplayOrientationDegrees(orientation_degrees);
+        } else {
+            orientation_degrees = -1;
+        }
+    }
+
+    nvs_close(nvs_handle);
+    return orientation_degrees;
+}
+
 static bool parseUtcOffsetMinutes(const std::string &offset_text, int32_t &minutes)
 {
     if (offset_text.size() < 3) {
@@ -1546,6 +1646,12 @@ AppSettings::AppSettings():
     _displayTimeoffInGameSwitch(nullptr),
     _displayTimeoffDropdown(nullptr),
     _displaySleepDropdown(nullptr),
+    _displayOrientationDropdown(nullptr),
+    _displayAutorotateSwitch(nullptr),
+    _displayAutorotateImuDropdown(nullptr),
+    _displayAutorotateSdaDropdown(nullptr),
+    _displayAutorotateSclDropdown(nullptr),
+    _displayAutorotateInfoLabel(nullptr),
     _displayAutoTimezoneSwitch(nullptr),
     _displayTimezoneDropdown(nullptr),
     _displayTimezoneInfoLabel(nullptr),
@@ -1791,6 +1897,11 @@ void AppSettings::initializeDefaultNvsParams(void)
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF_IN_GAME] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF] = 0;
     _nvs_param_map[NVS_KEY_DISPLAY_SLEEP] = 0;
+    _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = 0;
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] = 0;
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU] = 0;
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SDA] = 30;
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SCL] = 31;
     _nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE] = 480;
     _nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO] = 0;
     _nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] = 1;
@@ -1917,6 +2028,15 @@ bool AppSettings::init(void)
 
 #if APP_SETTINGS_FEATURE_DISPLAY_MENU
     bsp_display_brightness_set(_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
+    _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = sanitizeDisplayOrientationDegrees(_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION]);
+    const int32_t preview_orientation = loadPendingDisplayOrientationPreviewDegrees();
+    if (preview_orientation >= 0) {
+        _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = preview_orientation;
+    }
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] = _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] != 0 ? 1 : 0;
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU] = sanitizeDisplayAutorotateImuType(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU]);
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SDA] = sanitizeDisplayAutorotateGpio(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SDA]);
+    _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SCL] = sanitizeDisplayAutorotateGpio(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SCL]);
     ESP_ERROR_CHECK(bsp_extra_display_idle_init());
     applyDisplayIdleSettings();
     applyNeopixelConfig();
@@ -2753,6 +2873,50 @@ void AppSettings::extraUiInit(void)
     lv_obj_align(_displaySleepDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_add_event_cb(_displaySleepDropdown, onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback,
                         LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *orientationRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Screen Orientation");
+    _displayOrientationDropdown = lv_dropdown_create(orientationRow);
+    lv_dropdown_set_options_static(_displayOrientationDropdown, kDisplayOrientationOptionsText);
+    lv_obj_set_width(_displayOrientationDropdown, 112);
+    lv_obj_align(_displayOrientationDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayOrientationDropdown, onDropdownPanelScreenSettingOrientationValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *autorotateRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Autorotate");
+    _displayAutorotateSwitch = lv_switch_create(autorotateRow);
+    lv_obj_align(_displayAutorotateSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayAutorotateSwitch, onSwitchPanelScreenSettingAutorotateValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *autorotateImuRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Autorotate IMU");
+    _displayAutorotateImuDropdown = lv_dropdown_create(autorotateImuRow);
+    lv_dropdown_set_options_static(_displayAutorotateImuDropdown, kDisplayAutorotateImuOptionsText);
+    lv_obj_set_width(_displayAutorotateImuDropdown, 220);
+    lv_obj_align(_displayAutorotateImuDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayAutorotateImuDropdown, onDropdownPanelScreenSettingAutorotateImuValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *autorotateSdaRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Autorotate SDA");
+    _displayAutorotateSdaDropdown = lv_dropdown_create(autorotateSdaRow);
+    lv_dropdown_set_options_static(_displayAutorotateSdaDropdown, kNeopixelGpioOptionsText);
+    lv_obj_set_width(_displayAutorotateSdaDropdown, 140);
+    lv_obj_align(_displayAutorotateSdaDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayAutorotateSdaDropdown, onDropdownPanelScreenSettingAutorotateSdaValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    lv_obj_t *autorotateSclRow = createDisplaySettingRow(ui_PanelScreenSettingLightList, "Autorotate SCL");
+    _displayAutorotateSclDropdown = lv_dropdown_create(autorotateSclRow);
+    lv_dropdown_set_options_static(_displayAutorotateSclDropdown, kNeopixelGpioOptionsText);
+    lv_obj_set_width(_displayAutorotateSclDropdown, 140);
+    lv_obj_align(_displayAutorotateSclDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_displayAutorotateSclDropdown, onDropdownPanelScreenSettingAutorotateSclValueChangeEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+
+    _displayAutorotateInfoLabel = lv_label_create(ui_PanelScreenSettingLightList);
+    lv_obj_set_width(_displayAutorotateInfoLabel, lv_pct(100));
+    lv_label_set_long_mode(_displayAutorotateInfoLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(_displayAutorotateInfoLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_displayAutorotateInfoLabel, lv_color_hex(0x475569), 0);
 
     _displayTimezoneInfoLabel = lv_label_create(ui_PanelScreenSettingLightList);
     lv_obj_set_width(_displayTimezoneInfoLabel, lv_pct(100));
@@ -4024,9 +4188,104 @@ void AppSettings::refreshDisplayIdleUi(void)
                                                            _nvs_param_map[NVS_KEY_DISPLAY_SLEEP]));
     }
 
+    if (lv_obj_ready(_displayOrientationDropdown)) {
+        lv_dropdown_set_selected(_displayOrientationDropdown,
+                                 findDropdownIndexForValue(kDisplayOrientationOptionsDeg,
+                                                           sizeof(kDisplayOrientationOptionsDeg) / sizeof(kDisplayOrientationOptionsDeg[0]),
+                                                           sanitizeDisplayOrientationDegrees(_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION])));
+    }
+
+    refreshDisplayAutorotateUi();
+
     #if CONFIG_JC4880_FEATURE_TIME_SYNC
     refreshTimezoneUi();
     #endif
+}
+
+void AppSettings::refreshDisplayAutorotateUi(void)
+{
+#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
+    return;
+#endif
+    if (!isUiActive()) {
+        return;
+    }
+
+    const bool enabled = _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] != 0;
+    const int32_t imu_type = sanitizeDisplayAutorotateImuType(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU]);
+    const int32_t sda_gpio = sanitizeDisplayAutorotateGpio(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SDA]);
+    const int32_t scl_gpio = sanitizeDisplayAutorotateGpio(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SCL]);
+
+    if (lv_obj_ready(_displayAutorotateSwitch)) {
+        if (enabled) {
+            lv_obj_add_state(_displayAutorotateSwitch, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(_displayAutorotateSwitch, LV_STATE_CHECKED);
+        }
+    }
+
+    if (lv_obj_ready(_displayAutorotateImuDropdown)) {
+        lv_dropdown_set_selected(_displayAutorotateImuDropdown,
+                                 findDropdownIndexForValue(kDisplayAutorotateImuOptions,
+                                                           sizeof(kDisplayAutorotateImuOptions) / sizeof(kDisplayAutorotateImuOptions[0]),
+                                                           imu_type));
+        if (enabled) {
+            lv_obj_clear_state(_displayAutorotateImuDropdown, LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(_displayAutorotateImuDropdown, LV_STATE_DISABLED);
+        }
+    }
+
+    if (lv_obj_ready(_displayAutorotateSdaDropdown)) {
+        lv_dropdown_set_selected(_displayAutorotateSdaDropdown,
+                                 findDropdownIndexForValue(kNeopixelGpioOptions,
+                                                           sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
+                                                           sda_gpio));
+        if (enabled) {
+            lv_obj_clear_state(_displayAutorotateSdaDropdown, LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(_displayAutorotateSdaDropdown, LV_STATE_DISABLED);
+        }
+    }
+
+    if (lv_obj_ready(_displayAutorotateSclDropdown)) {
+        lv_dropdown_set_selected(_displayAutorotateSclDropdown,
+                                 findDropdownIndexForValue(kNeopixelGpioOptions,
+                                                           sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
+                                                           scl_gpio));
+        if (enabled) {
+            lv_obj_clear_state(_displayAutorotateSclDropdown, LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(_displayAutorotateSclDropdown, LV_STATE_DISABLED);
+        }
+    }
+
+    if (lv_obj_ready(_displayAutorotateInfoLabel)) {
+        lv_label_set_text(_displayAutorotateInfoLabel,
+                          enabled
+                              ? "Autorotate sensor settings are saved, but live IMU rotation remains off until this display path supports safe non-reboot rotation."
+                              : "Autorotate is off. Sensor type and SDA/SCL pins are stored for future IMU hookup.");
+    }
+}
+
+void AppSettings::requestDisplayOrientationPreview(int32_t orientation_degrees)
+{
+#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
+    (void)orientation_degrees;
+    return;
+#else
+    const int32_t sanitized_orientation = sanitizeDisplayOrientationDegrees(orientation_degrees);
+    if ((sanitized_orientation != orientation_degrees) || !applyDisplayOrientationLive(sanitized_orientation)) {
+        ESP_LOGW(TAG, "Failed to apply live display orientation %ld", static_cast<long>(orientation_degrees));
+        return;
+    }
+
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION, sanitized_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PENDING, sanitized_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, sanitized_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_STATE, 0);
+    _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = sanitized_orientation;
+#endif
 }
 
 void AppSettings::applyNeopixelConfig(void)
@@ -8268,6 +8527,118 @@ void AppSettings::onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallb
     app->_nvs_param_map[NVS_KEY_DISPLAY_SLEEP] = selected_value;
     app->setNvsParam(NVS_KEY_DISPLAY_SLEEP, selected_value);
     app->applyDisplayIdleSettings();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownPanelScreenSettingOrientationValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    uint16_t selected_index = 0;
+    int32_t selected_value = 0;
+    if (app == nullptr) {
+        ESP_LOGE(TAG, "Invalid app pointer");
+        return;
+    }
+
+    const int32_t previous_value = sanitizeDisplayOrientationDegrees(app->_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION]);
+
+    selected_index = lv_dropdown_get_selected(app->_displayOrientationDropdown);
+    selected_value = getDropdownValueForIndex(kDisplayOrientationOptionsDeg,
+                                              sizeof(kDisplayOrientationOptionsDeg) / sizeof(kDisplayOrientationOptionsDeg[0]),
+                                              selected_index);
+    selected_value = sanitizeDisplayOrientationDegrees(selected_value);
+    if (selected_value == previous_value) {
+        return;
+    }
+
+    app->requestDisplayOrientationPreview(selected_value);
+    ESP_LOGI(TAG, "Display orientation updated live to %ld degrees", static_cast<long>(selected_value));
+}
+
+void AppSettings::onSwitchPanelScreenSettingAutorotateValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    bool enabled = false;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid autorotate switch");
+    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
+    app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] = enabled ? 1 : 0;
+    app->setNvsParam(NVS_KEY_DISPLAY_AUTOROTATE, enabled ? 1 : 0);
+    app->refreshDisplayAutorotateUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownPanelScreenSettingAutorotateImuValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    uint16_t selected = 0;
+    int32_t value = 0;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid autorotate IMU dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kDisplayAutorotateImuOptions,
+                                     sizeof(kDisplayAutorotateImuOptions) / sizeof(kDisplayAutorotateImuOptions[0]),
+                                     selected);
+    value = sanitizeDisplayAutorotateImuType(value);
+    app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU] = value;
+    app->setNvsParam(NVS_KEY_DISPLAY_AUTOROTATE_IMU, value);
+    app->refreshDisplayAutorotateUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownPanelScreenSettingAutorotateSdaValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    uint16_t selected = 0;
+    int32_t value = -1;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid autorotate SDA dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kNeopixelGpioOptions,
+                                     sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
+                                     selected);
+    value = sanitizeDisplayAutorotateGpio(value);
+    app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SDA] = value;
+    app->setNvsParam(NVS_KEY_DISPLAY_AUTOROTATE_SDA, value);
+    app->refreshDisplayAutorotateUi();
+
+end:
+    return;
+}
+
+void AppSettings::onDropdownPanelScreenSettingAutorotateSclValueChangeEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *target = nullptr;
+    uint16_t selected = 0;
+    int32_t value = -1;
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = lv_event_get_target(e);
+    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid autorotate SCL dropdown");
+    selected = lv_dropdown_get_selected(target);
+    value = getDropdownValueForIndex(kNeopixelGpioOptions,
+                                     sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
+                                     selected);
+    value = sanitizeDisplayAutorotateGpio(value);
+    app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_SCL] = value;
+    app->setNvsParam(NVS_KEY_DISPLAY_AUTOROTATE_SCL, value);
+    app->refreshDisplayAutorotateUi();
 
 end:
     return;

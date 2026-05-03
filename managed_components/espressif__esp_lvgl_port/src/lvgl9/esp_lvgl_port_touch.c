@@ -33,6 +33,7 @@ typedef struct {
 
 static void lvgl_port_touchpad_read(lv_indev_t *indev_drv, lv_indev_data_t *data);
 static void lvgl_port_touch_interrupt_callback(esp_lcd_touch_handle_t tp);
+static void lvgl_port_touch_transform_point(lv_indev_t *indev_drv, int32_t *x, int32_t *y);
 
 /*******************************************************************************
 * Public API functions
@@ -140,9 +141,12 @@ static void lvgl_port_touchpad_read(lv_indev_t *indev_drv, lv_indev_data_t *data
     lv_indev_touch_data_t touches[GESTURE_TOUCH_POINTS] = {0};
 
     for (int i = 0; i < touch_cnt && i < GESTURE_TOUCH_POINTS; i++) {
+        int32_t point_x = (int32_t)(touch_ctx->scale.x * touch_data[i].x);
+        int32_t point_y = (int32_t)(touch_ctx->scale.y * touch_data[i].y);
+        lvgl_port_touch_transform_point(indev_drv, &point_x, &point_y);
         touches[i].state = LV_INDEV_STATE_PRESSED;
-        touches[i].point.x = touch_ctx->scale.x * touch_data[i].x;
-        touches[i].point.y = touch_ctx->scale.y * touch_data[i].y;
+        touches[i].point.x = point_x;
+        touches[i].point.y = point_y;
         touches[i].id = touch_data[i].track_id;
         touches[i].timestamp = esp_timer_get_time() / 1000;
     }
@@ -154,11 +158,53 @@ static void lvgl_port_touchpad_read(lv_indev_t *indev_drv, lv_indev_data_t *data
 #endif
 
     if (touch_cnt > 0) {
-        data->point.x = touch_ctx->scale.x * touch_data[0].x;
-        data->point.y = touch_ctx->scale.y * touch_data[0].y;
+        int32_t point_x = (int32_t)(touch_ctx->scale.x * touch_data[0].x);
+        int32_t point_y = (int32_t)(touch_ctx->scale.y * touch_data[0].y);
+        lvgl_port_touch_transform_point(indev_drv, &point_x, &point_y);
+        data->point.x = point_x;
+        data->point.y = point_y;
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+static void lvgl_port_touch_transform_point(lv_indev_t *indev_drv, int32_t *x, int32_t *y)
+{
+    assert(indev_drv);
+    assert(x);
+    assert(y);
+
+    lv_display_t *disp = lv_indev_get_display(indev_drv);
+    if (disp == NULL) {
+        return;
+    }
+
+    const int32_t base_width = lv_display_get_physical_horizontal_resolution(disp);
+    const int32_t base_height = lv_display_get_physical_vertical_resolution(disp);
+    if ((base_width <= 0) || (base_height <= 0)) {
+        return;
+    }
+
+    const int32_t raw_x = *x;
+    const int32_t raw_y = *y;
+
+    switch (lv_display_get_rotation(disp)) {
+    case LV_DISPLAY_ROTATION_90:
+        *x = raw_y;
+        *y = base_width - raw_x - 1;
+        break;
+    case LV_DISPLAY_ROTATION_180:
+        *x = base_width - raw_x - 1;
+        *y = base_height - raw_y - 1;
+        break;
+    case LV_DISPLAY_ROTATION_270:
+        *x = base_height - raw_y - 1;
+        *y = raw_x;
+        break;
+    case LV_DISPLAY_ROTATION_0:
+    default:
+        break;
     }
 }
 

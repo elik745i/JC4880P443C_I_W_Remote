@@ -77,6 +77,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - The BLE controller preview now follows the generated Joypad layout live on-device, including layout-driven buttons, triggers, and calibration-centered stick movement instead of the old split preview path.
 - The Local Controller path now supports analog X/Y inputs plus MCP23017-backed buttons with a live on-device preview, serial input diagnostics, and the additional `Key` action on the default MCP `B4` mapping.
 - The Local Controller settings page now includes integrated WS2812 / Neopixel controls, configurable haptic GPIO and strength, and live test feedback for motor changes without blocking the rest of the UI.
+- Settings > Display now exposes saved 0/90/180/270 orientation control that applies live at runtime, including corrected touch remapping after rotation.
 - Battery sampling now detaches from ADC2 while the Local Controller is active so analog local inputs can run without the previous ADC2 ownership conflict.
 - The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
@@ -145,6 +146,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - System time is sourced from SNTP and converted with the configured local timezone.
 - Manual timezone selection is available in GMT offsets.
 - Auto timezone mode can update the offset from online geolocation when internet access is available.
+- Display orientation can be changed live between 0, 90, 180, and 270 degrees from Settings > Display, and the selected rotation is restored on the next boot.
 - Factory Reset in Settings > Firmware clears the app preferences namespace and reapplies defaults immediately.
 
 ### Stability And Crash Recovery
@@ -192,7 +194,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides two balanced OTA app slots of `0x7C0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage is `0x040000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
-- Version 1.3.2 validates at `0x6FBFB0`, leaving `0x0C4050` bytes free in either OTA app slot.
+- Version 1.3.2 validates at `0x6FE2D0`, leaving `0x0C1D30` bytes free in either OTA app slot.
 - Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout

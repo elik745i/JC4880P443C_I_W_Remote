@@ -42,6 +42,71 @@ static const char *TAG = "ESP32_P4_EV";
 #if (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
 static lv_indev_t *disp_indev = NULL;
 static esp_lcd_touch_handle_t disp_touch = NULL;
+
+typedef struct {
+    bool swap_xy;
+    bool mirror_x;
+    bool mirror_y;
+} bsp_rotation_flags_t;
+
+static const bsp_rotation_flags_t s_default_display_rotation = {
+    .swap_xy = true,
+    .mirror_x = false,
+    .mirror_y = false,
+};
+static const bsp_rotation_flags_t s_default_touch_rotation = {
+    .swap_xy = false,
+    .mirror_x = false,
+    .mirror_y = false,
+};
+static bsp_rotation_flags_t s_startup_display_rotation = {
+    .swap_xy = true,
+    .mirror_x = false,
+    .mirror_y = false,
+};
+static bsp_rotation_flags_t s_startup_touch_rotation = {
+    .swap_xy = false,
+    .mirror_x = false,
+    .mirror_y = false,
+};
+
+static bsp_rotation_flags_t bsp_rotation_flags_from_base(const bsp_rotation_flags_t *base, lv_disp_rotation_t rotation)
+{
+    bsp_rotation_flags_t result = *base;
+
+    switch (rotation) {
+    case LV_DISP_ROT_90:
+        result.swap_xy = !base->swap_xy;
+        if (base->swap_xy) {
+            result.mirror_x = !base->mirror_x;
+            result.mirror_y = base->mirror_y;
+        } else {
+            result.mirror_x = base->mirror_x;
+            result.mirror_y = !base->mirror_y;
+        }
+        break;
+    case LV_DISP_ROT_180:
+        result.swap_xy = base->swap_xy;
+        result.mirror_x = !base->mirror_x;
+        result.mirror_y = !base->mirror_y;
+        break;
+    case LV_DISP_ROT_270:
+        result.swap_xy = !base->swap_xy;
+        if (base->swap_xy) {
+            result.mirror_x = base->mirror_x;
+            result.mirror_y = !base->mirror_y;
+        } else {
+            result.mirror_x = !base->mirror_x;
+            result.mirror_y = base->mirror_y;
+        }
+        break;
+    case LV_DISP_ROT_NONE:
+    default:
+        break;
+    }
+
+    return result;
+}
 #endif // (BSP_CONFIG_NO_GRAPHIC_LIB == 0)
 
 sdmmc_card_t *bsp_sdcard = NULL;    // Global uSD card handler
@@ -812,6 +877,8 @@ err:
 
 esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t *ret_touch)
 {
+    (void)config;
+
     /* Initilize I2C */
     BSP_ERROR_CHECK_RETURN_ERR(bsp_i2c_init());
 
@@ -826,14 +893,9 @@ esp_err_t bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t
             .interrupt = 0,
         },
         .flags = {
-            .swap_xy = 0,
-#if CONFIG_BSP_LCD_TYPE_1024_600
-            .mirror_x = 0,
-            .mirror_y = 0,
-#else
-            .mirror_x = 0,
-            .mirror_y = 0,
-#endif
+            .swap_xy = s_startup_touch_rotation.swap_xy,
+            .mirror_x = s_startup_touch_rotation.mirror_x,
+            .mirror_y = s_startup_touch_rotation.mirror_y,
         },
     };
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
@@ -863,9 +925,9 @@ static lv_display_t *bsp_display_lcd_init(const bsp_display_cfg_t *cfg)
         .monochrome = false,
         /* Rotation values must be same as used in esp_lcd for initial settings of the screen */
         .rotation = {
-            .swap_xy = true,
-            .mirror_x = false,
-            .mirror_y = false,
+            .swap_xy = s_startup_display_rotation.swap_xy,
+            .mirror_x = s_startup_display_rotation.mirror_x,
+            .mirror_y = s_startup_display_rotation.mirror_y,
         },
 #if LVGL_VERSION_MAJOR >= 9
 #if CONFIG_BSP_LCD_COLOR_FORMAT_RGB888
@@ -946,6 +1008,12 @@ lv_display_t *bsp_display_start(void)
     return bsp_display_start_with_config(&cfg);
 }
 
+void bsp_display_set_startup_rotation(lv_disp_rotation_t rotation)
+{
+    s_startup_display_rotation = bsp_rotation_flags_from_base(&s_default_display_rotation, rotation);
+    s_startup_touch_rotation = bsp_rotation_flags_from_base(&s_default_touch_rotation, rotation);
+}
+
 lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg)
 {
     lv_display_t *disp;
@@ -977,7 +1045,13 @@ esp_lcd_touch_handle_t bsp_display_get_touch_handle(void)
 
 void bsp_display_rotate(lv_display_t *disp, lv_disp_rotation_t rotation)
 {
+#if CONFIG_BSP_DISPLAY_LVGL_AVOID_TEAR
+    (void)disp;
+    ESP_LOGW(TAG, "Ignoring runtime display rotation %d under avoid-tear mode; use bsp_display_set_startup_rotation() before display init instead", (int)rotation);
+    return;
+#else
     lv_disp_set_rotation(disp, rotation);
+#endif
 }
 
 bool bsp_display_lock(uint32_t timeout_ms)

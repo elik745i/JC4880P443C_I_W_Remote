@@ -150,6 +150,7 @@ private:
     void refreshSavedWifiUi(void);
     void refreshAboutWifiUi(void);
     void refreshDisplayIdleUi(void);
+    void refreshDisplayAutorotateUi(void);
     void applyNeopixelConfig(void);
     void refreshTimezoneUi(void);
     void refreshBluetoothUi(void);
@@ -248,6 +249,7 @@ private:
     bool forgetSavedWifiCredential(const std::string &ssid);
     bool launchWifiConnection(const SavedWifiCredential &credential, bool dismiss_keyboard, bool navigate_back_on_success);
     void updateUiByNvsParam(void);
+    void requestDisplayOrientationPreview(int32_t orientation_degrees);
     // WiFi
     esp_err_t initWifi(void);
     esp_err_t applyWifiOperatingMode(bool reconnect_sta, const char *reason);
@@ -346,6 +348,11 @@ private:
     static void onSwitchPanelScreenSettingTimeoffInGameValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingTimeoffIntervalValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingOrientationValueChangeEventCallback(lv_event_t *e);
+    static void onSwitchPanelScreenSettingAutorotateValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingAutorotateImuValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingAutorotateSdaValueChangeEventCallback(lv_event_t *e);
+    static void onDropdownPanelScreenSettingAutorotateSclValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingAutoTimezoneValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingTimezoneValueChangeEventCallback(lv_event_t *e);
 
@@ -387,6 +394,12 @@ private:
     lv_obj_t *_displayTimeoffInGameSwitch;
     lv_obj_t *_displayTimeoffDropdown;
     lv_obj_t *_displaySleepDropdown;
+    lv_obj_t *_displayOrientationDropdown;
+    lv_obj_t *_displayAutorotateSwitch;
+    lv_obj_t *_displayAutorotateImuDropdown;
+    lv_obj_t *_displayAutorotateSdaDropdown;
+    lv_obj_t *_displayAutorotateSclDropdown;
+    lv_obj_t *_displayAutorotateInfoLabel;
     lv_obj_t *_displayAutoTimezoneSwitch;
     lv_obj_t *_displayTimezoneDropdown;
     lv_obj_t *_displayTimezoneInfoLabel;

@@ -313,6 +313,17 @@ lv_display_t *bsp_display_start(void);
 lv_display_t *bsp_display_start_with_config(const bsp_display_cfg_t *cfg);
 
 /**
+ * @brief Configure the startup display rotation relative to the board's default orientation.
+ *
+ * This affects both the LCD panel transform and the touch controller mapping during
+ * bsp_display_start() / bsp_display_start_with_config(). Runtime LVGL rotation remains
+ * unavailable under avoid-tear mode.
+ *
+ * @param rotation Rotation relative to the board's default orientation
+ */
+void bsp_display_set_startup_rotation(lv_disp_rotation_t rotation);
+
+/**
  * @brief Get pointer to input device (touch, buttons, ...)
  *
  * @note The LVGL input device is initialized in bsp_display_start() function.

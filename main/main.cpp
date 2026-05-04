@@ -144,6 +144,10 @@ static TickType_t s_nextSdcardMountAttempt = 0;
 static InternetRadio *s_internetRadioApp = nullptr;
 #endif
 
+#if CONFIG_JC4880_APP_RECORDER
+static RecorderApp *s_recorderApp = nullptr;
+#endif
+
 static bool s_crashReportUploadInFlight = false;
 static bool s_tapSoundEnabled = true;
 static bool s_hapticFeedbackEnabled = true;
@@ -560,7 +564,7 @@ static bool clear_display_rotation_preview_state(nvs_handle_t handle, int32_t co
     return err == ESP_OK;
 }
 
-static DisplayRotationBootState resolve_display_rotation_boot_state(void)
+[[maybe_unused]] static DisplayRotationBootState resolve_display_rotation_boot_state(void)
 {
     DisplayRotationBootState result = {};
 
@@ -652,7 +656,7 @@ static bool apply_display_orientation_live(int32_t orientation_degrees, bool per
     return !persist || save_display_orientation_to_nvs(orientation_degrees);
 }
 
-static bool request_display_orientation_preview(int32_t orientation_degrees)
+[[maybe_unused]] static bool request_display_orientation_preview(int32_t orientation_degrees)
 {
     const int32_t sanitized_degrees = sanitize_display_orientation_degrees(orientation_degrees);
     const int32_t current_degrees = load_display_orientation_from_nvs();
@@ -972,13 +976,11 @@ static void show_display_rotation_preview_popup(void *context)
         return;
     }
 
-    static const char *buttons[] = {"OK", "Revert", ""};
+    static const char *buttons[] = {"OK", ""};
     char body[224] = {};
     std::snprintf(body,
                   sizeof(body),
-                  "Previewing %ld degrees. Tap OK within 30 seconds to keep it.\n\nIf you do nothing, the device will revert to %ld degrees and restart.",
-                  static_cast<long>(preview->pending_degrees),
-                  static_cast<long>(preview->previous_degrees));
+                  "If screen looks right hit OK, otherwise screen will return to previous settings in 30...");
 
     lv_obj_t *msgbox = lv_msgbox_create(lv_layer_top(), "Confirm Rotation", body, buttons, false);
     if (msgbox == nullptr) {
@@ -992,7 +994,7 @@ static void show_display_rotation_preview_popup(void *context)
     lv_obj_add_event_cb(msgbox, on_display_rotation_preview_popup_event, LV_EVENT_DELETE, nullptr);
 }
 
-static void display_rotation_preview_timeout_task(void *parameter)
+[[maybe_unused]] static void display_rotation_preview_timeout_task(void *parameter)
 {
     (void)parameter;
     vTaskDelay(kDisplayRotationPreviewTimeout);
@@ -1013,7 +1015,7 @@ static void display_rotation_preview_timeout_task(void *parameter)
     vTaskDelete(nullptr);
 }
 
-static void schedule_display_rotation_preview_popup(int32_t pending_degrees, int32_t previous_degrees)
+[[maybe_unused]] static void schedule_display_rotation_preview_popup(int32_t pending_degrees, int32_t previous_degrees)
 {
     auto *context = new PendingDisplayRotationPopupContext{pending_degrees, previous_degrees};
     if (context == nullptr) {
@@ -1324,6 +1326,16 @@ static void print_serial_command_help(void)
     printf("[serial]   radio.play Country|Station\r\n");
     printf("[serial] Example: radio.play Azerbaijan|AVTO FM\r\n");
 #endif
+
+#if CONFIG_JC4880_APP_RECORDER
+    printf("[serial]   recorder.status\r\n");
+    printf("[serial]   recorder.open\r\n");
+    printf("[serial]   recorder.start\r\n");
+    printf("[serial]   recorder.stop\r\n");
+    printf("[serial]   recorder.list\r\n");
+    printf("[serial]   recorder.playlatest\r\n");
+    printf("[serial]   recorder.play <index>\r\n");
+#endif
 }
 
 static void handle_serial_command(const std::string &raw_command)
@@ -1561,6 +1573,108 @@ static void handle_serial_command(const std::string &raw_command)
         printf("[web] %s\r\n", WebServerService::instance().statusText().c_str());
         return;
     }
+
+#if CONFIG_JC4880_APP_RECORDER
+    if (command == "recorder.status") {
+        if (s_recorderApp == nullptr) {
+            printf("[recorder] app unavailable\r\n");
+            return;
+        }
+
+        printf("[recorder] %s\r\n", s_recorderApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "recorder.open") {
+        if (s_recorderApp == nullptr) {
+            printf("[recorder] app unavailable\r\n");
+            return;
+        }
+
+        printf("[recorder] opening app on screen\r\n");
+        printf("[recorder] open %s\r\n", start_serial_app_instance(s_recorderApp, "recorder") ? "queued" : "failed");
+        return;
+    }
+
+    if (command == "recorder.start") {
+        if (s_recorderApp == nullptr) {
+            printf("[recorder] app unavailable\r\n");
+            return;
+        }
+
+        printf("[recorder] start %s\r\n", s_recorderApp->debugStartRecording() ? "queued" : "failed");
+        printf("[recorder] %s\r\n", s_recorderApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "recorder.stop") {
+        if (s_recorderApp == nullptr) {
+            printf("[recorder] app unavailable\r\n");
+            return;
+        }
+
+        printf("[recorder] stop %s\r\n", s_recorderApp->debugStopRecording() ? "queued" : "failed");
+        printf("[recorder] %s\r\n", s_recorderApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "recorder.list") {
+        if (s_recorderApp == nullptr) {
+            printf("[recorder] app unavailable\r\n");
+            return;
+        }
+
+        const std::vector<std::string> recordings = s_recorderApp->debugListRecordingSummaries();
+        printf("[recorder] count=%u\r\n", static_cast<unsigned>(recordings.size()));
+        for (const std::string &line : recordings) {
+            printf("[recorder]   %s\r\n", line.c_str());
+        }
+        return;
+    }
+
+    if (command == "recorder.playlatest") {
+        if (s_recorderApp == nullptr) {
+            printf("[recorder] app unavailable\r\n");
+            return;
+        }
+
+        printf("[recorder] playlatest %s\r\n", s_recorderApp->debugPlayLatest() ? "queued" : "failed");
+        printf("[recorder] %s\r\n", s_recorderApp->debugDescribeState().c_str());
+        return;
+    }
+
+    static constexpr const char *kRecorderPlayPrefix = "recorder.play ";
+    if (command.rfind(kRecorderPlayPrefix, 0) == 0) {
+        if (s_recorderApp == nullptr) {
+            printf("[recorder] app unavailable\r\n");
+            return;
+        }
+
+        const std::string index_text = trim_copy(command.substr(std::strlen(kRecorderPlayPrefix)));
+        if (index_text.empty()) {
+            printf("[recorder] usage: recorder.play <index>\r\n");
+            return;
+        }
+
+        char *end = nullptr;
+        const unsigned long parsed_index = std::strtoul(index_text.c_str(), &end, 10);
+        if ((end == index_text.c_str()) || (*end != '\0')) {
+            printf("[recorder] invalid index: %s\r\n", index_text.c_str());
+            return;
+        }
+
+        printf("[recorder] play %s\r\n", s_recorderApp->debugPlayIndex(static_cast<size_t>(parsed_index)) ? "queued" : "failed");
+        printf("[recorder] %s\r\n", s_recorderApp->debugDescribeState().c_str());
+        return;
+    }
+#else
+    if ((command == "recorder.status") || (command == "recorder.open") || (command == "recorder.start") ||
+        (command == "recorder.stop") || (command == "recorder.list") || (command == "recorder.playlatest") ||
+        (command.rfind("recorder.play ", 0) == 0)) {
+        printf("[recorder] recorder app is disabled in menuconfig\r\n");
+        return;
+    }
+#endif
 
 #if CONFIG_JC4880_APP_INTERNET_RADIO
     if (command == "radio.status") {
@@ -2269,6 +2383,10 @@ extern "C" void app_main(void)
 
 #if CONFIG_JC4880_APP_MUSIC_PLAYER
     install_app_or_delete(*phone, new MusicPlayer(), "music player");
+#endif
+
+#if CONFIG_JC4880_APP_RECORDER
+    s_recorderApp = install_app_or_delete(*phone, new RecorderApp(), "recorder");
 #endif
 
 #if CONFIG_JC4880_APP_INTERNET_RADIO

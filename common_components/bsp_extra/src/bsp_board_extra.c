@@ -40,6 +40,7 @@ static bool _is_audio_init = false;
 static bool _is_player_init = false;
 static int _vloume_intensity = CODEC_DEFAULT_VOLUME;
 static int s_system_volume_intensity = CODEC_DEFAULT_VOLUME;
+static int s_mic_gain_level = 10;
 static bool s_codec_devices_open = false;
 
 typedef struct {
@@ -115,6 +116,22 @@ static display_idle_state_t s_display_idle_state = {
     .applied_brightness_percent = -1,
 };
 static bool s_deep_sleep_warning_logged = false;
+
+static int audio_clamp_mic_gain_level(int level)
+{
+    if (level < 1) {
+        return 1;
+    }
+    if (level > 10) {
+        return 10;
+    }
+    return level;
+}
+
+static int audio_mic_gain_level_to_codec_gain(int level)
+{
+    return (audio_clamp_mic_gain_level(level) - 1) * 24 / 9;
+}
 
 static bool bsp_extra_dns_server_configured(const ip_addr_t *address)
 {
@@ -635,7 +652,6 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
     }
     if (record_dev_handle) {
         ret |= esp_codec_dev_close(record_dev_handle);
-        ret |= esp_codec_dev_set_in_gain(record_dev_handle, CODEC_DEFAULT_ADC_VOLUME);
     }
 
     if (play_dev_handle) {
@@ -643,6 +659,10 @@ esp_err_t bsp_extra_codec_set_fs(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode
     }
     if (record_dev_handle) {
         ret |= esp_codec_dev_open(record_dev_handle, &fs);
+    }
+
+    if ((ret == ESP_OK) && (record_dev_handle != NULL)) {
+        ret |= esp_codec_dev_set_in_gain(record_dev_handle, audio_mic_gain_level_to_codec_gain(s_mic_gain_level));
     }
 
     s_codec_devices_open = (ret == ESP_OK);
@@ -756,6 +776,22 @@ int bsp_extra_audio_system_volume_get(void)
     return s_system_volume_intensity;
 }
 
+esp_err_t bsp_extra_audio_mic_gain_set_level(int level)
+{
+    s_mic_gain_level = audio_clamp_mic_gain_level(level);
+
+    if (record_dev_handle == NULL) {
+        return ESP_OK;
+    }
+
+    return bsp_extra_codec_in_gain_set(audio_mic_gain_level_to_codec_gain(s_mic_gain_level));
+}
+
+int bsp_extra_audio_mic_gain_get_level(void)
+{
+    return s_mic_gain_level;
+}
+
 esp_err_t bsp_extra_audio_play_system_notification(void)
 {
     const bool media_playing = (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING);
@@ -847,6 +883,7 @@ esp_err_t bsp_extra_codec_in_gain_set(int gain)
     if (!record_dev_handle) {
         return ESP_ERR_INVALID_STATE;
     }
+
     return esp_codec_dev_set_in_gain(record_dev_handle, gain);
 }
 
@@ -871,6 +908,8 @@ esp_err_t bsp_extra_codec_init()
                                                CODEC_DEFAULT_CHANNEL),
                         TAG,
                         "Failed to set default codec sample format");
+
+    ESP_RETURN_ON_ERROR(bsp_extra_audio_mic_gain_set_level(s_mic_gain_level), TAG, "Failed to set default mic gain");
 
     _is_audio_init = true;
 

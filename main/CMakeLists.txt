@@ -40,4 +40,6 @@ if(CONFIG_LV_MEM_CUSTOM)
     )
 endif()
 
-spiffs_create_partition_image(storage ../spiffs FLASH_IN_PROJECT)
+set(PROJECT_SPIFFS_DIR ${CMAKE_CURRENT_LIST_DIR}/../spiffs)
+file(MAKE_DIRECTORY ${PROJECT_SPIFFS_DIR})
+spiffs_create_partition_image(storage ${PROJECT_SPIFFS_DIR} FLASH_IN_PROJECT)

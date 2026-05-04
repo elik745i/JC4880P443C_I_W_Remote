@@ -36,6 +36,8 @@ int bsp_extra_audio_media_volume_get(void);
 int bsp_extra_audio_media_volume_set(int volume);
 int bsp_extra_audio_system_volume_get(void);
 int bsp_extra_audio_system_volume_set(int volume);
+int bsp_extra_audio_mic_gain_get_level(void);
+esp_err_t bsp_extra_audio_mic_gain_set_level(int level);
 int bsp_extra_audio_play_system_notification(void);
 }
 
@@ -79,7 +81,22 @@ static constexpr const char *kSettingsBleEnableKey = "ble_en";
 static constexpr const char *kSettingsZigbeeEnableKey = "zb_en";
 static constexpr const char *kSettingsAudioVolumeKey = "volume";
 static constexpr const char *kSettingsSystemAudioVolumeKey = "sys_volume";
+static constexpr const char *kSettingsMicGainKey = "mic_gain";
 static constexpr int kQuickAccessActionApplyAirplaneRadioPreferences = 0x41525031;
+
+static int get_quick_access_nvs_value(const char *key, int default_value)
+{
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(kSettingsStorageNamespace, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        return default_value;
+    }
+
+    int32_t value = default_value;
+    err = nvs_get_i32(nvs_handle, key, &value);
+    nvs_close(nvs_handle);
+    return (err == ESP_OK) ? static_cast<int>(value) : default_value;
+}
 
 static lv_obj_t *create_quick_access_symbol_button(lv_obj_t *parent, const char *symbol)
 {
@@ -213,6 +230,8 @@ ESP_Brookesia_PhoneManager::ESP_Brookesia_PhoneManager(ESP_Brookesia_Core &core_
     _quick_access_media_volume_value_label(nullptr),
     _quick_access_system_volume_slider(nullptr),
     _quick_access_system_volume_value_label(nullptr),
+    _quick_access_mic_gain_slider(nullptr),
+    _quick_access_mic_gain_value_label(nullptr),
     _quick_access_restart_button(nullptr),
     _quick_access_shutdown_button(nullptr),
     _quick_access_sleep_button(nullptr),
@@ -395,6 +414,8 @@ bool ESP_Brookesia_PhoneManager::del(void)
     _quick_access_media_volume_value_label = nullptr;
     _quick_access_system_volume_slider = nullptr;
     _quick_access_system_volume_value_label = nullptr;
+    _quick_access_mic_gain_slider = nullptr;
+    _quick_access_mic_gain_value_label = nullptr;
     _quick_access_restart_button = nullptr;
     _quick_access_shutdown_button = nullptr;
     _quick_access_sleep_button = nullptr;
@@ -696,41 +717,65 @@ bool ESP_Brookesia_PhoneManager::beginQuickAccessOverlay(void)
     lv_obj_align(audio_panel, LV_ALIGN_TOP_RIGHT, 0, 0);
     lv_obj_clear_flag(audio_panel, LV_OBJ_FLAG_SCROLLABLE);
 
+    bsp_extra_audio_mic_gain_set_level(get_quick_access_nvs_value(kSettingsMicGainKey, 10));
+
     lv_obj_t *media_label = lv_label_create(audio_panel);
     lv_label_set_text(media_label, "Media");
     lv_obj_set_style_text_color(media_label, lv_color_hex(kQuickAccessText), 0);
-    lv_obj_align(media_label, LV_ALIGN_TOP_LEFT, 16, 60);
+    lv_obj_align(media_label, LV_ALIGN_TOP_LEFT, 8, 60);
 
     _quick_access_media_volume_value_label = lv_label_create(audio_panel);
     lv_obj_set_style_text_color(_quick_access_media_volume_value_label, lv_color_hex(kQuickAccessMutedText), 0);
-    lv_obj_align(_quick_access_media_volume_value_label, LV_ALIGN_TOP_LEFT, 16, 84);
+    lv_obj_align(_quick_access_media_volume_value_label, LV_ALIGN_TOP_LEFT, 8, 84);
 
     _quick_access_media_volume_slider = lv_slider_create(audio_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_media_volume_slider, false, "Create quick access media slider failed");
     lv_slider_set_range(_quick_access_media_volume_slider, 0, 100);
     lv_slider_set_mode(_quick_access_media_volume_slider, LV_SLIDER_MODE_NORMAL);
     lv_obj_set_size(_quick_access_media_volume_slider, 18, 176);
-    lv_obj_align(_quick_access_media_volume_slider, LV_ALIGN_BOTTOM_LEFT, 46, -16);
+    lv_obj_align(_quick_access_media_volume_slider, LV_ALIGN_BOTTOM_LEFT, 26, -16);
     lv_obj_add_event_cb(_quick_access_media_volume_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(_quick_access_media_volume_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_RELEASED, this);
 
     lv_obj_t *system_label = lv_label_create(audio_panel);
     lv_label_set_text(system_label, "System");
     lv_obj_set_style_text_color(system_label, lv_color_hex(kQuickAccessText), 0);
-    lv_obj_align(system_label, LV_ALIGN_TOP_RIGHT, -18, 60);
+    lv_obj_align(system_label, LV_ALIGN_TOP_MID, 0, 60);
 
     _quick_access_system_volume_value_label = lv_label_create(audio_panel);
     lv_obj_set_style_text_color(_quick_access_system_volume_value_label, lv_color_hex(kQuickAccessMutedText), 0);
-    lv_obj_align(_quick_access_system_volume_value_label, LV_ALIGN_TOP_RIGHT, -18, 84);
+    lv_obj_align(_quick_access_system_volume_value_label, LV_ALIGN_TOP_MID, 0, 84);
 
     _quick_access_system_volume_slider = lv_slider_create(audio_panel);
     ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_system_volume_slider, false, "Create quick access system slider failed");
     lv_slider_set_range(_quick_access_system_volume_slider, 0, 100);
     lv_slider_set_mode(_quick_access_system_volume_slider, LV_SLIDER_MODE_NORMAL);
     lv_obj_set_size(_quick_access_system_volume_slider, 18, 176);
-    lv_obj_align(_quick_access_system_volume_slider, LV_ALIGN_BOTTOM_RIGHT, -46, -16);
+    lv_obj_align(_quick_access_system_volume_slider, LV_ALIGN_BOTTOM_MID, 0, -16);
     lv_obj_add_event_cb(_quick_access_system_volume_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_add_event_cb(_quick_access_system_volume_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_RELEASED, this);
+
+    lv_obj_t *mic_label = lv_label_create(audio_panel);
+    lv_label_set_text(mic_label, "Mic");
+    lv_obj_set_style_text_color(mic_label, lv_color_hex(kQuickAccessText), 0);
+    lv_obj_align(mic_label, LV_ALIGN_TOP_RIGHT, -8, 60);
+
+    _quick_access_mic_gain_value_label = lv_label_create(audio_panel);
+    lv_obj_set_style_text_color(_quick_access_mic_gain_value_label, lv_color_hex(kQuickAccessMutedText), 0);
+    lv_obj_align(_quick_access_mic_gain_value_label, LV_ALIGN_TOP_RIGHT, -8, 84);
+
+    _quick_access_mic_gain_slider = lv_slider_create(audio_panel);
+    ESP_BROOKESIA_CHECK_NULL_RETURN(_quick_access_mic_gain_slider, false, "Create quick access mic slider failed");
+    lv_slider_set_range(_quick_access_mic_gain_slider, 1, 10);
+    lv_slider_set_mode(_quick_access_mic_gain_slider, LV_SLIDER_MODE_NORMAL);
+    lv_obj_set_size(_quick_access_mic_gain_slider, 18, 176);
+    lv_obj_align(_quick_access_mic_gain_slider, LV_ALIGN_BOTTOM_RIGHT, -26, -16);
+    lv_obj_set_style_bg_color(_quick_access_mic_gain_slider, lv_color_hex(0x334155), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_quick_access_mic_gain_slider, lv_color_hex(0x22C55E), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_grad_color(_quick_access_mic_gain_slider, lv_color_hex(0x84CC16), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_grad_dir(_quick_access_mic_gain_slider, LV_GRAD_DIR_VER, LV_PART_INDICATOR);
+    lv_obj_add_event_cb(_quick_access_mic_gain_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(_quick_access_mic_gain_slider, onQuickAccessVolumeSliderEventCallback, LV_EVENT_RELEASED, this);
 
     refreshQuickAccessVolumePanel();
     return true;
@@ -1103,16 +1148,21 @@ void ESP_Brookesia_PhoneManager::refreshQuickAccessVolumePanel(void)
     if ((_quick_access_media_volume_slider == nullptr) || !lv_obj_is_valid(_quick_access_media_volume_slider) ||
         (_quick_access_media_volume_value_label == nullptr) || !lv_obj_is_valid(_quick_access_media_volume_value_label) ||
         (_quick_access_system_volume_slider == nullptr) || !lv_obj_is_valid(_quick_access_system_volume_slider) ||
-        (_quick_access_system_volume_value_label == nullptr) || !lv_obj_is_valid(_quick_access_system_volume_value_label)) {
+        (_quick_access_system_volume_value_label == nullptr) || !lv_obj_is_valid(_quick_access_system_volume_value_label) ||
+        (_quick_access_mic_gain_slider == nullptr) || !lv_obj_is_valid(_quick_access_mic_gain_slider) ||
+        (_quick_access_mic_gain_value_label == nullptr) || !lv_obj_is_valid(_quick_access_mic_gain_value_label)) {
         return;
     }
 
     const int media_volume = bsp_extra_audio_media_volume_get();
     const int system_volume = bsp_extra_audio_system_volume_get();
+    const int mic_gain_level = bsp_extra_audio_mic_gain_get_level();
     lv_slider_set_value(_quick_access_media_volume_slider, media_volume, LV_ANIM_OFF);
     lv_slider_set_value(_quick_access_system_volume_slider, system_volume, LV_ANIM_OFF);
+    lv_slider_set_value(_quick_access_mic_gain_slider, mic_gain_level, LV_ANIM_OFF);
     lv_label_set_text_fmt(_quick_access_media_volume_value_label, "%d%%", media_volume);
     lv_label_set_text_fmt(_quick_access_system_volume_value_label, "%d%%", system_volume);
+    lv_label_set_text_fmt(_quick_access_mic_gain_value_label, "x%d", mic_gain_level);
 
     if ((_quick_access_notification_mode == QuickAccessNotificationMode::VIBRATION_ONLY) &&
         ((media_volume != 0) || (system_volume != 0))) {
@@ -1472,13 +1522,18 @@ void ESP_Brookesia_PhoneManager::onQuickAccessVolumeSliderEventCallback(lv_event
         if (event_code == LV_EVENT_RELEASED) {
             manager->setQuickAccessAirplaneNvsFlag(kSettingsSystemAudioVolumeKey, volume);
         }
+    } else if (slider == manager->_quick_access_mic_gain_slider) {
+        bsp_extra_audio_mic_gain_set_level(volume);
+        if (event_code == LV_EVENT_RELEASED) {
+            manager->setQuickAccessAirplaneNvsFlag(kSettingsMicGainKey, volume);
+        }
     } else {
         ESP_BROOKESIA_CHECK_FALSE_EXIT(false, "Unknown quick access volume slider");
     }
 
     manager->refreshQuickAccessVolumePanel();
 
-    if (event_code == LV_EVENT_RELEASED) {
+    if ((event_code == LV_EVENT_RELEASED) && (slider != manager->_quick_access_mic_gain_slider)) {
         bsp_extra_audio_play_system_notification();
     }
 }

@@ -53,7 +53,7 @@ static constexpr size_t kMp3StreamBufferMultiplier = 12;
 static constexpr size_t kMp3StreamRefillThreshold = MAINBUF_SIZE * 3;
 static constexpr uint32_t kMp3PlaybackHeartbeatMs = 2000;
 
-static void *audio_internal_malloc(size_t size, const char *label)
+[[maybe_unused]] static void *audio_internal_malloc(size_t size, const char *label)
 {
     void *ptr = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (ptr != NULL) {

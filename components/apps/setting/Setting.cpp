@@ -1082,6 +1082,9 @@ static constexpr int32_t kDisplaySleepOptionsSec[] = {0, 30, 60, 120, 300, 600, 
 static constexpr char kDisplaySleepOptionsText[] = "Off\n30 sec\n1 min\n2 min\n5 min\n10 min\n30 min";
 static constexpr int32_t kDisplayOrientationOptionsDeg[] = {0, 90, 180, 270};
 static constexpr char kDisplayOrientationOptionsText[] = "0\n90\n180\n270";
+static constexpr int32_t kDisplayOrientationPreviewSeconds = 30;
+static constexpr char kDisplayOrientationPreviewInitialText[] =
+    "If screen looks right hit OK, otherwise screen will return to previous settings in";
 static constexpr int32_t kDisplayAutorotateImuOptions[] = {0, 1, 2};
 static constexpr char kDisplayAutorotateImuOptionsText[] = "BMI160\nMPU9250 + BMP280 (GY-91)\nBNO080 / BNO085";
 static constexpr int32_t kZigbeeChannelOptions[] = {0, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26};
@@ -1474,6 +1477,17 @@ static bool applyDisplayOrientationLive(int32_t orientation_degrees)
     }
 
     bsp_display_rotate(display, displayOrientationDegreesToLvRotation(orientation_degrees));
+    if (lv_obj_ready(lv_disp_get_scr_act(display))) {
+        lv_obj_invalidate(lv_disp_get_scr_act(display));
+    }
+    if (lv_obj_ready(lv_layer_top())) {
+        lv_obj_invalidate(lv_layer_top());
+    }
+    if (lv_obj_ready(lv_layer_sys())) {
+        lv_obj_invalidate(lv_layer_sys());
+    }
+    lv_refr_now(display);
+    lv_refr_now(display);
     bsp_display_unlock();
     return true;
 }
@@ -1504,18 +1518,25 @@ static int32_t sanitizeDisplayAutorotateGpio(int32_t gpio)
 static int32_t loadPendingDisplayOrientationPreviewDegrees(void)
 {
     nvs_handle_t nvs_handle;
-    if (nvs_open(NVS_STORAGE_NAMESPACE, NVS_READONLY, &nvs_handle) != ESP_OK) {
+    if (nvs_open(NVS_STORAGE_NAMESPACE, NVS_READWRITE, &nvs_handle) != ESP_OK) {
         return -1;
     }
 
     int32_t preview_state = 0;
     int32_t orientation_degrees = -1;
     if ((nvs_get_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_STATE, &preview_state) == ESP_OK) && (preview_state != 0)) {
-        if (nvs_get_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_PENDING, &orientation_degrees) == ESP_OK) {
+        if (nvs_get_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, &orientation_degrees) == ESP_OK) {
             orientation_degrees = sanitizeDisplayOrientationDegrees(orientation_degrees);
         } else {
             orientation_degrees = -1;
         }
+        if (orientation_degrees >= 0) {
+            nvs_set_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION, orientation_degrees);
+            nvs_set_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_PENDING, orientation_degrees);
+            nvs_set_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, orientation_degrees);
+        }
+        nvs_set_i32(nvs_handle, NVS_KEY_DISPLAY_ORIENTATION_STATE, 0);
+        nvs_commit(nvs_handle);
     }
 
     nvs_close(nvs_handle);
@@ -1647,6 +1668,15 @@ AppSettings::AppSettings():
     _displayTimeoffDropdown(nullptr),
     _displaySleepDropdown(nullptr),
     _displayOrientationDropdown(nullptr),
+    _displayOrientationPreviewMsgbox(nullptr),
+    _displayOrientationPreviewLabel(nullptr),
+    _displayOrientationPreviewSpinner(nullptr),
+    _displayOrientationPreviewCountdownLabel(nullptr),
+    _displayOrientationPreviewTimer(nullptr),
+    _displayOrientationPreviewPrevious(0),
+    _displayOrientationPreviewPending(0),
+    _displayOrientationPreviewSecondsRemaining(0),
+    _displayOrientationPreviewResolving(false),
     _displayAutorotateSwitch(nullptr),
     _displayAutorotateImuDropdown(nullptr),
     _displayAutorotateSdaDropdown(nullptr),
@@ -2761,9 +2791,21 @@ void AppSettings::extraUiInit(void)
     lv_obj_align_to(ui_LabelPanelScreenSettingLightSwitch, ui_ImagePanelScreenSettingLightSwitch, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
     lv_obj_set_width(ui_SliderPanelScreenSettingLightSwitch1, 168);
     lv_obj_align(ui_SliderPanelScreenSettingLightSwitch1, LV_ALIGN_RIGHT_MID, -12, 0);
+
+    static constexpr lv_coord_t kDisplayScreenTopInset = 14;
+    static constexpr lv_coord_t kDisplayScreenBottomInset = 12;
+    static constexpr lv_coord_t kDisplayListGap = 8;
+    lv_obj_set_width(ui_PanelScreenSettingLightSwitch, lv_pct(90));
+    lv_obj_align(ui_PanelScreenSettingLightSwitch, LV_ALIGN_TOP_MID, 0, kDisplayScreenTopInset);
+
     lv_obj_clear_flag(ui_PanelScreenSettingLightList, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align_to(ui_PanelScreenSettingLightList, ui_PanelScreenSettingLightSwitch, LV_ALIGN_OUT_BOTTOM_MID, 0, 12);
-    lv_obj_set_size(ui_PanelScreenSettingLightList, lv_pct(90), 430);
+    lv_obj_align_to(ui_PanelScreenSettingLightList, ui_PanelScreenSettingLightSwitch, LV_ALIGN_OUT_BOTTOM_MID, 0, kDisplayListGap);
+    const lv_coord_t display_screen_height = lv_obj_get_height(ui_ScreenSettingLight);
+    const lv_coord_t display_list_height = std::max<lv_coord_t>(
+        120,
+        display_screen_height - lv_obj_get_height(ui_PanelScreenSettingLightSwitch) -
+        kDisplayScreenTopInset - kDisplayListGap - kDisplayScreenBottomInset);
+    lv_obj_set_size(ui_PanelScreenSettingLightList, lv_pct(90), display_list_height);
     lv_obj_set_style_pad_all(ui_PanelScreenSettingLightList, 0, 0);
     lv_obj_set_style_pad_row(ui_PanelScreenSettingLightList, 12, 0);
     lv_obj_set_style_bg_opa(ui_PanelScreenSettingLightList, LV_OPA_TRANSP, 0);
@@ -4275,16 +4317,150 @@ void AppSettings::requestDisplayOrientationPreview(int32_t orientation_degrees)
     return;
 #else
     const int32_t sanitized_orientation = sanitizeDisplayOrientationDegrees(orientation_degrees);
+    const int32_t previous_orientation = sanitizeDisplayOrientationDegrees(_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION]);
+    if (sanitized_orientation == previous_orientation) {
+        return;
+    }
+
+    if (_displayOrientationPreviewMsgbox != nullptr) {
+        finishDisplayOrientationPreview(false);
+    }
+
     if ((sanitized_orientation != orientation_degrees) || !applyDisplayOrientationLive(sanitized_orientation)) {
         ESP_LOGW(TAG, "Failed to apply live display orientation %ld", static_cast<long>(orientation_degrees));
         return;
     }
 
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION, sanitized_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PENDING, sanitized_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, sanitized_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_STATE, 0);
+    _displayOrientationPreviewPrevious = previous_orientation;
+    _displayOrientationPreviewPending = sanitized_orientation;
+    _displayOrientationPreviewSecondsRemaining = kDisplayOrientationPreviewSeconds;
+    _displayOrientationPreviewResolving = false;
     _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = sanitized_orientation;
+
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PENDING, sanitized_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, previous_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_STATE, 1);
+
+    static const char *buttons[] = {"Cancel", "OK", ""};
+    _displayOrientationPreviewMsgbox = lv_msgbox_create(lv_layer_top(), "Display Orientation",
+                                                        kDisplayOrientationPreviewInitialText, buttons, false);
+    if ((_displayOrientationPreviewMsgbox == nullptr) || !lv_obj_is_valid(_displayOrientationPreviewMsgbox)) {
+        _displayOrientationPreviewMsgbox = nullptr;
+        finishDisplayOrientationPreview(false);
+        return;
+    }
+
+    _displayOrientationPreviewLabel = lv_msgbox_get_text(_displayOrientationPreviewMsgbox);
+    const lv_coord_t display_width = lv_disp_get_hor_res(nullptr);
+    const lv_coord_t preview_msgbox_width = std::min<lv_coord_t>(340, std::max<lv_coord_t>(260, display_width - 96));
+    lv_obj_set_width(_displayOrientationPreviewMsgbox, preview_msgbox_width);
+    lv_obj_set_style_pad_all(_displayOrientationPreviewMsgbox, 16, 0);
+    lv_obj_set_style_pad_row(_displayOrientationPreviewMsgbox, 12, 0);
+    if (lv_obj_ready(_displayOrientationPreviewLabel)) {
+        lv_obj_set_width(_displayOrientationPreviewLabel, lv_pct(100));
+        lv_label_set_long_mode(_displayOrientationPreviewLabel, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(_displayOrientationPreviewLabel, LV_TEXT_ALIGN_CENTER, 0);
+    }
+    lv_obj_t *preview_content = lv_msgbox_get_content(_displayOrientationPreviewMsgbox);
+    if (lv_obj_ready(preview_content)) {
+        lv_obj_set_flex_flow(preview_content, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(preview_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_row(preview_content, 12, 0);
+
+        _displayOrientationPreviewSpinner = lv_spinner_create(preview_content, 1000, 80);
+        if (lv_obj_ready(_displayOrientationPreviewSpinner)) {
+            lv_obj_set_size(_displayOrientationPreviewSpinner, 86, 86);
+            lv_obj_clear_flag(_displayOrientationPreviewSpinner, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_arc_width(_displayOrientationPreviewSpinner, 8, LV_PART_MAIN);
+            lv_obj_set_style_arc_width(_displayOrientationPreviewSpinner, 8, LV_PART_INDICATOR);
+            lv_obj_set_style_arc_color(_displayOrientationPreviewSpinner, lv_color_hex(0xD7DCE6), LV_PART_MAIN);
+            lv_obj_set_style_arc_color(_displayOrientationPreviewSpinner, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
+
+            _displayOrientationPreviewCountdownLabel = lv_label_create(_displayOrientationPreviewSpinner);
+            if (lv_obj_ready(_displayOrientationPreviewCountdownLabel)) {
+                lv_obj_set_style_text_align(_displayOrientationPreviewCountdownLabel, LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_style_text_font(_displayOrientationPreviewCountdownLabel, &lv_font_montserrat_28, 0);
+                lv_obj_center(_displayOrientationPreviewCountdownLabel);
+            }
+        }
+    }
+    lv_obj_t *preview_buttons = lv_msgbox_get_btns(_displayOrientationPreviewMsgbox);
+    if (lv_obj_ready(preview_buttons)) {
+        lv_obj_set_size(preview_buttons, lv_pct(100), 54);
+        lv_btnmatrix_set_btn_width(preview_buttons, 0, 2);
+        lv_btnmatrix_set_btn_width(preview_buttons, 1, 3);
+        lv_obj_set_style_pad_all(preview_buttons, 4, 0);
+        lv_obj_set_style_pad_column(preview_buttons, 10, 0);
+        lv_obj_set_style_radius(preview_buttons, 6, LV_PART_ITEMS);
+    }
+    lv_obj_center(_displayOrientationPreviewMsgbox);
+    lv_obj_add_event_cb(_displayOrientationPreviewMsgbox, onDisplayOrientationPreviewPopupEventCallback,
+                        LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(_displayOrientationPreviewMsgbox, onDisplayOrientationPreviewPopupEventCallback,
+                        LV_EVENT_DELETE, this);
+    updateDisplayOrientationPreviewPopup();
+
+    _displayOrientationPreviewTimer = lv_timer_create(onDisplayOrientationPreviewTimerCallback, 1000, this);
+    if (_displayOrientationPreviewTimer == nullptr) {
+        finishDisplayOrientationPreview(false);
+    }
+#endif
+}
+
+void AppSettings::updateDisplayOrientationPreviewPopup(void)
+{
+#if APP_SETTINGS_FEATURE_DISPLAY_MENU
+    if (lv_obj_ready(_displayOrientationPreviewLabel)) {
+        lv_label_set_text(_displayOrientationPreviewLabel, kDisplayOrientationPreviewInitialText);
+    }
+
+    if (lv_obj_ready(_displayOrientationPreviewCountdownLabel)) {
+        char countdown[8] = {0};
+        snprintf(countdown, sizeof(countdown), "%ld", static_cast<long>(_displayOrientationPreviewSecondsRemaining));
+        lv_label_set_text(_displayOrientationPreviewCountdownLabel, countdown);
+        lv_obj_center(_displayOrientationPreviewCountdownLabel);
+    }
+#endif
+}
+
+void AppSettings::finishDisplayOrientationPreview(bool keep_orientation)
+{
+#if APP_SETTINGS_FEATURE_DISPLAY_MENU
+    if (_displayOrientationPreviewTimer != nullptr) {
+        lv_timer_del(_displayOrientationPreviewTimer);
+        _displayOrientationPreviewTimer = nullptr;
+    }
+
+    const int32_t final_orientation = keep_orientation
+                                          ? sanitizeDisplayOrientationDegrees(_displayOrientationPreviewPending)
+                                          : sanitizeDisplayOrientationDegrees(_displayOrientationPreviewPrevious);
+    applyDisplayOrientationLive(final_orientation);
+    _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = final_orientation;
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION, final_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PENDING, final_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, final_orientation);
+    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_STATE, 0);
+
+    if (lv_obj_ready(_displayOrientationDropdown)) {
+        lv_dropdown_set_selected(_displayOrientationDropdown,
+                                 findDropdownIndexForValue(kDisplayOrientationOptionsDeg,
+                                                           sizeof(kDisplayOrientationOptionsDeg) / sizeof(kDisplayOrientationOptionsDeg[0]),
+                                                           final_orientation));
+    }
+
+    _displayOrientationPreviewResolving = true;
+    if (lv_obj_ready(_displayOrientationPreviewMsgbox)) {
+        lv_msgbox_close_async(_displayOrientationPreviewMsgbox);
+    } else {
+        _displayOrientationPreviewMsgbox = nullptr;
+        _displayOrientationPreviewLabel = nullptr;
+        _displayOrientationPreviewSpinner = nullptr;
+        _displayOrientationPreviewCountdownLabel = nullptr;
+        _displayOrientationPreviewSecondsRemaining = 0;
+        _displayOrientationPreviewResolving = false;
+    }
+#else
+    (void)keep_orientation;
 #endif
 }
 
@@ -8530,6 +8706,71 @@ void AppSettings::onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallb
 
 end:
     return;
+}
+
+void AppSettings::onDisplayOrientationPreviewPopupEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    lv_obj_t *msgbox = lv_event_get_current_target(e);
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (app == nullptr) {
+        return;
+    }
+
+    if (code == LV_EVENT_DELETE) {
+        if (app->_displayOrientationPreviewResolving) {
+            app->_displayOrientationPreviewMsgbox = nullptr;
+            app->_displayOrientationPreviewLabel = nullptr;
+            app->_displayOrientationPreviewSpinner = nullptr;
+            app->_displayOrientationPreviewCountdownLabel = nullptr;
+            app->_displayOrientationPreviewSecondsRemaining = 0;
+            app->_displayOrientationPreviewResolving = false;
+            return;
+        }
+
+        if (msgbox == app->_displayOrientationPreviewMsgbox) {
+            app->_displayOrientationPreviewMsgbox = nullptr;
+            app->_displayOrientationPreviewLabel = nullptr;
+            app->_displayOrientationPreviewSpinner = nullptr;
+            app->_displayOrientationPreviewCountdownLabel = nullptr;
+            app->finishDisplayOrientationPreview(false);
+        }
+        return;
+    }
+
+    if ((code != LV_EVENT_VALUE_CHANGED) || (msgbox == nullptr)) {
+        return;
+    }
+
+    const char *button_text = lv_msgbox_get_active_btn_text(msgbox);
+    if (button_text == nullptr) {
+        return;
+    }
+
+    if (strcmp(button_text, "OK") == 0) {
+        app->finishDisplayOrientationPreview(true);
+    } else if (strcmp(button_text, "Cancel") == 0) {
+        app->finishDisplayOrientationPreview(false);
+    }
+}
+
+void AppSettings::onDisplayOrientationPreviewTimerCallback(lv_timer_t *timer)
+{
+    AppSettings *app = (timer != nullptr) ? static_cast<AppSettings *>(timer->user_data) : nullptr;
+    if (app == nullptr) {
+        return;
+    }
+
+    if (app->_displayOrientationPreviewSecondsRemaining > 0) {
+        --app->_displayOrientationPreviewSecondsRemaining;
+    }
+
+    if (app->_displayOrientationPreviewSecondsRemaining <= 0) {
+        app->finishDisplayOrientationPreview(false);
+        return;
+    }
+
+    app->updateDisplayOrientationPreviewPopup();
 }
 
 void AppSettings::onDropdownPanelScreenSettingOrientationValueChangeEventCallback(lv_event_t *e)

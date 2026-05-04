@@ -52,6 +52,10 @@ if(CONFIG_JC4880_APP_MUSIC_PLAYER)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/music_player)
 endif()
 
+if(CONFIG_JC4880_APP_RECORDER)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/recorder)
+endif()
+
 if(CONFIG_JC4880_APP_INTERNET_RADIO)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/internet_radio)
 endif()
@@ -77,7 +81,7 @@ idf_component_register(
                  ${APPS_DIR}/sega_emulator/gwenesis/src/savestate
                  ${APPS_DIR}/sega_emulator/gwenesis/src/sound
                  ${APPS_DIR}/sega_emulator/gwenesis/src/vdp
-    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client esp_http_server json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player espressif__libjpeg-turbo app_update esp_partition esp-tls esp_hosted bt mdns mqtt driver led_strip main)
+    REQUIRES lvgl__lvgl esp_adc esp_event esp_wifi esp_http_client esp_http_server json nvs_flash esp_driver_jpeg esp_mm esp-brookesia bsp_extra esp32_p4_function_ev_board espressif__esp_lcd_touch_gt911 espressif__adc_battery_estimation espressif__avi_player espressif__libjpeg-turbo espressif__esp_audio_codec app_update esp_partition esp-tls esp_hosted bt mdns mqtt driver led_strip main)
 
 target_compile_options(
     ${COMPONENT_LIB}

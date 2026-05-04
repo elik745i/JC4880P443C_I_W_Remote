@@ -95,6 +95,26 @@ esp_err_t bsp_extra_audio_system_volume_set(int volume);
 int bsp_extra_audio_system_volume_get(void);
 
 /**
+ * @brief Set microphone gain level used by the recorder input path.
+ *
+ * The level is a user-facing scale from 1 to 10 and is mapped onto the
+ * codec-specific input gain range.
+ *
+ * @param level microphone gain level on a 1..10 scale
+ * @return
+ *    - ESP_OK: Success
+ *    - Others: Fail while applying to an active input path
+ */
+esp_err_t bsp_extra_audio_mic_gain_set_level(int level);
+
+/**
+ * @brief Get the current microphone gain level on the shared 1..10 scale.
+ *
+ * @return configured microphone gain level
+ */
+int bsp_extra_audio_mic_gain_get_level(void);
+
+/**
  * @brief Play a short system notification tone on the shared output path.
  *
  * If media playback is active, the notification is mixed into the PCM stream.

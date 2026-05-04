@@ -76,12 +76,22 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
         DEPENDS ${ICON_SRC_DIR}/mutedall.png ${ICON_GENERATOR}
         VERBATIM)
 
+    add_custom_command(
+        OUTPUT ${GENERATED_ICON_DIR}/record_png.c
+        COMMAND ${python} ${ICON_GENERATOR}
+                --input ${ICON_SRC_DIR}/record.png
+                --output ${GENERATED_ICON_DIR}/record_png.c
+                --symbol record_png
+        DEPENDS ${ICON_SRC_DIR}/record.png ${ICON_GENERATOR}
+        VERBATIM)
+
     list(APPEND SRCS_C
         ${GENERATED_ICON_DIR}/airplane_png.c
         ${GENERATED_ICON_DIR}/sleep_png.c
         ${GENERATED_ICON_DIR}/unmuted_png.c
         ${GENERATED_ICON_DIR}/muted_png.c
-        ${GENERATED_ICON_DIR}/mutedall_png.c)
+        ${GENERATED_ICON_DIR}/mutedall_png.c
+        ${GENERATED_ICON_DIR}/record_png.c)
 endif()
 
 set(WIDGETS_SRC_DIR ${PROJ_SRC_DIR}/widgets)

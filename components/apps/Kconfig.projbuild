@@ -118,6 +118,11 @@ menu "JC4880 Modular Configuration"
             default y
             depends on JC4880_FEATURE_AUDIO
 
+        config JC4880_APP_RECORDER
+            bool "Recorder"
+            default y
+            depends on JC4880_FEATURE_AUDIO
+
         config JC4880_APP_INTERNET_RADIO
             bool "Internet radio"
             default y

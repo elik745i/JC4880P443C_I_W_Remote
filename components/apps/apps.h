@@ -36,6 +36,10 @@
 #include "mqtt_app/MqttApp.hpp"
 #endif
 
+#if CONFIG_JC4880_APP_RECORDER
+#include "recorder/Recorder.hpp"
+#endif
+
 #if CONFIG_JC4880_APP_SEGA_EMULATOR
 #include "sega_emulator/SegaEmulator.hpp"
 #endif

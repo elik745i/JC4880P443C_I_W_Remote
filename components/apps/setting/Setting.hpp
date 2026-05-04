@@ -250,6 +250,8 @@ private:
     bool launchWifiConnection(const SavedWifiCredential &credential, bool dismiss_keyboard, bool navigate_back_on_success);
     void updateUiByNvsParam(void);
     void requestDisplayOrientationPreview(int32_t orientation_degrees);
+    void updateDisplayOrientationPreviewPopup(void);
+    void finishDisplayOrientationPreview(bool keep_orientation);
     // WiFi
     esp_err_t initWifi(void);
     esp_err_t applyWifiOperatingMode(bool reconnect_sta, const char *reason);
@@ -349,6 +351,8 @@ private:
     static void onDropdownPanelScreenSettingTimeoffIntervalValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingOrientationValueChangeEventCallback(lv_event_t *e);
+    static void onDisplayOrientationPreviewPopupEventCallback(lv_event_t *e);
+    static void onDisplayOrientationPreviewTimerCallback(lv_timer_t *timer);
     static void onSwitchPanelScreenSettingAutorotateValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingAutorotateImuValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingAutorotateSdaValueChangeEventCallback(lv_event_t *e);
@@ -395,6 +399,15 @@ private:
     lv_obj_t *_displayTimeoffDropdown;
     lv_obj_t *_displaySleepDropdown;
     lv_obj_t *_displayOrientationDropdown;
+    lv_obj_t *_displayOrientationPreviewMsgbox;
+    lv_obj_t *_displayOrientationPreviewLabel;
+    lv_obj_t *_displayOrientationPreviewSpinner;
+    lv_obj_t *_displayOrientationPreviewCountdownLabel;
+    lv_timer_t *_displayOrientationPreviewTimer;
+    int32_t _displayOrientationPreviewPrevious;
+    int32_t _displayOrientationPreviewPending;
+    int32_t _displayOrientationPreviewSecondsRemaining;
+    bool _displayOrientationPreviewResolving;
     lv_obj_t *_displayAutorotateSwitch;
     lv_obj_t *_displayAutorotateImuDropdown;
     lv_obj_t *_displayAutorotateSdaDropdown;

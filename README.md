@@ -42,6 +42,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - E-Reader app for reading text-oriented files from the SD card.
 - MQTT app with launch-page broker, credentials, client ID, and topic settings for quick connection testing.
 - Internet Radio app with station discovery by popularity, country, language, and category.
+- Native Recorder app for AAC recording on the built-in microphone, with SD-card saving under `/sdcard/record`, live spectrum visualization, in-app playback, and PSRAM-first runtime buffers.
 - Native SEGA app with Master System, Game Gear, SG-1000, and Genesis / Mega Drive ROM support.
 - SEGA browser now includes an optional FPS overlay toggle, and the in-game control surface is tuned for the rotated handheld presentation.
 - Shared launcher icon set sized to fit the OTA partition budget.
@@ -78,9 +79,11 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - The Local Controller path now supports analog X/Y inputs plus MCP23017-backed buttons with a live on-device preview, serial input diagnostics, and the additional `Key` action on the default MCP `B4` mapping.
 - The Local Controller settings page now includes integrated WS2812 / Neopixel controls, configurable haptic GPIO and strength, and live test feedback for motor changes without blocking the rest of the UI.
 - Settings > Display now exposes saved 0/90/180/270 orientation control that applies live at runtime, including corrected touch remapping after rotation.
+- Display rotation changes now use a live 30-second confirmation flow that reverts automatically if the user does not confirm the new orientation.
 - Battery sampling now detaches from ADC2 while the Local Controller is active so analog local inputs can run without the previous ADC2 ownership conflict.
 - The settings UI now includes compact Bluetooth and ZigBee status icons used by the latest wireless status flow.
 - Settings now exposes separate Media and System Sounds volume controls on the shared audio output path.
+- The top-right quick-access curtain now also exposes a persistent microphone gain slider from `x1` to `x10`, and the recorder input path uses that shared gain setting.
 - UI tap sounds now reuse the shared audio policy more effectively, so idle taps no longer sound noticeably weaker than taps triggered while media is already playing.
 - Hardware Monitor now keeps one hour of background history in PSRAM for CPU load, SRAM, PSRAM, Wi-Fi, battery, and CPU temperature instead of sampling only while the page is open.
 - Hardware Monitor SD-card status now follows the app-wide storage mount state, so it no longer disagrees with File Manager when the card is mounted and browsable.
@@ -122,13 +125,14 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ### Launcher And Native Apps
 
 - Phone-style launcher UI based on ESP-Brookesia and LVGL.
-- Settings, Calculator, Files, E-Reader, MQTT, Music Player, Internet Radio, Image Display, and SEGA Emulator.
+- Settings, Calculator, Files, E-Reader, MQTT, Music Player, Internet Radio, Recorder, Image Display, and SEGA Emulator.
 - SEGA Emulator app integrated into the launcher instead of living as a separate upstream project.
 
 ### Media And Storage
 
 - Files app can inspect both onboard SPIFFS and the SD card.
 - E-Reader reads supported files from the SD card.
+- Recorder captures AAC files to `/sdcard/record`, updates the saved-recordings list while recording, and supports playback directly from the recorder app.
 - Image Viewer now looks only in `/sdcard/image`, lazy-loads gallery thumbnails, keeps a dynamic `/sdcard/sys/thumbs` cache in sync with the image folder, and uses safer fullscreen/slideshow transitions.
 - Music and image sample payloads were removed from SPIFFS to save flash.
 - The firmware updater can scan `/sdcard/firmware` for local `.bin` images or check GitHub releases for OTA-ready `.bin` assets.
@@ -147,6 +151,8 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Manual timezone selection is available in GMT offsets.
 - Auto timezone mode can update the offset from online geolocation when internet access is available.
 - Display orientation can be changed live between 0, 90, 180, and 270 degrees from Settings > Display, and the selected rotation is restored on the next boot.
+- Rotation changes now show a 30-second confirmation dialog and only persist after the user presses `OK`; otherwise the previous orientation is restored automatically.
+- Quick-access audio controls include separate Media, System, and Mic sliders, with the Mic control mapped to the recorder input gain.
 - Factory Reset in Settings > Firmware clears the app preferences namespace and reapplies defaults immediately.
 
 ### Stability And Crash Recovery
@@ -200,6 +206,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ## SD Card Layout
 
 - `/sdcard/music` for music content.
+- `/sdcard/record` for AAC voice recordings captured by the Recorder app.
 - `/sdcard/image` for image content.
 - `/sdcard/sys/thumbs` for cached Image Viewer thumbnails.
 - `/sdcard/sega_games` for SEGA ROMs.
@@ -224,7 +231,7 @@ Current modular switches include:
 
 - Connectivity domains: Wi-Fi, Bluetooth, BLE, ZigBee, internet time/date sync.
 - System domains: hardware info, battery, display, audio, security, OTA, about-device.
-- Launcher apps: Settings, Calculator, SEGA Emulator, Image Viewer, File Manager, Music Player, Internet Radio, E-Reader, MQTT.
+- Launcher apps: Settings, Calculator, SEGA Emulator, Image Viewer, File Manager, Music Player, Internet Radio, Recorder, E-Reader, MQTT.
 
 Within the Settings app, these feature flags now also gate the actual Settings sections and their supporting runtime work. For example, disabling BLE removes the Bluetooth entry from Settings and skips its startup path, and disabling OTA removes the firmware updater entry and screen.
 

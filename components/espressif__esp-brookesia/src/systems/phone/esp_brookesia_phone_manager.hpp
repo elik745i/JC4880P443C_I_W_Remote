@@ -157,6 +157,8 @@ private:
     lv_obj_t *_quick_access_media_volume_value_label;
     lv_obj_t *_quick_access_system_volume_slider;
     lv_obj_t *_quick_access_system_volume_value_label;
+    lv_obj_t *_quick_access_mic_gain_slider;
+    lv_obj_t *_quick_access_mic_gain_value_label;
     lv_obj_t *_quick_access_restart_button;
     lv_obj_t *_quick_access_shutdown_button;
     lv_obj_t *_quick_access_sleep_button;

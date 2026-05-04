@@ -8,7 +8,7 @@ dependencies:
     - name: idf
       version: '>=5.0'
     source:
-      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\managed_components\chmorgan__esp-audio-player
+      path: C:\Users\elik\Documents\Arduino\JC4880P443C_I_W_Remote-main\managed_components\chmorgan__esp-audio-player
       type: local
     version: 1.0.7
   chmorgan/esp-file-iterator:
@@ -16,7 +16,7 @@ dependencies:
     - name: idf
       version: '>=4.1.0'
     source:
-      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\managed_components\chmorgan__esp-file-iterator
+      path: C:\Users\elik\Documents\Arduino\JC4880P443C_I_W_Remote-main\managed_components\chmorgan__esp-file-iterator
       type: local
     version: 1.0.0
   chmorgan/esp-libhelix-mp3:
@@ -36,7 +36,7 @@ dependencies:
     - name: idf
       version: '>5.0.4,!=5.1.1'
     source:
-      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\common_components\espressif__esp_lcd_st7701
+      path: C:\Users\elik\Documents\Arduino\JC4880P443C_I_W_Remote-main\common_components\espressif__esp_lcd_st7701
       type: local
     targets:
     - esp32s3
@@ -97,13 +97,13 @@ dependencies:
   espressif/esp-brookesia:
     dependencies: []
     source:
-      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\components\espressif__esp-brookesia
+      path: C:\Users\elik\Documents\Arduino\JC4880P443C_I_W_Remote-main\components\espressif__esp-brookesia
       type: local
     version: 0.4.2
   espressif/esp32_p4_function_ev_board:
     dependencies: []
     source:
-      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\common_components\espressif__esp32_p4_function_ev_board
+      path: C:\Users\elik\Documents\Arduino\JC4880P443C_I_W_Remote-main\common_components\espressif__esp32_p4_function_ev_board
       type: local
     version: 4.1.1
   espressif/esp_audio_codec:
@@ -131,7 +131,7 @@ dependencies:
     - name: idf
       version: '>=5.3'
     source:
-      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\managed_components\espressif__esp_hosted
+      path: C:\Users\elik\Documents\Arduino\JC4880P443C_I_W_Remote-main\managed_components\espressif__esp_hosted
       type: local
     version: 2.12.3
   espressif/esp_lcd_ek79007:
@@ -165,7 +165,7 @@ dependencies:
   espressif/esp_lcd_st7701:
     dependencies: []
     source:
-      path: C:\Users\Elik\Documents\Arduino\JC4880P443C_I_W_Remote\common_components\espressif__esp_lcd_st7701
+      path: C:\Users\elik\Documents\Arduino\JC4880P443C_I_W_Remote-main\common_components\espressif__esp_lcd_st7701
       type: local
     version: 1.1.3
   espressif/esp_lcd_touch:

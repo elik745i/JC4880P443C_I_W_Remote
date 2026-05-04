@@ -678,13 +678,6 @@ CONFIG_SECURE_ROM_DL_MODE_ENABLED=y
 # end of Security features
 
 #
-# Example Board Configuration
-#
-# CONFIG_ESP_LYRAT_V4_3_BOARD is not set
-CONFIG_ESP_CUSTOM_BOARD=y
-# end of Example Board Configuration
-
-#
 # Application manager
 #
 CONFIG_APP_COMPILE_TIME_DATE=y
@@ -827,6 +820,7 @@ CONFIG_JC4880_APP_IMAGE_VIEWER=y
 CONFIG_JC4880_APP_FILE_MANAGER=y
 CONFIG_JC4880_APP_WEB_SERVER=y
 CONFIG_JC4880_APP_MUSIC_PLAYER=y
+CONFIG_JC4880_APP_RECORDER=y
 CONFIG_JC4880_APP_INTERNET_RADIO=y
 CONFIG_JC4880_APP_EREADER=y
 CONFIG_JC4880_APP_MQTT=y
@@ -921,12 +915,6 @@ CONFIG_APPTRACE_LOCK_ENABLE=y
 # CONFIG_BT_LE_USED_MEM_STATISTICS_ENABLED is not set
 # end of Common Options
 # end of Bluetooth
-
-#
-# BTstack Configuration
-#
-# CONFIG_BTSTACK_AUDIO is not set
-# end of BTstack Configuration
 
 #
 # Console Library

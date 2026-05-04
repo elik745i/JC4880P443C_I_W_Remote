@@ -148,6 +148,10 @@ static InternetRadio *s_internetRadioApp = nullptr;
 static RecorderApp *s_recorderApp = nullptr;
 #endif
 
+#if CONFIG_JC4880_APP_RS485
+static RS485App *s_rs485App = nullptr;
+#endif
+
 static bool s_crashReportUploadInFlight = false;
 static bool s_tapSoundEnabled = true;
 static bool s_hapticFeedbackEnabled = true;
@@ -1299,6 +1303,31 @@ static bool start_serial_app_instance(ESP_Brookesia_CoreApp *app, const char *la
     return ok;
 }
 
+static bool stop_serial_app_instance(ESP_Brookesia_CoreApp *app, const char *label)
+{
+    if (s_phone == nullptr) {
+        printf("[app] phone unavailable\r\n");
+        return false;
+    }
+
+    if (app == nullptr) {
+        printf("[app] unavailable: %s\r\n", label == nullptr ? "unknown" : label);
+        return false;
+    }
+
+    ESP_Brookesia_CoreAppEventData_t app_event_data = {
+        .id = app->getId(),
+        .type = ESP_BROOKESIA_CORE_APP_EVENT_TYPE_STOP,
+    };
+
+    bsp_display_lock(0);
+    const bool ok = s_phone->sendAppEvent(&app_event_data);
+    bsp_display_unlock();
+
+    printf("[app] stop name=\"%s\" id=%d %s\r\n", label == nullptr ? app->getName() : label, app->getId(), ok ? "queued" : "failed");
+    return ok;
+}
+
 static void print_serial_command_help(void)
 {
     printf("[serial] Commands:\r\n");
@@ -1335,6 +1364,17 @@ static void print_serial_command_help(void)
     printf("[serial]   recorder.list\r\n");
     printf("[serial]   recorder.playlatest\r\n");
     printf("[serial]   recorder.play <index>\r\n");
+#endif
+
+#if CONFIG_JC4880_APP_RS485
+    printf("[serial]   rs485.status\r\n");
+    printf("[serial]   rs485.open\r\n");
+    printf("[serial]   rs485.scan.start\r\n");
+    printf("[serial]   rs485.scan.stop\r\n");
+    printf("[serial]   rs485.sendascii <text>\r\n");
+    printf("[serial]   rs485.sendhex <AA BB CC>\r\n");
+    printf("[serial]   rs485.exportlog\r\n");
+    printf("[serial]   rs485.close\r\n");
 #endif
 }
 
@@ -1672,6 +1712,95 @@ static void handle_serial_command(const std::string &raw_command)
         (command == "recorder.stop") || (command == "recorder.list") || (command == "recorder.playlatest") ||
         (command.rfind("recorder.play ", 0) == 0)) {
         printf("[recorder] recorder app is disabled in menuconfig\r\n");
+        return;
+    }
+#endif
+
+#if CONFIG_JC4880_APP_RS485
+    if (command == "rs485.status") {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        printf("[rs485] %s\r\n", s_rs485App->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "rs485.open") {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        printf("[rs485] open %s\r\n", start_serial_app_instance(s_rs485App, "rs485") ? "queued" : "failed");
+        return;
+    }
+
+    if (command == "rs485.scan.start") {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        printf("[rs485] scan %s\r\n", s_rs485App->debugStartScan() ? "started" : "failed");
+        printf("[rs485] %s\r\n", s_rs485App->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "rs485.scan.stop") {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        printf("[rs485] stop %s\r\n", s_rs485App->debugStopScan() ? "queued" : "failed");
+        printf("[rs485] %s\r\n", s_rs485App->debugDescribeState().c_str());
+        return;
+    }
+
+    static constexpr const char *kRs485AsciiPrefix = "rs485.sendascii ";
+    if (command.rfind(kRs485AsciiPrefix, 0) == 0) {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        const std::string payload = trim_copy(command.substr(std::strlen(kRs485AsciiPrefix)));
+        printf("[rs485] sendascii %s\r\n", s_rs485App->debugSendAscii(payload) ? "queued" : "failed");
+        printf("[rs485] %s\r\n", s_rs485App->debugDescribeState().c_str());
+        return;
+    }
+
+    static constexpr const char *kRs485HexPrefix = "rs485.sendhex ";
+    if (command.rfind(kRs485HexPrefix, 0) == 0) {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        const std::string payload = trim_copy(command.substr(std::strlen(kRs485HexPrefix)));
+        printf("[rs485] sendhex %s\r\n", s_rs485App->debugSendHex(payload) ? "queued" : "failed");
+        printf("[rs485] %s\r\n", s_rs485App->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "rs485.exportlog") {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        printf("[rs485] export %s\r\n", s_rs485App->debugExportLog() ? "ok" : "failed");
+        return;
+    }
+
+    if (command == "rs485.close") {
+        if (s_rs485App == nullptr) {
+            printf("[rs485] app unavailable\r\n");
+            return;
+        }
+        printf("[rs485] close %s\r\n", stop_serial_app_instance(s_rs485App, "rs485") ? "queued" : "failed");
+        return;
+    }
+#else
+    if ((command == "rs485.status") || (command == "rs485.open") || (command == "rs485.scan.start") ||
+        (command == "rs485.scan.stop") || (command == "rs485.exportlog") || (command == "rs485.close") ||
+        (command.rfind("rs485.sendascii ", 0) == 0) || (command.rfind("rs485.sendhex ", 0) == 0)) {
+        printf("[rs485] rs485 app is disabled in menuconfig\r\n");
         return;
     }
 #endif
@@ -2387,6 +2516,10 @@ extern "C" void app_main(void)
 
 #if CONFIG_JC4880_APP_RECORDER
     s_recorderApp = install_app_or_delete(*phone, new RecorderApp(), "recorder");
+#endif
+
+#if CONFIG_JC4880_APP_RS485
+    s_rs485App = install_app_or_delete(*phone, new RS485App(), "rs485");
 #endif
 
 #if CONFIG_JC4880_APP_INTERNET_RADIO

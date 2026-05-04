@@ -40,6 +40,10 @@
 #include "recorder/Recorder.hpp"
 #endif
 
+#if CONFIG_JC4880_APP_RS485
+#include "rs485/RS485.hpp"
+#endif
+
 #if CONFIG_JC4880_APP_SEGA_EMULATOR
 #include "sega_emulator/SegaEmulator.hpp"
 #endif

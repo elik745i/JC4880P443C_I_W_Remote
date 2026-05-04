@@ -25,6 +25,7 @@ list(APPEND SRCS_C ${PHONE_SRCS_C})
 list(APPEND SRCS_CPP ${PHONE_SRCS_CPP})
 
 set(ICON_SRC_DIR ${CMAKE_CURRENT_LIST_DIR}/../icons)
+set(ICON_ALT_SRC_DIR ${PROJECT_DIR}/3D)
 set(GENERATED_ICON_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated_icons)
 set(ICON_GENERATOR ${CMAKE_CURRENT_LIST_DIR}/../../tools/png_to_lvgl_c.py)
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
@@ -85,13 +86,23 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
         DEPENDS ${ICON_SRC_DIR}/record.png ${ICON_GENERATOR}
         VERBATIM)
 
+    add_custom_command(
+        OUTPUT ${GENERATED_ICON_DIR}/rs485_png.c
+        COMMAND ${python} ${ICON_GENERATOR}
+                --input ${ICON_ALT_SRC_DIR}/rs485.png
+                --output ${GENERATED_ICON_DIR}/rs485_png.c
+                --symbol rs485_png
+        DEPENDS ${ICON_ALT_SRC_DIR}/rs485.png ${ICON_GENERATOR}
+        VERBATIM)
+
     list(APPEND SRCS_C
         ${GENERATED_ICON_DIR}/airplane_png.c
         ${GENERATED_ICON_DIR}/sleep_png.c
         ${GENERATED_ICON_DIR}/unmuted_png.c
         ${GENERATED_ICON_DIR}/muted_png.c
         ${GENERATED_ICON_DIR}/mutedall_png.c
-        ${GENERATED_ICON_DIR}/record_png.c)
+        ${GENERATED_ICON_DIR}/record_png.c
+        ${GENERATED_ICON_DIR}/rs485_png.c)
 endif()
 
 set(WIDGETS_SRC_DIR ${PROJ_SRC_DIR}/widgets)

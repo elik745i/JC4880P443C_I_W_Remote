@@ -43,6 +43,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - MQTT app with launch-page broker, credentials, client ID, and topic settings for quick connection testing.
 - Internet Radio app with station discovery by popularity, country, language, and category.
 - Native Recorder app for AAC recording on the built-in microphone, with SD-card saving under `/sdcard/record`, live spectrum visualization, in-app playback, and PSRAM-first runtime buffers.
+- Native RS-485 HMI app for field-service scanning, raw terminal traffic, Modbus RTU master access, saved profiles, dashboard polling, and communication logs.
 - Native SEGA app with Master System, Game Gear, SG-1000, and Genesis / Mega Drive ROM support.
 - SEGA browser now includes an optional FPS overlay toggle, and the in-game control surface is tuned for the rotated handheld presentation.
 - Shared launcher icon set sized to fit the OTA partition budget.
@@ -125,7 +126,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ### Launcher And Native Apps
 
 - Phone-style launcher UI based on ESP-Brookesia and LVGL.
-- Settings, Calculator, Files, E-Reader, MQTT, Music Player, Internet Radio, Recorder, Image Display, and SEGA Emulator.
+- Settings, Calculator, Files, E-Reader, MQTT, Music Player, Internet Radio, Recorder, RS-485 HMI, Image Display, and SEGA Emulator.
 - SEGA Emulator app integrated into the launcher instead of living as a separate upstream project.
 
 ### Media And Storage
@@ -133,6 +134,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Files app can inspect both onboard SPIFFS and the SD card.
 - E-Reader reads supported files from the SD card.
 - Recorder captures AAC files to `/sdcard/record`, updates the saved-recordings list while recording, and supports playback directly from the recorder app.
+- RS-485 HMI stores exported communication logs under `/sdcard/rs485` and keeps saved transport/device state in persistent settings storage.
 - Image Viewer now looks only in `/sdcard/image`, lazy-loads gallery thumbnails, keeps a dynamic `/sdcard/sys/thumbs` cache in sync with the image folder, and uses safer fullscreen/slideshow transitions.
 - Music and image sample payloads were removed from SPIFFS to save flash.
 - The firmware updater can scan `/sdcard/firmware` for local `.bin` images or check GitHub releases for OTA-ready `.bin` assets.
@@ -207,6 +209,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 
 - `/sdcard/music` for music content.
 - `/sdcard/record` for AAC voice recordings captured by the Recorder app.
+- `/sdcard/rs485` for exported RS-485 communication logs.
 - `/sdcard/image` for image content.
 - `/sdcard/sys/thumbs` for cached Image Viewer thumbnails.
 - `/sdcard/sega_games` for SEGA ROMs.

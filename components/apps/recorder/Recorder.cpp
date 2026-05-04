@@ -18,6 +18,7 @@ RecorderApp::RecorderApp()
       _uiTimer(nullptr),
       _stateMutex(nullptr),
       _recordTaskHandle(nullptr),
+    _playbackTaskHandle(nullptr),
       _recordingActive(false),
       _stopRequested(false),
     _recordButtonCooldownUntil(0),
@@ -109,6 +110,8 @@ bool RecorderApp::back()
 
 bool RecorderApp::close()
 {
+    stopPlayback();
+    waitForPlaybackTaskStop();
     stopRecording();
     waitForRecordTaskStop();
     audio_player_stop();

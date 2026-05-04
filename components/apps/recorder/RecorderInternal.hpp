@@ -19,12 +19,16 @@ extern "C" {
 #include "audio_player.h"
 #include "bsp_board_extra.h"
 #include "driver/i2s_std.h"
+#include "esp_audio_dec_default.h"
+#include "esp_audio_simple_dec.h"
+#include "esp_audio_simple_dec_default.h"
 #include "esp_aac_enc.h"
 #include "esp_check.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/idf_additions.h"
+#include "impl/esp_aac_dec.h"
 }
 
 #include "storage_access.h"
@@ -44,6 +48,10 @@ inline constexpr uint32_t kSpectrumUpdateIntervalMs = 120;
 inline constexpr TickType_t kRecordButtonCooldown = pdMS_TO_TICKS(250);
 inline constexpr uint32_t kRecordTaskStack = 12288;
 inline constexpr UBaseType_t kRecordTaskPriority = 5;
+inline constexpr uint32_t kPlaybackTaskStack = 16384;
+inline constexpr UBaseType_t kPlaybackTaskPriority = 5;
+inline constexpr size_t kPlaybackReadBufferSize = 1024;
+inline constexpr size_t kPlaybackOutputBufferSize = 4096;
 inline constexpr lv_coord_t kHeaderHeight = 126;
 inline constexpr lv_coord_t kRecordButtonSize = 92;
 inline constexpr lv_coord_t kRecordRingBaseSize = 106;
@@ -74,6 +82,38 @@ struct HeapCapsDeleter {
 };
 
 using HeapCapsBuffer = std::unique_ptr<uint8_t, HeapCapsDeleter>;
+
+inline int16_t clip_pcm_sample(int32_t value)
+{
+    if (value > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (value < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return static_cast<int16_t>(value);
+}
+
+inline void apply_shared_audio_gain(int16_t *samples, size_t sampleCount, int gainLevel)
+{
+    if ((samples == nullptr) || (sampleCount == 0)) {
+        return;
+    }
+
+    const int level = std::max(1, gainLevel);
+    if (level <= 1) {
+        return;
+    }
+
+    for (size_t index = 0; index < sampleCount; ++index) {
+        samples[index] = clip_pcm_sample(static_cast<int32_t>(samples[index]) * level);
+    }
+}
+
+inline void apply_shared_mic_gain(int16_t *samples, size_t sampleCount)
+{
+    apply_shared_audio_gain(samples, sampleCount, bsp_extra_audio_mic_gain_get_level());
+}
 
 inline bool has_aac_extension(const char *name)
 {

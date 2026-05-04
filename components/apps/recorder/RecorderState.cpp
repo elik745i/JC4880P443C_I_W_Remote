@@ -27,6 +27,23 @@ void RecorderApp::waitForRecordTaskStop()
     }
 }
 
+void RecorderApp::waitForPlaybackTaskStop()
+{
+    while (true) {
+        TaskHandle_t taskHandle = nullptr;
+        if (xSemaphoreTake(_stateMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            taskHandle = _playbackTaskHandle;
+            xSemaphoreGive(_stateMutex);
+        }
+
+        if (taskHandle == nullptr) {
+            return;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
 void RecorderApp::releaseRuntimeResources()
 {
     _playButtonContexts.clear();
@@ -42,12 +59,15 @@ void RecorderApp::releaseRuntimeResources()
         _recordButtonCooldownUntil = 0;
         _playbackActive = false;
         _playbackStopRequested = false;
+        _playbackTaskHandle = nullptr;
         _playingIndex = std::numeric_limits<size_t>::max();
         _playbackStartedAt = 0;
         _playbackElapsedSeconds = 0;
         _playbackDurationSeconds = 0;
         xSemaphoreGive(_stateMutex);
     }
+
+    _activePlaybackPath.clear();
 }
 
 void RecorderApp::copyUiState(std::array<int16_t, kSpectrumBins> &spectrum,

@@ -144,6 +144,7 @@ void RecorderApp::recordTask()
     std::string finalPath;
     uint64_t totalPcmBytes = 0;
     uint64_t totalEncodedBytes = 0;
+    size_t finalFileSize = 0;
 
     do {
         audio_player_stop();
@@ -250,6 +251,9 @@ void RecorderApp::recordTask()
                 break;
             }
 
+            apply_shared_mic_gain(reinterpret_cast<int16_t *>(pcmBuffer.get()),
+                                  static_cast<size_t>(inFrameSize) / sizeof(int16_t));
+
             const TickType_t now = xTaskGetTickCount();
             if ((nextSpectrumTick == 0) || (now >= nextSpectrumTick)) {
                 updateSpectrumFromPcm(reinterpret_cast<const int16_t *>(pcmBuffer.get()),
@@ -334,7 +338,14 @@ void RecorderApp::recordTask()
         std::fclose(output);
     }
 
-    success = status.empty() && !finalPath.empty() && (totalEncodedBytes > 0);
+    if (!finalPath.empty()) {
+        struct stat fileInfo = {};
+        if (stat(finalPath.c_str(), &fileInfo) == 0) {
+            finalFileSize = static_cast<size_t>(fileInfo.st_size);
+        }
+    }
+
+    success = !finalPath.empty() && (finalFileSize > 0);
 
     if (!success && !finalPath.empty()) {
         unlink(finalPath.c_str());
@@ -353,6 +364,8 @@ void RecorderApp::recordTask()
             _statusMessage = std::string("Saved ") + ((fileName != nullptr) ? (fileName + 1) : finalPath.c_str());
         } else if (!status.empty()) {
             _statusMessage = status;
+        } else if (totalPcmBytes > 0) {
+            _statusMessage = "Recording was too short to save";
         } else {
             _statusMessage = "Recording canceled";
         }

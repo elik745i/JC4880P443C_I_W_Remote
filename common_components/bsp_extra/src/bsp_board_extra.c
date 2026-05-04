@@ -130,7 +130,8 @@ static int audio_clamp_mic_gain_level(int level)
 
 static int audio_mic_gain_level_to_codec_gain(int level)
 {
-    return (audio_clamp_mic_gain_level(level) - 1) * 24 / 9;
+    (void)level;
+    return (int)CODEC_DEFAULT_ADC_VOLUME;
 }
 
 static bool bsp_extra_dns_server_configured(const ip_addr_t *address)

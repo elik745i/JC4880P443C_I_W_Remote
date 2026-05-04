@@ -26,9 +26,9 @@ lv_color_t interpolate_color(lv_color_t left, lv_color_t right, uint8_t mix)
 lv_color_t spectrum_color_for_bin(int index)
 {
     constexpr int kSpectrumBinCount = 24;
-    const lv_color_t low = lv_color_hex(0xFF6B6B);
-    const lv_color_t mid = lv_color_hex(0xFFD166);
-    const lv_color_t high = lv_color_hex(0x4ECDC4);
+    const lv_color_t low = lv_color_hex(0xFF7A9A);
+    const lv_color_t mid = lv_color_hex(0xFFE27A);
+    const lv_color_t high = lv_color_hex(0x62F5EA);
     const int last = kSpectrumBinCount - 1;
 
     if (index <= (last / 2)) {
@@ -137,26 +137,30 @@ void RecorderApp::buildUi()
     lv_obj_align_to(chartCard, header, LV_ALIGN_OUT_BOTTOM_MID, 0, kSectionGap);
     lv_obj_set_style_radius(chartCard, 28, 0);
     lv_obj_set_style_border_width(chartCard, 0, 0);
-    lv_obj_set_style_bg_color(chartCard, lv_color_hex(0x1B1014), 0);
-    lv_obj_set_style_bg_opa(chartCard, LV_OPA_90, 0);
+    lv_obj_set_style_bg_color(chartCard, lv_color_hex(0x2A141B), 0);
+    lv_obj_set_style_bg_grad_color(chartCard, lv_color_hex(0x3A1A24), 0);
+    lv_obj_set_style_bg_grad_dir(chartCard, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(chartCard, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(chartCard, 26, 0);
+    lv_obj_set_style_shadow_color(chartCard, lv_color_hex(0x4A1B29), 0);
+    lv_obj_set_style_shadow_opa(chartCard, LV_OPA_40, 0);
     lv_obj_set_style_pad_all(chartCard, 18, 0);
     lv_obj_clear_flag(chartCard, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *chartTitle = lv_label_create(chartCard);
-    lv_obj_set_style_text_font(chartTitle, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(chartTitle, lv_color_hex(0xFFD8E0), 0);
-    lv_label_set_text(chartTitle, "Live Spectrum");
-    lv_obj_align(chartTitle, LV_ALIGN_TOP_LEFT, 0, 0);
-
     _spectrumChart = lv_obj_create(chartCard);
-    lv_obj_set_size(_spectrumChart, width - 68, 166);
-    lv_obj_align(_spectrumChart, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_size(_spectrumChart, width - 68, 170);
+    lv_obj_center(_spectrumChart);
     lv_obj_set_style_radius(_spectrumChart, 20, 0);
-    lv_obj_set_style_border_width(_spectrumChart, 0, 0);
-    lv_obj_set_style_bg_color(_spectrumChart, lv_color_hex(0x25161C), 0);
-    lv_obj_set_style_bg_grad_color(_spectrumChart, lv_color_hex(0x11080C), 0);
+    lv_obj_set_style_border_width(_spectrumChart, 2, 0);
+    lv_obj_set_style_border_color(_spectrumChart, lv_color_hex(0xE2A6B7), 0);
+    lv_obj_set_style_border_opa(_spectrumChart, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(_spectrumChart, lv_color_hex(0xFFF4F7), 0);
+    lv_obj_set_style_bg_grad_color(_spectrumChart, lv_color_hex(0xF8DDE6), 0);
     lv_obj_set_style_bg_grad_dir(_spectrumChart, LV_GRAD_DIR_VER, 0);
     lv_obj_set_style_bg_opa(_spectrumChart, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(_spectrumChart, 22, 0);
+    lv_obj_set_style_shadow_color(_spectrumChart, lv_color_hex(0x7C4454), 0);
+    lv_obj_set_style_shadow_opa(_spectrumChart, static_cast<lv_opa_t>(96), 0);
     lv_obj_set_style_pad_all(_spectrumChart, 12, 0);
     lv_obj_clear_flag(_spectrumChart, LV_OBJ_FLAG_SCROLLABLE);
     _spectrumSeries = nullptr;
@@ -166,8 +170,8 @@ void RecorderApp::buildUi()
         lv_obj_remove_style_all(gridLine);
         lv_obj_set_size(gridLine, lv_pct(100), 1);
         lv_obj_align(gridLine, LV_ALIGN_BOTTOM_MID, 0, -(grid * 28));
-        lv_obj_set_style_bg_color(gridLine, lv_color_hex(0x50303A), 0);
-        lv_obj_set_style_bg_opa(gridLine, static_cast<lv_opa_t>(grid == 4 ? 76 : 46), 0);
+        lv_obj_set_style_bg_color(gridLine, lv_color_hex(0xD38A9E), 0);
+        lv_obj_set_style_bg_opa(gridLine, static_cast<lv_opa_t>(grid == 4 ? 150 : 110), 0);
         lv_obj_clear_flag(gridLine, LV_OBJ_FLAG_SCROLLABLE);
     }
 
@@ -179,7 +183,7 @@ void RecorderApp::buildUi()
     const lv_coord_t chartLeft = 12;
     for (int index = 0; index < kSpectrumBins; ++index) {
         const lv_color_t baseColor = spectrum_color_for_bin(index);
-        const lv_color_t glowColor = interpolate_color(baseColor, lv_color_hex(0xFFFFFF), 72);
+        const lv_color_t glowColor = interpolate_color(baseColor, lv_color_hex(0xFFFFFF), 118);
         const lv_coord_t x = chartLeft + (index * (barWidth + columnGap));
 
         _spectrumBars[index] = lv_obj_create(_spectrumChart);
@@ -191,21 +195,21 @@ void RecorderApp::buildUi()
         lv_obj_set_style_bg_grad_color(_spectrumBars[index], glowColor, 0);
         lv_obj_set_style_bg_grad_dir(_spectrumBars[index], LV_GRAD_DIR_VER, 0);
         lv_obj_set_style_bg_opa(_spectrumBars[index], LV_OPA_COVER, 0);
-        lv_obj_set_style_shadow_width(_spectrumBars[index], 10, 0);
-        lv_obj_set_style_shadow_color(_spectrumBars[index], baseColor, 0);
-        lv_obj_set_style_shadow_opa(_spectrumBars[index], LV_OPA_40, 0);
+        lv_obj_set_style_shadow_width(_spectrumBars[index], 24, 0);
+        lv_obj_set_style_shadow_color(_spectrumBars[index], glowColor, 0);
+        lv_obj_set_style_shadow_opa(_spectrumBars[index], LV_OPA_90, 0);
         lv_obj_clear_flag(_spectrumBars[index], LV_OBJ_FLAG_SCROLLABLE);
 
         _spectrumCaps[index] = lv_obj_create(_spectrumChart);
         lv_obj_remove_style_all(_spectrumCaps[index]);
-        lv_obj_set_size(_spectrumCaps[index], barWidth + 2, 4);
+        lv_obj_set_size(_spectrumCaps[index], barWidth + 2, 5);
         lv_obj_set_pos(_spectrumCaps[index], x - 1, chartBottom - 12);
         lv_obj_set_style_radius(_spectrumCaps[index], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(_spectrumCaps[index], glowColor, 0);
-        lv_obj_set_style_bg_opa(_spectrumCaps[index], static_cast<lv_opa_t>(217), 0);
-        lv_obj_set_style_shadow_width(_spectrumCaps[index], 10, 0);
+        lv_obj_set_style_bg_opa(_spectrumCaps[index], LV_OPA_COVER, 0);
+        lv_obj_set_style_shadow_width(_spectrumCaps[index], 18, 0);
         lv_obj_set_style_shadow_color(_spectrumCaps[index], glowColor, 0);
-        lv_obj_set_style_shadow_opa(_spectrumCaps[index], static_cast<lv_opa_t>(140), 0);
+        lv_obj_set_style_shadow_opa(_spectrumCaps[index], LV_OPA_90, 0);
         lv_obj_clear_flag(_spectrumCaps[index], LV_OBJ_FLAG_SCROLLABLE);
     }
 
@@ -420,7 +424,7 @@ void RecorderApp::tickUi()
                 continue;
             }
 
-            const int boostedValue = std::min(100, static_cast<int>(spectrum[index]) + 8 + ((index % 3) == 0 ? 6 : 0));
+            const int boostedValue = std::min(100, static_cast<int>(spectrum[index]) + 16 + ((index % 3) == 0 ? 8 : 0));
             const int smoothedValue = (_spectrumDisplayValues[index] * 2 + boostedValue * 3) / 5;
             _spectrumDisplayValues[index] = static_cast<int16_t>(smoothedValue);
             if (smoothedValue >= _spectrumPeakValues[index]) {
@@ -434,7 +438,7 @@ void RecorderApp::tickUi()
             lv_obj_set_height(_spectrumBars[index], barHeight);
             lv_obj_set_y(_spectrumBars[index], chartBottom - barHeight);
             lv_obj_set_y(_spectrumCaps[index], peakY);
-            lv_obj_set_style_bg_opa(_spectrumCaps[index], static_cast<lv_opa_t>(std::min<int>(LV_OPA_90, 48 + _spectrumPeakValues[index] * 2)), 0);
+            lv_obj_set_style_bg_opa(_spectrumCaps[index], static_cast<lv_opa_t>(std::min<int>(LV_OPA_COVER, 92 + _spectrumPeakValues[index])), 0);
         }
     }
 

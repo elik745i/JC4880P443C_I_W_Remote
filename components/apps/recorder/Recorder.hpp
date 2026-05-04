@@ -105,6 +105,7 @@ private:
     static void onPlayButtonEvent(lv_event_t *event);
     static void onUiTimer(lv_timer_t *timer);
     static void recordTaskEntry(void *context);
+    static void playbackTaskEntry(void *context);
     static void pulseAnimSizeCallback(void *object, int32_t value);
     static void pulseAnimOpacityCallback(void *object, int32_t value);
 
@@ -122,11 +123,13 @@ private:
     void playRecording(size_t index);
     bool playRecordingEntry(const RecordingEntry &entry);
     void stopPlayback();
+    void playbackTask();
     bool requestPlaybackToggle(size_t index);
     void syncPlaybackState();
     std::string createRecordingPath() const;
     void setStatusMessage(const std::string &message);
     void waitForRecordTaskStop();
+    void waitForPlaybackTaskStop();
     void releaseRuntimeResources();
     void copyUiState(std::array<int16_t, kSpectrumBins> &spectrum, uint32_t &seconds, bool &recording,
                      bool &refreshList, bool &playbackActive, size_t &playingIndex, uint32_t &playbackSeconds,
@@ -151,6 +154,7 @@ private:
 
     SemaphoreHandle_t _stateMutex;
     TaskHandle_t _recordTaskHandle;
+    TaskHandle_t _playbackTaskHandle;
     bool _recordingActive;
     bool _stopRequested;
     TickType_t _recordButtonCooldownUntil;
@@ -167,6 +171,7 @@ private:
     uint32_t _playbackDurationSeconds;
     std::string _statusMessage;
     std::string _activeRecordingPath;
+    std::string _activePlaybackPath;
     std::vector<RecordingEntry, PsramAllocator<RecordingEntry>> _recordings;
     std::vector<PlayButtonContext, PsramAllocator<PlayButtonContext>> _playButtonContexts;
 };

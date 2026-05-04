@@ -48,7 +48,7 @@ extern "C" {
         },                                                                  \
         .icon = ESP_BROOKESIA_PHONE_800_480_DARK_APP_LAUNCHER_ICON_DATA(),         \
         .flags = {                                                          \
-            .enable_table_scroll_anim = 0,                                  \
+            .enable_table_scroll_anim = 1,                                  \
         },                                                                  \
     }
 

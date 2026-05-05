@@ -1,4 +1,5 @@
 build/
+dependencies.lock
 .vscode/*
 !.vscode/c_cpp_properties.json
 !.vscode/extensions.json

@@ -4,6 +4,7 @@ cmake_minimum_required(VERSION 3.5)
 
 set(EXTRA_COMPONENT_DIRS
     ../third_party/bluepad32/src/components
+    ../third_party/bluepad32/external/btstack/port/esp32/components
 )
 
 # Add the wrap flag for esp_wifi_init

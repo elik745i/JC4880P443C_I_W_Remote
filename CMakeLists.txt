@@ -34,4 +34,4 @@ add_compile_options(
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-deprecated-enum-enum-conversion")
 
-project(ESP32P4_Remote VERSION 1.3.2)
+project(ESP32P4_Remote VERSION 1.3.3)

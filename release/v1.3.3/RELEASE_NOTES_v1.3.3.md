@@ -9,8 +9,8 @@
 ## Validated Build Sizes
 
 - Main ESP32-P4 OTA app image: `0x733090` bytes, leaving `0x08CF70` bytes free in either `0x7C0000` OTA slot.
-- ESP32-C6 app image: `0x1C7E50` bytes, leaving `0x0181B0` bytes free in the 1920 KB app slot.
-- ESP32-C6 merged flash image: `0x1D7E50` bytes.
+- ESP32-C6 app image: `0x1C86D0` bytes, leaving `0x017930` bytes free in the 1920 KB app slot.
+- ESP32-C6 merged flash image: `0x1D86D0` bytes.
 
 ## Included Assets
 

@@ -4,7 +4,6 @@
     // 2. Use "JC4880: Build and Flash P4" or "JC4880: Build and Flash C6" for the common one-shot flow.
     // 3. "JC4880: Flash Selected Target" still works if you want one shared flash task.
     // 4. Ports and baud rates are configured below.
-    "cmake.cmakePath": "C:\\Users\\Elik\\.espressif\\tools\\cmake\\3.30.2\\bin\\cmake.exe",
     "cmake.configureOnOpen": false,
     "cmake.generator": "Ninja",
     "cmake.environment": {

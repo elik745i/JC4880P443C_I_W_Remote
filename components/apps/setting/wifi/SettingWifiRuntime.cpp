@@ -1276,15 +1276,24 @@ void AppSettings::wifiConnectTask(void *arg)
 
     app->populateWifiStaConfig(wifi_config, credential);
 
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED | WIFI_EVENT_CONNECTING);
-
     app->setNvsParam(NVS_KEY_WIFI_ENABLE, 1);
     app->_nvs_param_map[NVS_KEY_WIFI_ENABLE] = true;
-    ESP_LOGI(TAG, "Starting Wi-Fi connection for SSID: %s", st_wifi_ssid);
-    app->requestWifiConnect("manual connection");
+
+    const esp_err_t start_err = esp_wifi_start();
+    if ((start_err == ESP_OK) || (start_err == ESP_ERR_WIFI_CONN)) {
+        const esp_err_t storage_err = esp_wifi_set_storage(WIFI_STORAGE_FLASH);
+        const esp_err_t config_err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+        if ((storage_err == ESP_OK) && (config_err == ESP_OK)) {
+            xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED | WIFI_EVENT_CONNECTING);
+            ESP_LOGI(TAG, "Starting Wi-Fi connection for SSID: %s", st_wifi_ssid);
+            app->requestWifiConnect("manual connection");
+        } else {
+            ESP_LOGW(TAG, "Failed to apply manual Wi-Fi config: storage=%s config=%s",
+                     esp_err_to_name(storage_err), esp_err_to_name(config_err));
+        }
+    } else {
+        ESP_LOGW(TAG, "Failed to restart Wi-Fi for manual connection: %s", esp_err_to_name(start_err));
+    }
 
     bool connection_succeeded = false;
     const TickType_t wait_step = pdMS_TO_TICKS(250);

@@ -217,7 +217,7 @@
         {
             "label": "JC4880: Monitor P4",
             "type": "shell",
-            "command": "Set-Location '${workspaceFolder}'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' -p '${config:jc4880.ports.p4}' -b 115200 '${workspaceFolder}\\build\\ESP32P4_Remote.elf'",
+            "command": "$env:PATH='C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;' + $env:PATH; Set-Location '${workspaceFolder}'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' --toolchain-prefix 'riscv32-esp-elf-' --target esp32p4 -p '${config:jc4880.ports.p4}' -b 115200 '${workspaceFolder}\\build\\ESP32P4_Remote.elf'",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "shell": {
@@ -269,7 +269,7 @@
         {
             "label": "JC4880: Monitor C6",
             "type": "shell",
-            "command": "Set-Location '${workspaceFolder}\\coprocessor_c6'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' -p '${config:jc4880.ports.c6}' -b 115200 '${workspaceFolder}\\coprocessor_c6\\build\\network_adapter.elf'",
+            "command": "$env:PATH='C:\\Users\\Elik\\.espressif\\tools\\riscv32-esp-elf\\esp-14.2.0_20260121\\riscv32-esp-elf\\bin;' + $env:PATH; Set-Location '${workspaceFolder}\\coprocessor_c6'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\tools\\idf_monitor.py' --toolchain-prefix 'riscv32-esp-elf-' --target esp32c6 -p '${config:jc4880.ports.c6}' -b 115200 '${workspaceFolder}\\coprocessor_c6\\build\\network_adapter.elf'",
             "options": {
                 "cwd": "${workspaceFolder}",
                 "shell": {

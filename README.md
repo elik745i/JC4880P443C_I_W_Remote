@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.3.3 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.3.4 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -43,6 +43,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - MQTT app with launch-page broker, credentials, client ID, and topic settings for quick connection testing.
 - Internet Radio app with station discovery by popularity, country, language, and category.
 - Native Recorder app for AAC recording on the built-in microphone, with SD-card saving under `/sdcard/record`, live spectrum visualization, in-app playback, and PSRAM-first runtime buffers.
+- Native LoRa Mesh app with common and peer chat flows, persisted radio-module selection, GPIO remapping for SPI and UART modules, and startup/send-path hardening so the app can bring the radio up without blocking the rest of the UI.
 - Native RS-485 HMI app for field-service scanning, raw terminal traffic, Modbus RTU master access, saved profiles, dashboard polling, and communication logs.
 - Native SEGA app with Master System, Game Gear, SG-1000, and Genesis / Mega Drive ROM support.
 - SEGA browser now includes an optional FPS overlay toggle, and the in-game control surface is tuned for the rotated handheld presentation.
@@ -127,7 +128,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ### Launcher And Native Apps
 
 - Phone-style launcher UI based on ESP-Brookesia and LVGL.
-- Settings, Calculator, Files, E-Reader, MQTT, Music Player, Internet Radio, Recorder, RS-485 HMI, Image Display, and SEGA Emulator.
+- Settings, Calculator, Files, E-Reader, MQTT, Music Player, Internet Radio, LoRa Mesh, Recorder, RS-485 HMI, Image Display, and SEGA Emulator.
 - SEGA Emulator app integrated into the launcher instead of living as a separate upstream project.
 
 ### Media And Storage
@@ -203,7 +204,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides two balanced OTA app slots of `0x7C0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage is `0x040000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
-- Version 1.3.3 validates at `0x733090`, leaving `0x08CF70` bytes free in either OTA app slot.
+- Version 1.3.4 validates at `0x750170`, leaving `0x06FE90` bytes free in either OTA app slot.
 - Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout
@@ -342,6 +343,51 @@ To flash and open the serial monitor:
 
 ```bash
 idf.py -p PORT flash monitor
+```
+
+### USB Serial JTAG Debug Console
+
+The firmware also exposes a built-in USB Serial JTAG command console from `main/main.cpp`.
+
+Open it with the normal monitor command:
+
+```bash
+idf.py -p COM10 monitor
+```
+
+Then type `help` to list the available commands. The LoRa Mesh app now exposes its own `lora.*` debug and control commands through that same console.
+
+Important notes:
+
+- Use `lora.open` first to put the LoRa Mesh app on screen before sending view-changing commands.
+- View commands update the on-device UI so you can drive the app from serial while also watching the screen.
+- The app now emits LoRa lifecycle, navigation, startup, and self-test progress messages to the serial log.
+
+LoRa Mesh serial commands:
+
+- `lora.status`: print the current LoRa app state, including active view, startup state, radio readiness, self-test state, and selected chat.
+- `lora.open`: open the LoRa Mesh app visibly on the device.
+- `lora.targets`: switch the visible app view to the target list.
+- `lora.chat.common`: switch the visible app view to the common mesh chat.
+- `lora.chat.peer <device_id>`: switch the visible app view to a private chat for the given peer device ID.
+- `lora.peers`: list the known peers with device ID, display name, presence, RSSI, and SNR.
+- `lora.settings`: switch the visible app view to settings.
+- `lora.selftest.start`: start the visible LoRa self-test flow.
+- `lora.selftest.stop`: request that the current self-test stop cleanly.
+- `lora.log [count]`: dump the last log lines captured by the LoRa app. Default is `20` lines.
+- `lora.close`: close the visible LoRa Mesh app.
+
+Typical serial-driven LoRa debug flow:
+
+```text
+lora.open
+lora.status
+lora.settings
+lora.selftest.start
+lora.log 40
+lora.selftest.stop
+lora.targets
+lora.peers
 ```
 
 ### Preset Profiles

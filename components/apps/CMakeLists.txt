@@ -60,6 +60,10 @@ if(CONFIG_JC4880_APP_RS485)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/rs485)
 endif()
 
+if(CONFIG_JC4880_APP_LORA_MESH)
+    jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/lora_mesh)
+endif()
+
 if(CONFIG_JC4880_APP_INTERNET_RADIO)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/internet_radio)
 endif()

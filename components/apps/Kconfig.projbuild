@@ -127,6 +127,10 @@ menu "JC4880 Modular Configuration"
             bool "RS-485 HMI"
             default y
 
+        config JC4880_APP_LORA_MESH
+            bool "LoRa mesh"
+            default y
+
         config JC4880_APP_INTERNET_RADIO
             bool "Internet radio"
             default y

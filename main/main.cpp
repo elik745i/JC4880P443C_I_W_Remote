@@ -152,6 +152,10 @@ static RecorderApp *s_recorderApp = nullptr;
 static RS485App *s_rs485App = nullptr;
 #endif
 
+#if CONFIG_JC4880_APP_LORA_MESH
+static LoRaMeshApp *s_loraMeshApp = nullptr;
+#endif
+
 static bool s_crashReportUploadInFlight = false;
 static bool s_tapSoundEnabled = true;
 static bool s_hapticFeedbackEnabled = true;
@@ -1376,6 +1380,21 @@ static void print_serial_command_help(void)
     printf("[serial]   rs485.exportlog\r\n");
     printf("[serial]   rs485.close\r\n");
 #endif
+
+#if CONFIG_JC4880_APP_LORA_MESH
+    printf("[serial]   lora.status\r\n");
+    printf("[serial]   lora.open\r\n");
+    printf("[serial]   lora.targets\r\n");
+    printf("[serial]   lora.chat.common\r\n");
+    printf("[serial]   lora.chat.peer <device_id>\r\n");
+    printf("[serial]   lora.peers\r\n");
+    printf("[serial]   lora.settings\r\n");
+    printf("[serial]   lora.selftest.start\r\n");
+    printf("[serial]   lora.selftest.stop\r\n");
+    printf("[serial]   lora.send.common <text>\r\n");
+    printf("[serial]   lora.log [count]\r\n");
+    printf("[serial]   lora.close\r\n");
+#endif
 }
 
 static void handle_serial_command(const std::string &raw_command)
@@ -1801,6 +1820,178 @@ static void handle_serial_command(const std::string &raw_command)
         (command == "rs485.scan.stop") || (command == "rs485.exportlog") || (command == "rs485.close") ||
         (command.rfind("rs485.sendascii ", 0) == 0) || (command.rfind("rs485.sendhex ", 0) == 0)) {
         printf("[rs485] rs485 app is disabled in menuconfig\r\n");
+        return;
+    }
+#endif
+
+#if CONFIG_JC4880_APP_LORA_MESH
+    if (command == "lora.status") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "lora.open") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] opening app on screen\r\n");
+        printf("[lora] open %s\r\n", start_serial_app_instance(s_loraMeshApp, "lora mesh") ? "queued" : "failed");
+        return;
+    }
+
+    if (command == "lora.targets") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] targets %s\r\n", s_loraMeshApp->debugShowTargetsVisible() ? "queued" : "failed");
+        return;
+    }
+
+    if (command == "lora.chat.common") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] common chat %s\r\n", s_loraMeshApp->debugShowCommonChatVisible() ? "queued" : "failed");
+        return;
+    }
+
+    static constexpr const char *kLoraPeerChatPrefix = "lora.chat.peer ";
+    if (command.rfind(kLoraPeerChatPrefix, 0) == 0) {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        const std::string peer_id = trim_copy(command.substr(std::strlen(kLoraPeerChatPrefix)));
+        if (peer_id.empty()) {
+            printf("[lora] usage: lora.chat.peer <device_id>\r\n");
+            return;
+        }
+
+        printf("[lora] peer chat %s\r\n", s_loraMeshApp->debugShowPeerChatVisible(peer_id) ? "queued" : "failed");
+        return;
+    }
+
+    if (command == "lora.peers") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        const std::vector<std::string> peers = s_loraMeshApp->debugListPeerSummaries();
+        printf("[lora] peer_count=%u\r\n", static_cast<unsigned>(peers.size()));
+        for (const std::string &line : peers) {
+            printf("[lora]   %s\r\n", line.c_str());
+        }
+        return;
+    }
+
+    if (command == "lora.settings") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] settings %s\r\n", s_loraMeshApp->debugShowSettingsVisible() ? "queued" : "failed");
+        return;
+    }
+
+    if (command == "lora.selftest.start") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] selftest.start %s\r\n", s_loraMeshApp->debugRunSelfTestVisible() ? "queued" : "failed");
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "lora.selftest.stop") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] selftest.stop %s\r\n", s_loraMeshApp->debugStopSelfTestVisible() ? "queued" : "failed");
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    static constexpr const char *kLoraSendCommonPrefix = "lora.send.common ";
+    if (command.rfind(kLoraSendCommonPrefix, 0) == 0) {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        const std::string message = trim_copy(command.substr(std::strlen(kLoraSendCommonPrefix)));
+        if (message.empty()) {
+            printf("[lora] usage: lora.send.common <text>\r\n");
+            return;
+        }
+
+        printf("[lora] send.common %s\r\n", s_loraMeshApp->debugSendCommonMessageVisible(message) ? "queued" : "failed");
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if ((command == "lora.log") || (command.rfind("lora.log ", 0) == 0)) {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        size_t line_count = 20;
+        if (command.size() > std::strlen("lora.log")) {
+            const std::string count_text = trim_copy(command.substr(std::strlen("lora.log")));
+            if (!count_text.empty()) {
+                char *end = nullptr;
+                const unsigned long parsed = std::strtoul(count_text.c_str(), &end, 10);
+                if ((end == count_text.c_str()) || (*end != '\0') || (parsed == 0UL)) {
+                    printf("[lora] usage: lora.log [count]\r\n");
+                    return;
+                }
+                line_count = static_cast<size_t>(parsed);
+            }
+        }
+
+        const std::vector<std::string> lines = s_loraMeshApp->debugRecentLogLines(line_count);
+        printf("[lora] log_count=%u\r\n", static_cast<unsigned>(lines.size()));
+        for (const std::string &line : lines) {
+            printf("[lora]   %s\r\n", line.c_str());
+        }
+        return;
+    }
+
+    if (command == "lora.close") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] close %s\r\n", stop_serial_app_instance(s_loraMeshApp, "lora mesh") ? "queued" : "failed");
+        return;
+    }
+#else
+    if ((command == "lora.status") || (command == "lora.open") || (command == "lora.targets") ||
+        (command == "lora.chat.common") || (command == "lora.peers") || (command == "lora.settings") ||
+        (command == "lora.selftest.start") || (command == "lora.selftest.stop") || (command == "lora.close") ||
+        (command == "lora.log") || (command.rfind("lora.log ", 0) == 0) ||
+        (command.rfind("lora.send.common ", 0) == 0) ||
+        (command.rfind("lora.chat.peer ", 0) == 0)) {
+        printf("[lora] lora mesh app is disabled in menuconfig\r\n");
         return;
     }
 #endif
@@ -2520,6 +2711,10 @@ extern "C" void app_main(void)
 
 #if CONFIG_JC4880_APP_RS485
     s_rs485App = install_app_or_delete(*phone, new RS485App(), "rs485");
+#endif
+
+#if CONFIG_JC4880_APP_LORA_MESH
+    s_loraMeshApp = install_app_or_delete(*phone, new LoRaMeshApp(), "lora mesh");
 #endif
 
 #if CONFIG_JC4880_APP_INTERNET_RADIO

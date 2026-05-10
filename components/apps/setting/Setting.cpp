@@ -2103,6 +2103,7 @@ AppSettings::AppSettings():
     _imuSensorIndicatorLabels{},
     _imuScanButton(nullptr),
     _imuTestButton(nullptr),
+    _imuZeroButton(nullptr),
     _imuStatusLabel(nullptr),
     _imuInfoLabel(nullptr),
     _loraEnabledSwitch(nullptr),
@@ -4715,6 +4716,15 @@ void AppSettings::ensureImuScreen(void)
     lv_obj_t *testLabel = lv_label_create(_imuTestButton);
     lv_label_set_text(testLabel, "Test IMU");
     lv_obj_center(testLabel);
+
+    _imuZeroButton = lv_btn_create(diagSection);
+    lv_obj_set_size(_imuZeroButton, lv_pct(100), 54);
+    lv_obj_set_style_radius(_imuZeroButton, 16, 0);
+    lv_obj_set_style_border_width(_imuZeroButton, 0, 0);
+    lv_obj_add_event_cb(_imuZeroButton, onImuZeroClickedEventCallback, LV_EVENT_CLICKED, this);
+    lv_obj_t *zeroLabel = lv_label_create(_imuZeroButton);
+    lv_label_set_text(zeroLabel, "Zero Current Orientation");
+    lv_obj_center(zeroLabel);
 
     lv_obj_t *saveButton = lv_btn_create(diagSection);
     lv_obj_set_size(saveButton, lv_pct(100), 54);
@@ -9598,7 +9608,7 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     #endif
 
     #if APP_SETTINGS_FEATURE_IMU
-    if ((app->_screen_index != UI_IMU_SETTING_INDEX) && (app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] == 0)) {
+    if (app->_screen_index != UI_IMU_SETTING_INDEX) {
         app->stopImuLivePolling();
     }
     #endif
@@ -9622,10 +9632,8 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     }
 
     #if APP_SETTINGS_FEATURE_IMU
-    if ((app->_screen_index == UI_IMU_SETTING_INDEX) || (app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] != 0)) {
-        if (app->_screen_index == UI_IMU_SETTING_INDEX) {
-            app->refreshImuUi();
-        }
+    if (app->_screen_index == UI_IMU_SETTING_INDEX) {
+        app->refreshImuUi();
         app->startImuLivePolling();
     }
     #endif
@@ -9888,6 +9896,40 @@ void AppSettings::onImuTestClickedEventCallback(lv_event_t *e)
 #endif
 }
 
+void AppSettings::onImuZeroClickedEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    if (app == nullptr) {
+        return;
+    }
+
+#if APP_SETTINGS_FEATURE_IMU
+    if (!app->persistImuConfigFromUi(false)) {
+        return;
+    }
+
+    std::string status;
+    if (!jc4880::imu::ImuService::instance().begin()) {
+        status = "Failed to initialize the IMU for zeroing. Check the saved wiring and model first.";
+    } else if (!jc4880::imu::ImuService::instance().setCurrentOrientationAsZero(status) && status.empty()) {
+        status = "Failed to capture the current orientation as zero.";
+    }
+
+    if (status.empty()) {
+        status = "Current orientation captured as zero.";
+    }
+    if (lv_obj_ready(app->_imuStatusLabel)) {
+        lv_label_set_text(app->_imuStatusLabel, status.c_str());
+    }
+    app->refreshImuUi();
+    if (app->isUiActive() && (app->_screen_index == UI_IMU_SETTING_INDEX)) {
+        app->refreshImuLiveUi();
+    }
+#else
+    (void)e;
+#endif
+}
+
 void AppSettings::onImuLiveTimerCallback(lv_timer_t *timer)
 {
     if (timer == nullptr) {
@@ -9896,31 +9938,6 @@ void AppSettings::onImuLiveTimerCallback(lv_timer_t *timer)
 
     AppSettings *app = static_cast<AppSettings *>(timer->user_data);
     if (app == nullptr) {
-        return;
-    }
-
-    if (app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] != 0) {
-        jc4880::imu::ImuSample sample = {};
-        bool sample_ok = false;
-
-        if (app->isUiActive() && (app->_screen_index == UI_IMU_SETTING_INDEX)) {
-            app->refreshImuLiveUi();
-            sample_ok = jc4880::imu::ImuService::instance().getLastSample(sample);
-        } else {
-            jc4880::imu::ImuConfig config = {};
-            if (jc4880::imu::ImuService::instance().loadConfig(config) && config.enabled &&
-                (config.model != jc4880::imu::ImuModel::IMU_NONE)) {
-                sample_ok = jc4880::imu::ImuService::instance().read(sample);
-                if (!sample_ok && jc4880::imu::ImuService::instance().begin(&config)) {
-                    sample_ok = jc4880::imu::ImuService::instance().read(sample);
-                }
-            }
-        }
-
-        app->updateDisplayAutorotateFromSample(sample_ok ? &sample : nullptr, sample_ok);
-        if (!app->isUiActive() || (app->_screen_index != UI_IMU_SETTING_INDEX)) {
-            return;
-        }
         return;
     }
 
@@ -11164,13 +11181,8 @@ void AppSettings::onSwitchPanelScreenSettingAutorotateValueChangeEventCallback(l
     app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] = enabled ? 1 : 0;
     app->setNvsParam(NVS_KEY_DISPLAY_AUTOROTATE, enabled ? 1 : 0);
     app->_displayAutorotateHasAppliedOrientation = false;
-    if (enabled) {
-        app->startImuLivePolling();
-    } else {
+    if (!enabled) {
         app->updateDisplayAutorotateFromSample(nullptr, false);
-        if (app->_screen_index != UI_IMU_SETTING_INDEX) {
-            app->stopImuLivePolling();
-        }
     }
     app->refreshDisplayAutorotateUi();
 

@@ -330,6 +330,7 @@ private:
     static void onImuSaveClickedEventCallback(lv_event_t *e);
     static void onImuScanClickedEventCallback(lv_event_t *e);
     static void onImuTestClickedEventCallback(lv_event_t *e);
+    static void onImuZeroClickedEventCallback(lv_event_t *e);
     static void onImuLiveTimerCallback(lv_timer_t *timer);
     static void onLoRaConfigChangedEventCallback(lv_event_t *e);
     static void onLoRaSaveClickedEventCallback(lv_event_t *e);
@@ -560,6 +561,7 @@ private:
     std::array<lv_obj_t *, 5> _imuSensorIndicatorLabels;
     lv_obj_t *_imuScanButton;
     lv_obj_t *_imuTestButton;
+    lv_obj_t *_imuZeroButton;
     lv_obj_t *_imuStatusLabel;
     lv_obj_t *_imuInfoLabel;
     lv_obj_t *_loraEnabledSwitch;

@@ -16,11 +16,60 @@ namespace {
 static constexpr const char *kTag = "LabyrinthApp";
 static constexpr const char *kNvsNamespace = "labyrinth";
 static constexpr const char *kNvsHistoryKey = "attempts";
+static constexpr const char *kNvsAxisMapXKey = "axis_map_x";
+static constexpr const char *kNvsAxisMapYKey = "axis_map_y";
+static constexpr const char *kNvsAxisMapZKey = "axis_map_z";
 static constexpr uint32_t kHistoryVersion = 1;
+static constexpr char kAxisMappingOptions[] = "+X\n-X\n+Y\n-Y\n+Z\n-Z";
+
+enum AxisMapping: uint8_t {
+    kAxisMappingPosX = 0,
+    kAxisMappingNegX,
+    kAxisMappingPosY,
+    kAxisMappingNegY,
+    kAxisMappingPosZ,
+    kAxisMappingNegZ,
+};
 
 static float clampf(float value, float min_value, float max_value)
 {
     return std::max(min_value, std::min(max_value, value));
+}
+
+static uint8_t sanitize_axis_mapping(uint8_t value, uint8_t fallback)
+{
+    return (value <= kAxisMappingNegZ) ? value : fallback;
+}
+
+static float select_axis_mapping_component(float x, float y, float z, uint8_t mapping)
+{
+    switch (sanitize_axis_mapping(mapping, kAxisMappingPosX)) {
+    case kAxisMappingNegX:
+        return -x;
+    case kAxisMappingPosY:
+        return y;
+    case kAxisMappingNegY:
+        return -y;
+    case kAxisMappingPosZ:
+        return z;
+    case kAxisMappingNegZ:
+        return -z;
+    case kAxisMappingPosX:
+    default:
+        return x;
+    }
+}
+
+static float wrap_phase(float value, float period)
+{
+    if (period <= 0.0f) {
+        return 0.0f;
+    }
+    value = std::fmod(value, period);
+    if (value < 0.0f) {
+        value += period;
+    }
+    return value;
 }
 
 static uint32_t seconds_since_boot()
@@ -59,6 +108,8 @@ LabyrinthApp::LabyrinthApp()
       _ballY(0.0f),
       _ballVx(0.0f),
       _ballVy(0.0f),
+    _ballTexturePhaseX(0.0f),
+    _ballTexturePhaseY(0.0f),
       _nvsHandle(0),
       _mazeCells(),
       _mazeRaster(),
@@ -71,17 +122,30 @@ LabyrinthApp::LabyrinthApp()
       _scoreLabel(nullptr),
       _timerLabel(nullptr),
       _statusLabel(nullptr),
+    _axisControlsPanel(nullptr),
+    _axisMapXDropdown(nullptr),
+    _axisMapYDropdown(nullptr),
+    _axisMapZDropdown(nullptr),
       _board(nullptr),
       _mazeLayer(nullptr),
       _hole(nullptr),
       _ball(nullptr),
+    _ballTextureLayer(nullptr),
+    _ballTextureBandA(nullptr),
+    _ballTextureBandB(nullptr),
+    _ballTextureBandC(nullptr),
+    _ballHighlight(nullptr),
+    _ballShadow(nullptr),
       _resultOverlay(nullptr),
       _resultPanel(nullptr),
       _resultSummaryLabel(nullptr),
       _resultRatingLabel(nullptr),
       _resultChart(nullptr),
       _resultSeries(nullptr),
-      _tickTimer(nullptr)
+    _tickTimer(nullptr),
+    _axisMapX(kAxisMappingPosX),
+    _axisMapY(kAxisMappingPosY),
+    _axisMapZ(kAxisMappingPosZ)
 {
 }
 
@@ -102,6 +166,7 @@ bool LabyrinthApp::init()
     }
 
     _historyLoaded = loadHistory();
+    loadAxisMappings();
     ensureImuReady();
     return true;
 }
@@ -176,6 +241,31 @@ void LabyrinthApp::onQuitEvent(lv_event_t *event)
     app->notifyCoreClosed();
 }
 
+void LabyrinthApp::onAxisMappingChangedEvent(lv_event_t *event)
+{
+    LabyrinthApp *app = static_cast<LabyrinthApp *>(lv_event_get_user_data(event));
+    if (app == nullptr) {
+        return;
+    }
+
+    if (app->_axisMapXDropdown != nullptr) {
+        app->_axisMapX = sanitize_axis_mapping(static_cast<uint8_t>(lv_dropdown_get_selected(app->_axisMapXDropdown)),
+                                               kAxisMappingPosX);
+    }
+    if (app->_axisMapYDropdown != nullptr) {
+        app->_axisMapY = sanitize_axis_mapping(static_cast<uint8_t>(lv_dropdown_get_selected(app->_axisMapYDropdown)),
+                                               kAxisMappingPosY);
+    }
+    if (app->_axisMapZDropdown != nullptr) {
+        app->_axisMapZ = sanitize_axis_mapping(static_cast<uint8_t>(lv_dropdown_get_selected(app->_axisMapZDropdown)),
+                                               kAxisMappingPosZ);
+    }
+
+    app->_ballVx = 0.0f;
+    app->_ballVy = 0.0f;
+    app->saveAxisMappings();
+}
+
 void LabyrinthApp::ensureImuReady()
 {
     jc4880::imu::ImuConfig config = {};
@@ -194,7 +284,7 @@ void LabyrinthApp::buildUi()
 
     const lv_coord_t screen_width = lv_disp_get_hor_res(nullptr);
     const lv_coord_t screen_height = lv_disp_get_ver_res(nullptr);
-    _boardSize = static_cast<float>(std::min<lv_coord_t>(screen_width - 40, screen_height - 250));
+    _boardSize = static_cast<float>(std::max<lv_coord_t>(220, std::min<lv_coord_t>(screen_width - 40, screen_height - 310)));
 
     _root = lv_obj_create(lv_scr_act());
     lv_obj_set_size(_root, lv_pct(100), lv_pct(100));
@@ -274,7 +364,93 @@ void LabyrinthApp::buildUi()
     lv_obj_set_style_shadow_width(_ball, 22, 0);
     lv_obj_set_style_shadow_opa(_ball, 72, 0);
     lv_obj_set_style_shadow_color(_ball, lv_color_hex(0x0284C7), 0);
+    lv_obj_set_style_clip_corner(_ball, true, 0);
     lv_obj_clear_flag(_ball, LV_OBJ_FLAG_SCROLLABLE);
+
+    _ballTextureLayer = lv_obj_create(_ball);
+    lv_obj_set_style_bg_opa(_ballTextureLayer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(_ballTextureLayer, 0, 0);
+    lv_obj_set_style_pad_all(_ballTextureLayer, 0, 0);
+    lv_obj_clear_flag(_ballTextureLayer, LV_OBJ_FLAG_SCROLLABLE);
+
+    _ballTextureBandA = lv_obj_create(_ballTextureLayer);
+    lv_obj_set_style_radius(_ballTextureBandA, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(_ballTextureBandA, 0, 0);
+    lv_obj_set_style_bg_color(_ballTextureBandA, lv_color_hex(0xE0F2FE), 0);
+    lv_obj_set_style_bg_opa(_ballTextureBandA, 128, 0);
+    lv_obj_clear_flag(_ballTextureBandA, LV_OBJ_FLAG_SCROLLABLE);
+
+    _ballTextureBandB = lv_obj_create(_ballTextureLayer);
+    lv_obj_set_style_radius(_ballTextureBandB, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(_ballTextureBandB, 0, 0);
+    lv_obj_set_style_bg_color(_ballTextureBandB, lv_color_hex(0xBAE6FD), 0);
+    lv_obj_set_style_bg_opa(_ballTextureBandB, 110, 0);
+    lv_obj_clear_flag(_ballTextureBandB, LV_OBJ_FLAG_SCROLLABLE);
+
+    _ballTextureBandC = lv_obj_create(_ballTextureLayer);
+    lv_obj_set_style_radius(_ballTextureBandC, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(_ballTextureBandC, 0, 0);
+    lv_obj_set_style_bg_color(_ballTextureBandC, lv_color_hex(0x082F49), 0);
+    lv_obj_set_style_bg_opa(_ballTextureBandC, 72, 0);
+    lv_obj_clear_flag(_ballTextureBandC, LV_OBJ_FLAG_SCROLLABLE);
+
+    _ballHighlight = lv_obj_create(_ball);
+    lv_obj_set_style_border_width(_ballHighlight, 0, 0);
+    lv_obj_set_style_bg_color(_ballHighlight, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(_ballHighlight, 138, 0);
+    lv_obj_set_style_radius(_ballHighlight, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(_ballHighlight, LV_OBJ_FLAG_SCROLLABLE);
+
+    _ballShadow = lv_obj_create(_ball);
+    lv_obj_set_style_border_width(_ballShadow, 0, 0);
+    lv_obj_set_style_bg_color(_ballShadow, lv_color_hex(0x082F49), 0);
+    lv_obj_set_style_bg_opa(_ballShadow, 82, 0);
+    lv_obj_set_style_radius(_ballShadow, LV_RADIUS_CIRCLE, 0);
+    lv_obj_clear_flag(_ballShadow, LV_OBJ_FLAG_SCROLLABLE);
+
+    _axisControlsPanel = lv_obj_create(_root);
+    lv_obj_set_size(_axisControlsPanel, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(_axisControlsPanel, 20, 0);
+    lv_obj_set_style_border_width(_axisControlsPanel, 0, 0);
+    lv_obj_set_style_pad_all(_axisControlsPanel, 12, 0);
+    lv_obj_set_style_pad_row(_axisControlsPanel, 10, 0);
+    lv_obj_set_style_pad_column(_axisControlsPanel, 12, 0);
+    lv_obj_set_style_bg_color(_axisControlsPanel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_bg_opa(_axisControlsPanel, 228, 0);
+    lv_obj_set_style_shadow_width(_axisControlsPanel, 18, 0);
+    lv_obj_set_style_shadow_opa(_axisControlsPanel, 24, 0);
+    lv_obj_set_style_shadow_color(_axisControlsPanel, lv_color_hex(0x94A3B8), 0);
+    lv_obj_set_flex_flow(_axisControlsPanel, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(_axisControlsPanel, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(_axisControlsPanel, LV_OBJ_FLAG_SCROLLABLE);
+
+    const auto create_axis_mapping_control = [this](const char *label_text, uint8_t selected) -> lv_obj_t * {
+        lv_obj_t *group = lv_obj_create(_axisControlsPanel);
+        lv_obj_set_size(group, lv_pct(31), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(group, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(group, 0, 0);
+        lv_obj_set_style_pad_all(group, 0, 0);
+        lv_obj_set_style_pad_row(group, 6, 0);
+        lv_obj_set_flex_flow(group, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(group, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *label = lv_label_create(group);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(label, lv_color_hex(0x334155), 0);
+        lv_label_set_text(label, label_text);
+
+        lv_obj_t *dropdown = lv_dropdown_create(group);
+        lv_dropdown_set_options_static(dropdown, kAxisMappingOptions);
+        lv_dropdown_set_selected(dropdown, sanitize_axis_mapping(selected, kAxisMappingPosX));
+        lv_obj_set_width(dropdown, lv_pct(100));
+        lv_obj_add_event_cb(dropdown, onAxisMappingChangedEvent, LV_EVENT_VALUE_CHANGED, this);
+        return dropdown;
+    };
+
+    _axisMapXDropdown = create_axis_mapping_control("X Axis", _axisMapX);
+    _axisMapYDropdown = create_axis_mapping_control("Y Axis", _axisMapY);
+    _axisMapZDropdown = create_axis_mapping_control("Z Axis", _axisMapZ);
 
     _statusLabel = lv_label_create(_root);
     lv_obj_set_width(_statusLabel, lv_pct(100));
@@ -304,10 +480,20 @@ void LabyrinthApp::destroyUi()
     _scoreLabel = nullptr;
     _timerLabel = nullptr;
     _statusLabel = nullptr;
+    _axisControlsPanel = nullptr;
+    _axisMapXDropdown = nullptr;
+    _axisMapYDropdown = nullptr;
+    _axisMapZDropdown = nullptr;
     _board = nullptr;
     _mazeLayer = nullptr;
     _hole = nullptr;
     _ball = nullptr;
+    _ballTextureLayer = nullptr;
+    _ballTextureBandA = nullptr;
+    _ballTextureBandB = nullptr;
+    _ballTextureBandC = nullptr;
+    _ballHighlight = nullptr;
+    _ballShadow = nullptr;
 }
 
 void LabyrinthApp::clearWallObjects()
@@ -545,6 +731,8 @@ void LabyrinthApp::resetBallAtStart()
 {
     _ballVx = 0.0f;
     _ballVy = 0.0f;
+    _ballTexturePhaseX = 0.0f;
+    _ballTexturePhaseY = 0.0f;
     _ballX = _mazeOffsetX + (static_cast<float>(_startCellCol * 2 + 1) + 0.5f) * _tileSize;
     _ballY = _mazeOffsetY + (static_cast<float>(_startCellRow * 2 + 1) + 0.5f) * _tileSize;
     syncBallVisual();
@@ -561,6 +749,81 @@ void LabyrinthApp::syncBallVisual()
     lv_obj_set_pos(_ball,
                    static_cast<lv_coord_t>(std::lround(_ballX - _ballRadius)),
                    static_cast<lv_coord_t>(std::lround(_ballY - _ballRadius)));
+
+    if ((_ballTextureLayer == nullptr) || (_ballTextureBandA == nullptr) || (_ballTextureBandB == nullptr) ||
+        (_ballTextureBandC == nullptr) || (_ballHighlight == nullptr) || (_ballShadow == nullptr)) {
+        return;
+    }
+
+    const float dt = static_cast<float>(kTickPeriodMs) / 1000.0f;
+    const float diameter_f = std::max(1.0f, static_cast<float>(diameter));
+    const float texture_span = diameter_f * 1.6f;
+    _ballTexturePhaseX = wrap_phase(_ballTexturePhaseX - (_ballVx * dt * 0.26f), texture_span);
+    _ballTexturePhaseY = wrap_phase(_ballTexturePhaseY - (_ballVy * dt * 0.26f), texture_span);
+
+    const lv_coord_t layer_size = static_cast<lv_coord_t>(std::lround(diameter_f * 1.8f));
+    lv_obj_set_size(_ballTextureLayer, layer_size, layer_size);
+    lv_obj_set_pos(_ballTextureLayer,
+                   static_cast<lv_coord_t>(std::lround(-diameter_f * 0.40f)),
+                   static_cast<lv_coord_t>(std::lround(-diameter_f * 0.40f)));
+
+    const float speed = std::sqrt((_ballVx * _ballVx) + (_ballVy * _ballVy));
+    const float motion_bias_x = clampf(_ballVx / 220.0f, -1.0f, 1.0f);
+    const float motion_bias_y = clampf(_ballVy / 220.0f, -1.0f, 1.0f);
+
+    const lv_coord_t band_wide_width = static_cast<lv_coord_t>(std::lround(diameter_f * 1.15f));
+    const lv_coord_t band_wide_height = std::max<lv_coord_t>(4, static_cast<lv_coord_t>(std::lround(diameter_f * 0.18f)));
+    const lv_coord_t band_mid_width = static_cast<lv_coord_t>(std::lround(diameter_f * 0.82f));
+    const lv_coord_t band_mid_height = std::max<lv_coord_t>(3, static_cast<lv_coord_t>(std::lround(diameter_f * 0.14f)));
+    const lv_coord_t band_dark_width = static_cast<lv_coord_t>(std::lround(diameter_f * 0.60f));
+    const lv_coord_t band_dark_height = std::max<lv_coord_t>(3, static_cast<lv_coord_t>(std::lround(diameter_f * 0.10f)));
+
+    lv_obj_set_size(_ballTextureBandA, band_wide_width, band_wide_height);
+    lv_obj_set_pos(_ballTextureBandA,
+                   static_cast<lv_coord_t>(std::lround(-diameter_f * 0.08f + _ballTexturePhaseX - texture_span * 0.50f)),
+                   static_cast<lv_coord_t>(std::lround(diameter_f * 0.24f + _ballTexturePhaseY * 0.18f)));
+    lv_obj_set_style_transform_angle(_ballTextureBandA, 260, 0);
+    lv_obj_set_style_bg_opa(_ballTextureBandA,
+                            static_cast<lv_opa_t>(std::lround(clampf(110.0f + speed * 0.10f, 96.0f, 168.0f))),
+                            0);
+
+    lv_obj_set_size(_ballTextureBandB, band_mid_width, band_mid_height);
+    lv_obj_set_pos(_ballTextureBandB,
+                   static_cast<lv_coord_t>(std::lround(diameter_f * 0.18f - _ballTexturePhaseX * 0.72f)),
+                   static_cast<lv_coord_t>(std::lround(diameter_f * 0.74f - _ballTexturePhaseY * 0.34f)));
+    lv_obj_set_style_transform_angle(_ballTextureBandB, 312, 0);
+    lv_obj_set_style_bg_opa(_ballTextureBandB,
+                            static_cast<lv_opa_t>(std::lround(clampf(90.0f + speed * 0.08f, 76.0f, 150.0f))),
+                            0);
+
+    lv_obj_set_size(_ballTextureBandC, band_dark_width, band_dark_height);
+    lv_obj_set_pos(_ballTextureBandC,
+                   static_cast<lv_coord_t>(std::lround(diameter_f * 0.48f - _ballTexturePhaseX * 0.42f)),
+                   static_cast<lv_coord_t>(std::lround(diameter_f * 0.44f + _ballTexturePhaseY * 0.52f)));
+    lv_obj_set_style_transform_angle(_ballTextureBandC, 218, 0);
+    lv_obj_set_style_bg_opa(_ballTextureBandC,
+                            static_cast<lv_opa_t>(std::lround(clampf(60.0f + speed * 0.06f, 52.0f, 104.0f))),
+                            0);
+
+    const lv_coord_t highlight_size = std::max<lv_coord_t>(6, static_cast<lv_coord_t>(std::lround(diameter_f * 0.34f)));
+    lv_obj_set_size(_ballHighlight, highlight_size, highlight_size);
+    lv_obj_set_pos(_ballHighlight,
+                   static_cast<lv_coord_t>(std::lround(diameter_f * (0.18f - motion_bias_x * 0.05f))),
+                   static_cast<lv_coord_t>(std::lround(diameter_f * (0.14f - motion_bias_y * 0.05f))));
+    lv_obj_set_style_bg_opa(_ballHighlight,
+                            static_cast<lv_opa_t>(std::lround(clampf(132.0f + speed * 0.04f, 118.0f, 172.0f))),
+                            0);
+
+    const lv_coord_t shadow_w = std::max<lv_coord_t>(8, static_cast<lv_coord_t>(std::lround(diameter_f * 0.52f)));
+    const lv_coord_t shadow_h = std::max<lv_coord_t>(5, static_cast<lv_coord_t>(std::lround(diameter_f * 0.22f)));
+    lv_obj_set_size(_ballShadow, shadow_w, shadow_h);
+    lv_obj_set_pos(_ballShadow,
+                   static_cast<lv_coord_t>(std::lround(diameter_f * (0.34f + motion_bias_x * 0.07f))),
+                   static_cast<lv_coord_t>(std::lround(diameter_f * (0.60f + motion_bias_y * 0.05f))));
+    lv_obj_set_style_transform_angle(_ballShadow, 180, 0);
+    lv_obj_set_style_bg_opa(_ballShadow,
+                            static_cast<lv_opa_t>(std::lround(clampf(74.0f + speed * 0.03f, 64.0f, 96.0f))),
+                            0);
 }
 
 void LabyrinthApp::updateHud()
@@ -590,6 +853,44 @@ float LabyrinthApp::sampleControlAxisY() const
     return 0.0f;
 }
 
+void LabyrinthApp::loadAxisMappings()
+{
+    if (_nvsHandle == 0) {
+        _axisMapX = kAxisMappingPosX;
+        _axisMapY = kAxisMappingPosY;
+        _axisMapZ = kAxisMappingPosZ;
+        return;
+    }
+
+    uint8_t value = 0;
+    if (nvs_get_u8(_nvsHandle, kNvsAxisMapXKey, &value) == ESP_OK) {
+        _axisMapX = sanitize_axis_mapping(value, kAxisMappingPosX);
+    }
+    if (nvs_get_u8(_nvsHandle, kNvsAxisMapYKey, &value) == ESP_OK) {
+        _axisMapY = sanitize_axis_mapping(value, kAxisMappingPosY);
+    }
+    if (nvs_get_u8(_nvsHandle, kNvsAxisMapZKey, &value) == ESP_OK) {
+        _axisMapZ = sanitize_axis_mapping(value, kAxisMappingPosZ);
+    }
+}
+
+void LabyrinthApp::saveAxisMappings() const
+{
+    if (_nvsHandle == 0) {
+        return;
+    }
+
+    bool ok = true;
+    ok = ok && (nvs_set_u8(_nvsHandle, kNvsAxisMapXKey, _axisMapX) == ESP_OK);
+    ok = ok && (nvs_set_u8(_nvsHandle, kNvsAxisMapYKey, _axisMapY) == ESP_OK);
+    ok = ok && (nvs_set_u8(_nvsHandle, kNvsAxisMapZKey, _axisMapZ) == ESP_OK);
+    if (ok && (nvs_commit(_nvsHandle) == ESP_OK)) {
+        return;
+    }
+
+    ESP_LOGW(kTag, "Failed to persist axis mapping settings");
+}
+
 bool LabyrinthApp::readImuSample(float &control_x, float &control_y)
 {
     control_x = 0.0f;
@@ -605,12 +906,32 @@ bool LabyrinthApp::readImuSample(float &control_x, float &control_y)
         return false;
     }
 
-    if (sample.hasGyro) {
-        control_x = clampf(sample.gy / 220.0f, -1.0f, 1.0f);
-        control_y = clampf(sample.gx / 220.0f, -1.0f, 1.0f);
-    } else if (sample.hasAccel || sample.hasFusion) {
-        control_x = clampf(sample.roll / 40.0f, -1.0f, 1.0f);
-        control_y = clampf(sample.pitch / 40.0f, -1.0f, 1.0f);
+    if (sample.hasAccel || sample.hasFusion) {
+        constexpr float kTiltDeadzoneDegrees = 3.5f;
+        constexpr float kFullTiltDegrees = 32.0f;
+        auto normalize_tilt = [](float angle_degrees) -> float {
+            const float magnitude = std::fabs(angle_degrees);
+            if (magnitude <= kTiltDeadzoneDegrees) {
+                return 0.0f;
+            }
+
+            const float normalized = clampf((magnitude - kTiltDeadzoneDegrees) /
+                                                (kFullTiltDegrees - kTiltDeadzoneDegrees),
+                                            0.0f,
+                                            1.0f);
+            const float curved = normalized * normalized;
+            return std::copysign(curved, angle_degrees);
+        };
+
+        const float mapped_x = select_axis_mapping_component(sample.pitch, sample.roll, sample.yaw, _axisMapX);
+        const float mapped_y = select_axis_mapping_component(sample.pitch, sample.roll, sample.yaw, _axisMapY);
+        control_x = normalize_tilt(mapped_x);
+        control_y = normalize_tilt(mapped_y);
+    } else if (sample.hasGyro) {
+        const float mapped_x = select_axis_mapping_component(sample.gx, sample.gy, sample.gz, _axisMapX);
+        const float mapped_y = select_axis_mapping_component(sample.gx, sample.gy, sample.gz, _axisMapY);
+        control_x = clampf(mapped_x / 220.0f, -1.0f, 1.0f);
+        control_y = clampf(mapped_y / 220.0f, -1.0f, 1.0f);
     } else {
         return false;
     }
@@ -722,17 +1043,20 @@ void LabyrinthApp::tickGame()
     const float dt = static_cast<float>(kTickPeriodMs) / 1000.0f;
 
     if (sample_ok) {
-        constexpr float kAcceleration = 660.0f;
         constexpr float kMaxSpeed = 360.0f;
-        _ballVx = clampf(_ballVx + control_x * kAcceleration * dt, -kMaxSpeed, kMaxSpeed);
-        _ballVy = clampf(_ballVy + control_y * kAcceleration * dt, -kMaxSpeed, kMaxSpeed);
+        constexpr float kVelocityResponse = 7.5f;
+        const float response = clampf(dt * kVelocityResponse, 0.0f, 1.0f);
+        const float target_vx = control_x * kMaxSpeed;
+        const float target_vy = control_y * kMaxSpeed;
+        _ballVx += (target_vx - _ballVx) * response;
+        _ballVy += (target_vy - _ballVy) * response;
     } else {
-        _ballVx *= 0.92f;
-        _ballVy *= 0.92f;
+        _ballVx *= 0.88f;
+        _ballVy *= 0.88f;
     }
 
-    _ballVx *= 0.985f;
-    _ballVy *= 0.985f;
+    _ballVx *= 0.992f;
+    _ballVy *= 0.992f;
 
     const float target_x = _ballX + _ballVx * dt;
     const float resolved_x = resolveAxisMove(_ballX, target_x - _ballX, true);

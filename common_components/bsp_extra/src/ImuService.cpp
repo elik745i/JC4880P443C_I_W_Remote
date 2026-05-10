@@ -402,7 +402,7 @@ public:
         return imu_model_label(_cfg.model);
     }
 
-    bool zeroCurrentOrientation()
+    bool zeroCurrentOrientation() override
     {
         ImuSample sample = {};
         if (!read(sample)) {
@@ -474,6 +474,7 @@ public:
         _lastSampleUs = 0;
         _yawIntegrator = 0.0f;
         (void)loadCalibration();
+        _yawIntegrator = _calibration.zeroYaw;
         return true;
     }
 
@@ -553,6 +554,19 @@ public:
     bool loadCalibration() override
     {
         return _service.loadCalibrationBlob(kMpuCalBlobKey, &_calibration, sizeof(_calibration));
+    }
+
+    bool zeroCurrentOrientation() override
+    {
+        ImuSample sample = {};
+        if (!read(sample)) {
+            return false;
+        }
+
+        _calibration.zeroRoll += sample.roll;
+        _calibration.zeroPitch += sample.pitch;
+        _calibration.zeroYaw += sample.yaw;
+        return true;
     }
 
     const char *name() override
@@ -1041,7 +1055,11 @@ bool ImuService::calibrateStep(std::string &status)
         status = "Calibration step failed or is not implemented for this module.";
         return false;
     }
-    status = "Calibration sample captured.";
+    if (!_driver->saveCalibration()) {
+        status = "Calibration sample captured, but it could not be saved.";
+        return false;
+    }
+    status = "Calibration sample captured and saved.";
     return true;
 }
 
@@ -1078,13 +1096,16 @@ bool ImuService::clearCalibration(std::string &status)
 
 bool ImuService::setCurrentOrientationAsZero(std::string &status)
 {
-    if (!_active || (_driver == nullptr) || (_config.model != ImuModel::MPU6050)) {
-        status = "Zero-orientation is only implemented for the MPU6050 stage right now.";
+    if (!_active || (_driver == nullptr)) {
+        status = "IMU is not active.";
         return false;
     }
-    auto *mpu_driver = static_cast<Mpu6050Driver *>(_driver.get());
-    if (!mpu_driver->zeroCurrentOrientation()) {
-        status = "Failed to sample the current orientation.";
+    if (!_driver->zeroCurrentOrientation()) {
+        status = "Failed to sample the current orientation or this IMU driver does not support zeroing yet.";
+        return false;
+    }
+    if (!_driver->saveCalibration()) {
+        status = "Current orientation was sampled, but the zero calibration could not be saved.";
         return false;
     }
     status = "Current orientation captured as zero.";

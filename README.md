@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.3.5 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.3.6 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -45,14 +45,14 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Native Recorder app for AAC recording on the built-in microphone, with SD-card saving under `/sdcard/record`, live spectrum visualization, in-app playback, and PSRAM-first runtime buffers.
 - Native LoRa Mesh app with common and peer chat flows, persisted radio-module selection, GPIO remapping for SPI and UART modules, and startup/send-path hardening so the app can bring the radio up without blocking the rest of the UI.
 - Native RS-485 HMI app for field-service scanning, raw terminal traffic, Modbus RTU master access, saved profiles, dashboard polling, and communication logs.
-- Native Labyrinth app with 100 IMU-driven levels, progressively shorter timers, score tracking, and a last-10-attempt results chart.
+- Native Labyrinth app with 100 IMU-driven levels, progressively shorter timers, score tracking, a last-10-attempt results chart, and app-local X/Y/Z tilt remapping for ball movement.
 - Native SEGA app with Master System, Game Gear, SG-1000, and Genesis / Mega Drive ROM support.
 - SEGA browser now includes an optional FPS overlay toggle, and the in-game control surface is tuned for the rotated handheld presentation.
 - Shared launcher icon set sized to fit the OTA partition budget.
 - Persistent Wi-Fi credentials and reconnect behavior backed by NVS.
 - Wi-Fi Settings now also includes device AP mode setup with saved hotspot enable, SSID, and password controls.
 - Added a native Web Server launcher app with quick-access curtain control, local mDNS discovery, captive-portal friendly AP behavior, SD-card `/web` hosting with SPIFFS fallback, and an embedded recovery uploader when site files are missing.
-- IMU support now includes runtime autodetection, live telemetry, a live indicator view, and app-facing motion data shared through the firmware IMU service.
+- IMU support now includes runtime autodetection, live telemetry, a live indicator view, app-facing motion data shared through the firmware IMU service, and calibration persistence that survives restart.
 - Display autorotation now uses live IMU readings and a user-selectable X/Y/Z control axis instead of the old placeholder sensor-pin dropdowns.
 - BMI160 is now the default IMU wiring profile for the handheld build.
 - Display timezone dropdown in GMT format with saved preference storage.
@@ -160,7 +160,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Auto timezone mode can update the offset from online geolocation when internet access is available.
 - Display orientation can be changed live between 0, 90, 180, and 270 degrees from Settings > Display, and the selected rotation is restored on the next boot.
 - Rotation changes now show a 30-second confirmation dialog and only persist after the user presses `OK`; otherwise the previous orientation is restored automatically.
-- Settings > IMU now exposes live detection and live motion telemetry for the installed IMU.
+- Settings > IMU now exposes live detection and live motion telemetry for the installed IMU, plus saved zero/calibration state across reboot.
 - Settings > Display autorotate now follows IMU motion at runtime and lets the user choose the rotation axis (`X`, `Y`, or `Z`).
 - Quick-access audio controls include separate Media, System, and Mic sliders, with the Mic control mapped to the recorder input gain.
 - Factory Reset in Settings > Firmware clears the app preferences namespace and reapplies defaults immediately.
@@ -221,7 +221,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides two balanced OTA app slots of `0x7C0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage is `0x040000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
-- Version 1.3.5 validates at `0x7652F0`, leaving `0x05AD10` bytes free in either OTA app slot.
+- Version 1.3.6 validates at `0x766AE0`, leaving `0x059520` bytes free in either OTA app slot.
 - Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout

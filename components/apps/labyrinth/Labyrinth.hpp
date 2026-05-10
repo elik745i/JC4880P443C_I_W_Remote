@@ -53,6 +53,7 @@ private:
     static void onTick(lv_timer_t *timer);
     static void onRetryEvent(lv_event_t *event);
     static void onQuitEvent(lv_event_t *event);
+    static void onAxisMappingChangedEvent(lv_event_t *event);
 
     void buildUi();
     void destroyUi();
@@ -84,6 +85,8 @@ private:
     void syncBallVisual();
     void syncHoleVisual();
     void ensureImuReady();
+    void loadAxisMappings();
+    void saveAxisMappings() const;
 
     bool _paused;
     bool _runFinished;
@@ -112,6 +115,8 @@ private:
     float _ballY;
     float _ballVx;
     float _ballVy;
+    float _ballTexturePhaseX;
+    float _ballTexturePhaseY;
     nvs_handle_t _nvsHandle;
     std::vector<MazeCell> _mazeCells;
     std::vector<uint8_t> _mazeRaster;
@@ -125,10 +130,20 @@ private:
     lv_obj_t *_scoreLabel;
     lv_obj_t *_timerLabel;
     lv_obj_t *_statusLabel;
+    lv_obj_t *_axisControlsPanel;
+    lv_obj_t *_axisMapXDropdown;
+    lv_obj_t *_axisMapYDropdown;
+    lv_obj_t *_axisMapZDropdown;
     lv_obj_t *_board;
     lv_obj_t *_mazeLayer;
     lv_obj_t *_hole;
     lv_obj_t *_ball;
+    lv_obj_t *_ballTextureLayer;
+    lv_obj_t *_ballTextureBandA;
+    lv_obj_t *_ballTextureBandB;
+    lv_obj_t *_ballTextureBandC;
+    lv_obj_t *_ballHighlight;
+    lv_obj_t *_ballShadow;
     lv_obj_t *_resultOverlay;
     lv_obj_t *_resultPanel;
     lv_obj_t *_resultSummaryLabel;
@@ -136,4 +151,7 @@ private:
     lv_obj_t *_resultChart;
     lv_chart_series_t *_resultSeries;
     lv_timer_t *_tickTimer;
+    uint8_t _axisMapX;
+    uint8_t _axisMapY;
+    uint8_t _axisMapZ;
 };

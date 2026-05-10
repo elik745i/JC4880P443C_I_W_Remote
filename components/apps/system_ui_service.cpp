@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <ctime>
 
+#include "ImuService.hpp"
 #include "battery_history_service.h"
 #include "hardware_history_service.h"
 #include "joypad_runtime.h"
@@ -15,7 +18,9 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
+#include "nvs.h"
 
 #include "bsp/esp-bsp.h"
 #include "esp_brookesia.hpp"
@@ -25,13 +30,25 @@ namespace {
 static const char *TAG = "SystemUiService";
 static constexpr uint32_t kStatusRefreshTaskStack = 4096;
 static constexpr uint32_t kBatteryRefreshTaskStack = 4096;
+static constexpr uint32_t kImuAutorotateTaskStack = 4096;
 static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(2000);
 static constexpr TickType_t kBatteryRefreshPeriod = pdMS_TO_TICKS(5000);
+static constexpr TickType_t kImuAutorotateActivePeriod = pdMS_TO_TICKS(150);
+static constexpr TickType_t kImuAutorotateIdlePeriod = pdMS_TO_TICKS(1000);
+static constexpr int64_t kImuAutorotateRetryDelayUs = 3LL * 1000LL * 1000LL;
+static constexpr const char *kNvsStorageNamespace = "storage";
+static constexpr const char *kNvsKeyDisplayOrientation = "disp_rot";
+static constexpr const char *kNvsKeyDisplayAutorotate = "disp_auto_rot";
+static constexpr const char *kNvsKeyDisplayAutorotateImu = "disp_auto_imu";
 
 static ESP_Brookesia_StatusBar *s_statusBar = nullptr;
 static std::atomic<bool> s_initialized{false};
 static std::atomic<bool> s_wifiConnected{false};
 static std::atomic<int> s_wifiSignalLevel{0};
+static nvs_handle_t s_settingsNvsHandle = 0;
+static int32_t s_imuAutorotateAppliedOrientation = 0;
+static bool s_imuAutorotateHasAppliedOrientation = false;
+static int64_t s_imuAutorotateRetryAfterUs = 0;
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
@@ -100,6 +117,156 @@ static int get_wifi_level_from_driver(bool *connected)
     return 0;
 }
 
+static int32_t read_setting_i32(const char *key, int32_t default_value)
+{
+    if (s_settingsNvsHandle == 0) {
+        return default_value;
+    }
+
+    int32_t value = default_value;
+    if (nvs_get_i32(s_settingsNvsHandle, key, &value) != ESP_OK) {
+        return default_value;
+    }
+    return value;
+}
+
+static int32_t sanitize_display_orientation_degrees(int32_t orientation_degrees)
+{
+    switch (orientation_degrees) {
+    case 0:
+    case 90:
+    case 180:
+    case 270:
+        return orientation_degrees;
+    default:
+        return 0;
+    }
+}
+
+static lv_disp_rotation_t display_orientation_degrees_to_lv_rotation(int32_t orientation_degrees)
+{
+    switch (sanitize_display_orientation_degrees(orientation_degrees)) {
+    case 90:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_90);
+    case 180:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_180);
+    case 270:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_270);
+    case 0:
+    default:
+        return static_cast<lv_disp_rotation_t>(LV_DISP_ROT_NONE);
+    }
+}
+
+static bool apply_display_orientation_live(int32_t orientation_degrees)
+{
+    lv_display_t *display = lv_disp_get_default();
+    if (display == nullptr) {
+        return false;
+    }
+
+    if (!bsp_display_lock(0)) {
+        return false;
+    }
+
+    bsp_display_rotate(display, display_orientation_degrees_to_lv_rotation(orientation_degrees));
+    if (lv_obj_ready(lv_disp_get_scr_act(display))) {
+        lv_obj_invalidate(lv_disp_get_scr_act(display));
+    }
+    if (lv_obj_ready(lv_layer_top())) {
+        lv_obj_invalidate(lv_layer_top());
+    }
+    if (lv_obj_ready(lv_layer_sys())) {
+        lv_obj_invalidate(lv_layer_sys());
+    }
+    lv_refr_now(display);
+    lv_refr_now(display);
+    bsp_display_unlock();
+    return true;
+}
+
+static int32_t opposite_display_orientation_degrees(int32_t orientation_degrees)
+{
+    switch (sanitize_display_orientation_degrees(orientation_degrees)) {
+    case 0:
+        return 180;
+    case 90:
+        return 270;
+    case 180:
+        return 0;
+    case 270:
+        return 90;
+    default:
+        return 180;
+    }
+}
+
+static int32_t sanitize_display_autorotate_axis(int32_t axis)
+{
+    switch (axis) {
+    case 0:
+    case 1:
+    case 2:
+        return axis;
+    default:
+        return 0;
+    }
+}
+
+static void update_display_autorotate_from_sample(const jc4880::imu::ImuSample *sample,
+                                                  bool sample_ok,
+                                                  bool enabled,
+                                                  int32_t base_orientation,
+                                                  int32_t rotation_axis)
+{
+    if (!enabled) {
+        if (!s_imuAutorotateHasAppliedOrientation || (s_imuAutorotateAppliedOrientation != base_orientation)) {
+            if (apply_display_orientation_live(base_orientation)) {
+                s_imuAutorotateAppliedOrientation = base_orientation;
+                s_imuAutorotateHasAppliedOrientation = true;
+            }
+        }
+        return;
+    }
+
+    if ((sample == nullptr) || !sample_ok || !sample->hasAccel) {
+        return;
+    }
+
+    float selected_angle = sample->roll;
+    switch (sanitize_display_autorotate_axis(rotation_axis)) {
+    case 1:
+        selected_angle = sample->pitch;
+        break;
+    case 2:
+        selected_angle = sample->yaw;
+        break;
+    default:
+        selected_angle = sample->roll;
+        break;
+    }
+
+    const int32_t inverted_orientation = opposite_display_orientation_degrees(base_orientation);
+    const bool currently_inverted = s_imuAutorotateHasAppliedOrientation &&
+                                    (s_imuAutorotateAppliedOrientation == inverted_orientation);
+    int32_t target_orientation = currently_inverted ? inverted_orientation : base_orientation;
+
+    if (currently_inverted) {
+        if (std::fabs(selected_angle) <= 70.0f) {
+            target_orientation = base_orientation;
+        }
+    } else if (std::fabs(selected_angle) >= 110.0f) {
+        target_orientation = inverted_orientation;
+    }
+
+    if (!s_imuAutorotateHasAppliedOrientation || (target_orientation != s_imuAutorotateAppliedOrientation)) {
+        if (apply_display_orientation_live(target_orientation)) {
+            s_imuAutorotateAppliedOrientation = target_orientation;
+            s_imuAutorotateHasAppliedOrientation = true;
+        }
+    }
+}
+
 static void update_status_bar_clock_and_wifi(void)
 {
     if (s_statusBar == nullptr) {
@@ -152,6 +319,54 @@ static void battery_refresh_task(void *arg)
     }
 }
 
+static void imu_autorotate_task(void *arg)
+{
+    (void)arg;
+
+    while (true) {
+        const int32_t base_orientation = sanitize_display_orientation_degrees(
+            read_setting_i32(kNvsKeyDisplayOrientation, 0));
+        const bool enabled = read_setting_i32(kNvsKeyDisplayAutorotate, 0) != 0;
+        const int32_t rotation_axis = sanitize_display_autorotate_axis(
+            read_setting_i32(kNvsKeyDisplayAutorotateImu, 0));
+
+        if (!enabled) {
+            update_display_autorotate_from_sample(nullptr, false, false, base_orientation, rotation_axis);
+            s_imuAutorotateRetryAfterUs = 0;
+            vTaskDelay(kImuAutorotateIdlePeriod);
+            continue;
+        }
+
+        jc4880::imu::ImuConfig config = {};
+        if (!jc4880::imu::ImuService::instance().loadConfig(config) || !config.enabled ||
+            (config.model == jc4880::imu::ImuModel::IMU_NONE)) {
+            update_display_autorotate_from_sample(nullptr, false, false, base_orientation, rotation_axis);
+            s_imuAutorotateRetryAfterUs = 0;
+            vTaskDelay(kImuAutorotateIdlePeriod);
+            continue;
+        }
+
+        jc4880::imu::ImuSample sample = {};
+        bool sample_ok = jc4880::imu::ImuService::instance().read(sample);
+        const int64_t now_us = esp_timer_get_time();
+        if (!sample_ok && (now_us >= s_imuAutorotateRetryAfterUs)) {
+            if (jc4880::imu::ImuService::instance().begin(&config)) {
+                sample_ok = jc4880::imu::ImuService::instance().read(sample);
+                s_imuAutorotateRetryAfterUs = sample_ok ? 0 : (now_us + kImuAutorotateRetryDelayUs);
+            } else {
+                s_imuAutorotateRetryAfterUs = now_us + kImuAutorotateRetryDelayUs;
+            }
+        }
+
+        update_display_autorotate_from_sample(sample_ok ? &sample : nullptr,
+                                              sample_ok,
+                                              true,
+                                              base_orientation,
+                                              rotation_axis);
+        vTaskDelay(sample_ok ? kImuAutorotateActivePeriod : kImuAutorotateIdlePeriod);
+    }
+}
+
 } // namespace
 
 namespace system_ui_service {
@@ -180,6 +395,11 @@ bool initialize(ESP_Brookesia_Phone &phone)
         ESP_LOGW(TAG, "Joypad transport initialization failed");
     }
 
+    if (nvs_open(kNvsStorageNamespace, NVS_READWRITE, &s_settingsNvsHandle) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to open settings storage for IMU autorotate state");
+        s_settingsNvsHandle = 0;
+    }
+
     if (create_background_task_prefer_psram(status_refresh_task,
                                             "status_refresh",
                                             kStatusRefreshTaskStack,
@@ -199,6 +419,15 @@ bool initialize(ESP_Brookesia_Phone &phone)
                                                 1) != pdPASS) {
             ESP_LOGW(TAG, "Failed to start battery refresh task");
         }
+    }
+
+    if (create_background_task_prefer_psram(imu_autorotate_task,
+                                            "imu_autorotate",
+                                            kImuAutorotateTaskStack,
+                                            nullptr,
+                                            1,
+                                            1) != pdPASS) {
+        ESP_LOGW(TAG, "Failed to start IMU autorotate task");
     }
 
     s_initialized.store(true);

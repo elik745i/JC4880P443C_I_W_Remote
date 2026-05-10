@@ -132,6 +132,10 @@ public:
     virtual bool calibrateStep() = 0;
     virtual bool saveCalibration() = 0;
     virtual bool loadCalibration() = 0;
+    virtual bool zeroCurrentOrientation()
+    {
+        return false;
+    }
     virtual const char *name() = 0;
 };
 

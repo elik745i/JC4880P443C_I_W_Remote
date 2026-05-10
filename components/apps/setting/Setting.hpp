@@ -20,6 +20,10 @@
 #include "esp_brookesia.hpp"
 #include "device_security.hpp"
 
+namespace jc4880::imu {
+struct ImuSample;
+}
+
 class AppSettings: public ESP_Brookesia_PhoneApp {
 public:
     AppSettings();
@@ -41,6 +45,7 @@ private:
         UI_WIFI_CONNECT_INDEX,
         UI_BLUETOOTH_SETTING_INDEX,
         UI_JOYPAD_SETTING_INDEX,
+        UI_IMU_SETTING_INDEX,
         UI_LORA_SETTING_INDEX,
         UI_ZIGBEE_SETTING_INDEX,
         UI_SECURITY_SETTING_INDEX,
@@ -156,6 +161,8 @@ private:
     void refreshTimezoneUi(void);
     void refreshBluetoothUi(void);
     void refreshJoypadUi(void);
+    void refreshImuUi(void);
+    void refreshImuLiveUi(void);
     void refreshLoRaUi(void);
     void refreshJoypadCalibrationUi(const jc4880_joypad_ble_report_state_t &report);
     void refreshRadioStatusBar(void);
@@ -183,12 +190,19 @@ private:
     void ensureJoypadScreen(void);
     void ensureJoypadBleScreen(void);
     void ensureJoypadLocalScreen(void);
+    void ensureImuScreen(void);
     void ensureLoRaScreen(void);
     void ensureZigbeeScreen(void);
     void ensureSecurityScreen(void);
     bool persistJoypadConfigFromUi(void);
+    bool persistImuConfigFromUi(bool autosave_enabled_only = false);
     bool persistLoRaConfigFromUi(void);
     bool persistLoRaRadioEnabledFromUi(void);
+    void disableImuForLocalController(void);
+    bool disableImuForLoRa(void);
+    void startImuLivePolling(void);
+    void stopImuLivePolling(void);
+    void updateDisplayAutorotateFromSample(const jc4880::imu::ImuSample *sample, bool sample_ok);
     void refreshLoRaSelfCheckStatus(void);
     void startLoRaSelfCheckStatusPolling(void);
     void stopLoRaSelfCheckStatusPolling(void);
@@ -312,6 +326,11 @@ private:
     static void onBluetoothScanClickedEventCallback(lv_event_t *e);
     static void onJoypadConfigChangedEventCallback(lv_event_t *e);
     static void onJoypadCalibrationClickedEventCallback(lv_event_t *e);
+    static void onImuConfigChangedEventCallback(lv_event_t *e);
+    static void onImuSaveClickedEventCallback(lv_event_t *e);
+    static void onImuScanClickedEventCallback(lv_event_t *e);
+    static void onImuTestClickedEventCallback(lv_event_t *e);
+    static void onImuLiveTimerCallback(lv_timer_t *timer);
     static void onLoRaConfigChangedEventCallback(lv_event_t *e);
     static void onLoRaSaveClickedEventCallback(lv_event_t *e);
     static void onLoRaSelfCheckClickedEventCallback(lv_event_t *e);
@@ -369,8 +388,6 @@ private:
     static void onDisplayOrientationPreviewTimerCallback(lv_timer_t *timer);
     static void onSwitchPanelScreenSettingAutorotateValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingAutorotateImuValueChangeEventCallback(lv_event_t *e);
-    static void onDropdownPanelScreenSettingAutorotateSdaValueChangeEventCallback(lv_event_t *e);
-    static void onDropdownPanelScreenSettingAutorotateSclValueChangeEventCallback(lv_event_t *e);
     static void onSwitchPanelScreenSettingAutoTimezoneValueChangeEventCallback(lv_event_t *e);
     static void onDropdownPanelScreenSettingTimezoneValueChangeEventCallback(lv_event_t *e);
 
@@ -418,15 +435,16 @@ private:
     lv_obj_t *_displayOrientationPreviewSpinner;
     lv_obj_t *_displayOrientationPreviewCountdownLabel;
     lv_timer_t *_displayOrientationPreviewTimer;
+    lv_timer_t *_imuLiveTimer;
     lv_timer_t *_loraSelfCheckStatusTimer;
     int32_t _displayOrientationPreviewPrevious;
     int32_t _displayOrientationPreviewPending;
     int32_t _displayOrientationPreviewSecondsRemaining;
     bool _displayOrientationPreviewResolving;
+    int32_t _displayAutorotateAppliedOrientation;
+    bool _displayAutorotateHasAppliedOrientation;
     lv_obj_t *_displayAutorotateSwitch;
     lv_obj_t *_displayAutorotateImuDropdown;
-    lv_obj_t *_displayAutorotateSdaDropdown;
-    lv_obj_t *_displayAutorotateSclDropdown;
     lv_obj_t *_displayAutorotateInfoLabel;
     lv_obj_t *_displayAutoTimezoneSwitch;
     lv_obj_t *_displayTimezoneDropdown;
@@ -437,6 +455,7 @@ private:
     lv_obj_t *_audioHapticFeedbackSwitch;
     lv_obj_t *_bluetoothMenuItem;
     lv_obj_t *_joypadMenuItem;
+    lv_obj_t *_imuMenuItem;
     lv_obj_t *_loraMenuItem;
     lv_obj_t *_zigbeeMenuItem;
     lv_obj_t *_wifiMenuItem;
@@ -456,6 +475,7 @@ private:
     lv_obj_t *_joypadScreen;
     lv_obj_t *_joypadBleScreen;
     lv_obj_t *_joypadLocalScreen;
+    lv_obj_t *_imuScreen;
     lv_obj_t *_loraScreen;
     lv_obj_t *_joypadBleMenuItem;
     lv_obj_t *_joypadLocalMenuItem;
@@ -501,6 +521,47 @@ private:
     lv_obj_t *_joypadLocalNeopixelBrightnessSlider;
     lv_obj_t *_joypadLocalNeopixelInfoLabel;
     std::vector<std::string> _joypadBleDeviceOptions;
+    lv_obj_t *_imuEnabledSwitch;
+    lv_obj_t *_imuModelDropdown;
+    lv_obj_t *_imuBusDropdown;
+    lv_obj_t *_imuPowerHintLabel;
+    lv_obj_t *_imuI2cSdaDropdown;
+    lv_obj_t *_imuI2cSclDropdown;
+    lv_obj_t *_imuI2cAddressDropdown;
+    lv_obj_t *_imuI2cAddressTextArea;
+    lv_obj_t *_imuIntDropdown;
+    lv_obj_t *_imuDrdyDropdown;
+    lv_obj_t *_imuLiveScene;
+    lv_obj_t *_imuHeadingArc;
+    lv_obj_t *_imuHeadingValueLabel;
+    lv_obj_t *_imuRollValueLabel;
+    lv_obj_t *_imuPitchValueLabel;
+    lv_obj_t *_imuYawValueLabel;
+    lv_obj_t *_imuMotionShadow;
+    lv_obj_t *_imuMotionDot;
+    lv_obj_t *_imuMotionTempLabel;
+    lv_obj_t *_imuLiveCaptionLabel;
+    lv_obj_t *_imuLiveStatusLabel;
+    lv_obj_t *_imuAccelValueLabel;
+    lv_obj_t *_imuGyroValueLabel;
+    lv_obj_t *_imuMagValueLabel;
+    lv_obj_t *_imuEnvValueLabel;
+    float _imuBallPosX;
+    float _imuBallPosY;
+    float _imuBallPosZ;
+    float _imuBallVelX;
+    float _imuBallVelY;
+    float _imuBallVelZ;
+    float _imuBallPrevAccelX;
+    float _imuBallPrevAccelY;
+    float _imuBallPrevAccelZ;
+    bool _imuBallDynamicsInitialized;
+    std::array<lv_obj_t *, 5> _imuSensorIndicatorDots;
+    std::array<lv_obj_t *, 5> _imuSensorIndicatorLabels;
+    lv_obj_t *_imuScanButton;
+    lv_obj_t *_imuTestButton;
+    lv_obj_t *_imuStatusLabel;
+    lv_obj_t *_imuInfoLabel;
     lv_obj_t *_loraEnabledSwitch;
     lv_obj_t *_loraModuleDropdown;
     lv_obj_t *_loraDisplayNameTextArea;

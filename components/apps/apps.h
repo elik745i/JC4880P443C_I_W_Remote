@@ -48,6 +48,10 @@
 #include "lora_mesh/LoRaMesh.hpp"
 #endif
 
+#if CONFIG_JC4880_APP_LABYRINTH
+#include "labyrinth/Labyrinth.hpp"
+#endif
+
 #if CONFIG_JC4880_APP_SEGA_EMULATOR
 #include "sega_emulator/SegaEmulator.hpp"
 #endif

@@ -2707,6 +2707,10 @@ extern "C" void app_main(void)
     s_loraMeshApp = install_app_or_delete(*phone, new LoRaMeshApp(), "lora mesh");
 #endif
 
+#if CONFIG_JC4880_APP_LABYRINTH
+    install_app_or_delete(*phone, new LabyrinthApp(), "labyrinth");
+#endif
+
 #if CONFIG_JC4880_APP_INTERNET_RADIO
     s_internetRadioApp = install_app_or_delete(*phone, new InternetRadio(), "internet radio");
 #endif

@@ -2575,6 +2575,7 @@ void AppSettings::onJoypadConfigChangedEventCallback(lv_event_t *e)
     if (backend_toggle_changed) {
         if (local_controller_active) {
             app->disableLoRaRadioForLocalController();
+            app->disableImuForLocalController();
         }
         app->applyNeopixelConfig();
     }

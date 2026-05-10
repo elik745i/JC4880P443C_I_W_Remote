@@ -2,6 +2,8 @@ set(SRCS "")
 list(APPEND SRCS
     "src/bsp_board_extra.c"
     "src/device_security.cpp"
+    "src/JcBoardPinManager.cpp"
+    "src/ImuService.cpp"
 )
 
 set(INCLUDE_DIRS "")

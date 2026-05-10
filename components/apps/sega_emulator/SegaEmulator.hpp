@@ -135,6 +135,7 @@ private:
     static void onInitialIndexPromptEvent(lv_event_t *event);
     static void onPrevPageClicked(lv_event_t *event);
     static void onNextPageClicked(lv_event_t *event);
+    static void onSdStateTimer(lv_timer_t *timer);
     static void onControlButtonEvent(lv_event_t *event);
     static void onPlayerActionEvent(lv_event_t *event);
     static void onLoadSlotSelected(lv_event_t *event);
@@ -239,6 +240,7 @@ private:
     lv_obj_t *_indexOverlay = nullptr;
     lv_obj_t *_indexProgressLabel = nullptr;
     lv_obj_t *_indexPromptMessageBox = nullptr;
+    lv_timer_t *_sdStateTimer = nullptr;
     lv_obj_t *_playerStatus = nullptr;
     lv_obj_t *_playerTitle = nullptr;
     lv_obj_t *_playerFps = nullptr;
@@ -306,4 +308,5 @@ private:
     SegaString _pendingLoadStatePath;
     SegaVector<RomEntry> _pendingIndexedEntries;
     std::atomic<bool> _finishUiQueued{false};
+    bool _lastSdMountedState = false;
 };

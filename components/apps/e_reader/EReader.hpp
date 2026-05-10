@@ -40,6 +40,7 @@ private:
     void setStatus(const std::string &status);
     void updatePathLabel();
     void resetUiPointers();
+    void handleSdStatePoll();
 
     static void onScreenDeleted(lv_event_t *event);
     static void onEntryClicked(lv_event_t *event);
@@ -48,6 +49,7 @@ private:
     static void onSdClicked(lv_event_t *event);
     static void onSpiffsClicked(lv_event_t *event);
     static void onCloseReaderClicked(lv_event_t *event);
+    static void onSdStateTimer(lv_timer_t *timer);
 
     lv_obj_t *_screen;
     lv_obj_t *_statusLabel;
@@ -59,9 +61,11 @@ private:
     lv_obj_t *_readerBody;
     lv_obj_t *_sdButton;
     lv_obj_t *_spiffsButton;
+    lv_timer_t *_sdStateTimer;
     std::vector<Entry> _entries;
     std::unordered_map<lv_obj_t *, size_t> _buttonIndexMap;
     std::string _rootPath;
     std::string _currentPath;
     bool _usingSdCard;
+    bool _lastSdMountedState;
 };

@@ -121,14 +121,46 @@ void apply_module_defaults(MeshSettings &settings)
     }
 }
 
-void sanitize_module_pins(MeshSettings &settings)
+bool heal_known_e22_swapped_spi_pins(MeshSettings &settings, const MeshSettings &defaults)
+{
+    if (settings.radio_module != RadioModule::E22_400M22S) {
+        return false;
+    }
+
+    const bool swapped_spi_pair = (settings.spi_miso_gpio == defaults.spi_sck_gpio) &&
+                                  (settings.spi_sck_gpio == defaults.spi_miso_gpio);
+    const bool other_pins_match_defaults = (settings.spi_mosi_gpio == defaults.spi_mosi_gpio) &&
+                                           (settings.spi_nss_gpio == defaults.spi_nss_gpio) &&
+                                           (settings.busy_gpio == defaults.busy_gpio) &&
+                                           (settings.dio1_gpio == defaults.dio1_gpio) &&
+                                           (settings.nrst_gpio == defaults.nrst_gpio) &&
+                                           (settings.txen_gpio == defaults.txen_gpio) &&
+                                           (settings.rxen_gpio == defaults.rxen_gpio);
+    if (!swapped_spi_pair || !other_pins_match_defaults) {
+        return false;
+    }
+
+    ESP_LOGW(kTag,
+             "Correcting stored E22 SPI pin override MISO=%d/SCK=%d to defaults MISO=%d/SCK=%d",
+             settings.spi_miso_gpio,
+             settings.spi_sck_gpio,
+             defaults.spi_miso_gpio,
+             defaults.spi_sck_gpio);
+    settings.spi_miso_gpio = defaults.spi_miso_gpio;
+    settings.spi_sck_gpio = defaults.spi_sck_gpio;
+    return true;
+}
+
+bool sanitize_module_pins(MeshSettings &settings)
 {
     MeshSettings defaults = settings;
     apply_module_defaults(defaults);
+    bool changed = heal_known_e22_swapped_spi_pins(settings, defaults);
 
-    auto sanitize_pin = [&defaults](int8_t &pin, int8_t fallback) {
+    auto sanitize_pin = [&changed](int8_t &pin, int8_t fallback) {
         if (!is_allowed_gpio(pin)) {
             pin = fallback;
+            changed = true;
         }
     };
 
@@ -146,6 +178,7 @@ void sanitize_module_pins(MeshSettings &settings)
     sanitize_pin(settings.mode0_gpio, defaults.mode0_gpio);
     sanitize_pin(settings.mode1_gpio, defaults.mode1_gpio);
     sanitize_pin(settings.aux_gpio, defaults.aux_gpio);
+    return changed;
 }
 
 bool load_state_json(std::string &json)
@@ -188,36 +221,50 @@ bool save_state_json(const std::string &json)
     return err == ESP_OK;
 }
 
-void sanitize_state(StoredState &state)
+bool sanitize_state(StoredState &state)
 {
+    bool changed = false;
     if (state.identity.public_key_hex.empty() || state.identity.private_key_hex.empty() || state.identity.device_id.empty()) {
         state.identity = cryptoGenerateIdentity();
+        changed = true;
     }
     if (state.identity.display_name.empty()) {
         state.identity.display_name = std::string("P4-") + state.identity.device_id.substr(0, 4);
+        changed = true;
     }
     if (state.settings.common_chat_name.empty()) {
         state.settings.common_chat_name = "Common Mesh Chat";
+        changed = true;
     }
     if (state.settings.hop_limit == 0U) {
         state.settings.hop_limit = 4;
+        changed = true;
     }
     if ((state.settings.spreading_factor < 5U) || (state.settings.spreading_factor > 12U)) {
         state.settings.spreading_factor = 9;
+        changed = true;
     }
     if (state.settings.bandwidth > 9U) {
         state.settings.bandwidth = 4;
+        changed = true;
     }
     if ((state.settings.coding_rate < 1U) || (state.settings.coding_rate > 4U)) {
         state.settings.coding_rate = 1;
+        changed = true;
+    }
+    if (!state.settings.radio_enabled && state.settings.antenna_warning_acknowledged) {
+        // Keep the disable state but do not treat the warning ack as invalid.
     }
     if (static_cast<uint8_t>(state.settings.radio_module) > static_cast<uint8_t>(RadioModule::E220_400T22D)) {
         state.settings.radio_module = RadioModule::E22_400M22S;
+        changed = true;
     }
-    sanitize_module_pins(state.settings);
+    changed = sanitize_module_pins(state.settings) || changed;
     if (state.settings.public_group_key_hex.empty()) {
         state.settings.public_group_key_hex = cryptoGenerateSharedSecretHex();
+        changed = true;
     }
+    return changed;
 }
 
 } // namespace
@@ -247,6 +294,7 @@ bool load_stored_state(StoredState &state)
     state.settings.spreading_factor = static_cast<uint8_t>(read_int(settings, "spreading_factor", state.settings.spreading_factor));
     state.settings.bandwidth = static_cast<uint8_t>(read_int(settings, "bandwidth", state.settings.bandwidth));
     state.settings.coding_rate = static_cast<uint8_t>(read_int(settings, "coding_rate", state.settings.coding_rate));
+    state.settings.radio_enabled = read_bool(settings, "radio_enabled", state.settings.radio_enabled);
     state.settings.radio_module = static_cast<RadioModule>(read_int(settings, "radio_module", static_cast<int>(state.settings.radio_module)));
     state.settings.spi_miso_gpio = static_cast<int8_t>(read_int(settings, "spi_miso_gpio", state.settings.spi_miso_gpio));
     state.settings.spi_mosi_gpio = static_cast<int8_t>(read_int(settings, "spi_mosi_gpio", state.settings.spi_mosi_gpio));
@@ -291,7 +339,9 @@ bool load_stored_state(StoredState &state)
     }
     cJSON_Delete(root);
 
-    sanitize_state(state);
+    if (sanitize_state(state) && !save_stored_state(state)) {
+        ESP_LOGW(kTag, "Failed to persist sanitized LoRa mesh state");
+    }
     return true;
 }
 
@@ -313,6 +363,7 @@ bool save_stored_state(const StoredState &state)
     cJSON_AddNumberToObject(settings, "spreading_factor", state.settings.spreading_factor);
     cJSON_AddNumberToObject(settings, "bandwidth", state.settings.bandwidth);
     cJSON_AddNumberToObject(settings, "coding_rate", state.settings.coding_rate);
+    cJSON_AddBoolToObject(settings, "radio_enabled", state.settings.radio_enabled);
     cJSON_AddNumberToObject(settings, "radio_module", static_cast<int>(state.settings.radio_module));
     cJSON_AddNumberToObject(settings, "spi_miso_gpio", state.settings.spi_miso_gpio);
     cJSON_AddNumberToObject(settings, "spi_mosi_gpio", state.settings.spi_mosi_gpio);

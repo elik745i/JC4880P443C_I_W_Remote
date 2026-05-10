@@ -41,6 +41,7 @@ private:
         UI_WIFI_CONNECT_INDEX,
         UI_BLUETOOTH_SETTING_INDEX,
         UI_JOYPAD_SETTING_INDEX,
+        UI_LORA_SETTING_INDEX,
         UI_ZIGBEE_SETTING_INDEX,
         UI_SECURITY_SETTING_INDEX,
         UI_VOLUME_SETTING_INDEX,
@@ -155,6 +156,7 @@ private:
     void refreshTimezoneUi(void);
     void refreshBluetoothUi(void);
     void refreshJoypadUi(void);
+    void refreshLoRaUi(void);
     void refreshJoypadCalibrationUi(const jc4880_joypad_ble_report_state_t &report);
     void refreshRadioStatusBar(void);
     void refreshZigbeeUi(void);
@@ -181,9 +183,17 @@ private:
     void ensureJoypadScreen(void);
     void ensureJoypadBleScreen(void);
     void ensureJoypadLocalScreen(void);
+    void ensureLoRaScreen(void);
     void ensureZigbeeScreen(void);
     void ensureSecurityScreen(void);
     bool persistJoypadConfigFromUi(void);
+    bool persistLoRaConfigFromUi(void);
+    bool persistLoRaRadioEnabledFromUi(void);
+    void refreshLoRaSelfCheckStatus(void);
+    void startLoRaSelfCheckStatusPolling(void);
+    void stopLoRaSelfCheckStatusPolling(void);
+    void disableLoRaRadioForLocalController(void);
+    bool disableLocalControllerForLoRa(void);
     void setFirmwareStatus(const std::string &status, bool is_error = false);
     void ensureFirmwareScreen(void);
     void ensureFirmwareOtaCheckOverlay(void);
@@ -302,6 +312,10 @@ private:
     static void onBluetoothScanClickedEventCallback(lv_event_t *e);
     static void onJoypadConfigChangedEventCallback(lv_event_t *e);
     static void onJoypadCalibrationClickedEventCallback(lv_event_t *e);
+    static void onLoRaConfigChangedEventCallback(lv_event_t *e);
+    static void onLoRaSaveClickedEventCallback(lv_event_t *e);
+    static void onLoRaSelfCheckClickedEventCallback(lv_event_t *e);
+    static void onLoRaSelfCheckStatusTimerCallback(lv_timer_t *timer);
     // ZigBee
     static void onZigbeeEnableSwitchValueChangeEventCallback(lv_event_t *e);
     static void onZigbeeChannelChangedEventCallback(lv_event_t *e);
@@ -404,6 +418,7 @@ private:
     lv_obj_t *_displayOrientationPreviewSpinner;
     lv_obj_t *_displayOrientationPreviewCountdownLabel;
     lv_timer_t *_displayOrientationPreviewTimer;
+    lv_timer_t *_loraSelfCheckStatusTimer;
     int32_t _displayOrientationPreviewPrevious;
     int32_t _displayOrientationPreviewPending;
     int32_t _displayOrientationPreviewSecondsRemaining;
@@ -422,6 +437,7 @@ private:
     lv_obj_t *_audioHapticFeedbackSwitch;
     lv_obj_t *_bluetoothMenuItem;
     lv_obj_t *_joypadMenuItem;
+    lv_obj_t *_loraMenuItem;
     lv_obj_t *_zigbeeMenuItem;
     lv_obj_t *_wifiMenuItem;
     lv_obj_t *_audioMenuItem;
@@ -440,6 +456,7 @@ private:
     lv_obj_t *_joypadScreen;
     lv_obj_t *_joypadBleScreen;
     lv_obj_t *_joypadLocalScreen;
+    lv_obj_t *_loraScreen;
     lv_obj_t *_joypadBleMenuItem;
     lv_obj_t *_joypadLocalMenuItem;
     lv_obj_t *_joypadBleActiveSwitch;
@@ -484,6 +501,22 @@ private:
     lv_obj_t *_joypadLocalNeopixelBrightnessSlider;
     lv_obj_t *_joypadLocalNeopixelInfoLabel;
     std::vector<std::string> _joypadBleDeviceOptions;
+    lv_obj_t *_loraEnabledSwitch;
+    lv_obj_t *_loraModuleDropdown;
+    lv_obj_t *_loraDisplayNameTextArea;
+    lv_obj_t *_loraCommonChatTitleTextArea;
+    lv_obj_t *_loraFrequencyTextArea;
+    lv_obj_t *_loraSpreadingFactorTextArea;
+    lv_obj_t *_loraBandwidthTextArea;
+    lv_obj_t *_loraCodingRateTextArea;
+    lv_obj_t *_loraHopLimitTextArea;
+    lv_obj_t *_loraForwardingSwitch;
+    lv_obj_t *_loraEncryptionSwitch;
+    lv_obj_t *_loraSelfCheckButton;
+    lv_obj_t *_loraSelfCheckStatusLabel;
+    lv_obj_t *_loraInfoLabel;
+    std::array<lv_obj_t *, 14> _loraPinRows;
+    std::array<lv_obj_t *, 14> _loraPinDropdowns;
     lv_obj_t *_zigbeeEnableSwitch;
     lv_obj_t *_zigbeeNameTextArea;
     lv_obj_t *_zigbeeNameSaveButton;

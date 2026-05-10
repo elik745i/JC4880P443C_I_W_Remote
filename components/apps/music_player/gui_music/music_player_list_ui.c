@@ -16,6 +16,7 @@
 
 #include "music_player_ui.h"
 #include "music_library.h"
+#include "storage_access.h"
 
 /*********************
  *      DEFINES
@@ -56,6 +57,7 @@ static void delete_confirm_event_cb(lv_event_t *e);
 static void url_keyboard_event_cb(lv_event_t *e);
 static void download_timer_cb(lv_timer_t *t);
 static void browser_add_timer_cb(lv_timer_t *t);
+static void browser_storage_timer_cb(lv_timer_t *t);
 static void populate_list_contents(void);
 static void open_browser_modal(music_library_browser_mode_t mode);
 static void close_browser_modal(void);
@@ -90,8 +92,10 @@ static lv_obj_t * url_textarea;
 static lv_obj_t * url_keyboard;
 static lv_timer_t * download_timer;
 static lv_timer_t * browser_add_timer;
+static lv_timer_t * browser_storage_timer;
 static bool playlist_content_populated;
 static bool playlist_content_dirty;
+static bool browser_last_sd_available;
 static music_library_storage_root_t browser_active_root = MUSIC_LIBRARY_STORAGE_SD;
 static const lv_font_t * font_small;
 static const lv_font_t * font_medium;
@@ -749,6 +753,7 @@ static void open_browser_modal(music_library_browser_mode_t mode)
 {
     music_library_browser_open(mode);
     browser_active_root = MUSIC_LIBRARY_STORAGE_SD;
+    browser_last_sd_available = app_storage_is_sdcard_mounted();
     if (browser_title_label != NULL) {
         lv_label_set_text(browser_title_label,
                           (mode == MUSIC_LIBRARY_BROWSER_MODE_FILE) ? "Add File To Playlist" : "Add Folder To Playlist");
@@ -756,11 +761,18 @@ static void open_browser_modal(music_library_browser_mode_t mode)
     refresh_browser_modal();
     lv_obj_clear_flag(browser_overlay, LV_OBJ_FLAG_HIDDEN);
     start_browser_refresh(false);
+    if (browser_storage_timer == NULL) {
+        browser_storage_timer = lv_timer_create(browser_storage_timer_cb, 1000, NULL);
+    }
 }
 
 static void close_browser_modal(void)
 {
     lv_obj_add_flag(browser_overlay, LV_OBJ_FLAG_HIDDEN);
+    if (browser_storage_timer != NULL) {
+        lv_timer_del(browser_storage_timer);
+        browser_storage_timer = NULL;
+    }
 }
 
 static void browser_close_event_cb(lv_event_t *e)
@@ -1084,5 +1096,28 @@ static void browser_add_timer_cb(lv_timer_t *t)
 bool _music_player_list_ui_needs_reload(void)
 {
     return (!playlist_content_populated) || playlist_content_dirty;
+}
+
+static void browser_storage_timer_cb(lv_timer_t *t)
+{
+    LV_UNUSED(t);
+
+    if ((browser_overlay == NULL) || lv_obj_has_flag(browser_overlay, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+
+    if (browser_active_root != MUSIC_LIBRARY_STORAGE_SD) {
+        browser_last_sd_available = app_storage_is_sdcard_mounted();
+        return;
+    }
+
+    const bool available = app_storage_ensure_sdcard_available();
+    if (available == browser_last_sd_available) {
+        return;
+    }
+
+    browser_last_sd_available = available;
+    refresh_browser_modal();
+    start_browser_refresh(false);
 }
 #endif /*APP_MUSIC_PLAYER_ENABLE*/

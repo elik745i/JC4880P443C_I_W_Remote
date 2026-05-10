@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "LoRaPinProfile.hpp"
+
 namespace jc4880::lora_mesh {
 
 inline constexpr const char *kBroadcastTargetId = "broadcast";
@@ -71,16 +73,17 @@ struct MeshSettings {
     uint8_t spreading_factor = 9;
     uint8_t bandwidth = 4;
     uint8_t coding_rate = 1;
+    bool radio_enabled = true;
     RadioModule radio_module = RadioModule::E22_400M22S;
-    int8_t spi_miso_gpio = 33;
-    int8_t spi_mosi_gpio = 31;
-    int8_t spi_sck_gpio = 30;
-    int8_t spi_nss_gpio = 29;
-    int8_t busy_gpio = 51;
-    int8_t dio1_gpio = 50;
-    int8_t nrst_gpio = 52;
-    int8_t txen_gpio = 35;
-    int8_t rxen_gpio = 34;
+    int8_t spi_miso_gpio = pin_profile::kSpiMisoGpio;
+    int8_t spi_mosi_gpio = pin_profile::kSpiMosiGpio;
+    int8_t spi_sck_gpio = pin_profile::kSpiSckGpio;
+    int8_t spi_nss_gpio = pin_profile::kSpiNssGpio;
+    int8_t busy_gpio = pin_profile::kBusyGpio;
+    int8_t dio1_gpio = pin_profile::kDio1Gpio;
+    int8_t nrst_gpio = pin_profile::kNrstGpio;
+    int8_t txen_gpio = pin_profile::kTxEnableGpio;
+    int8_t rxen_gpio = pin_profile::kRxEnableGpio;
     int8_t uart_tx_gpio = 31;
     int8_t uart_rx_gpio = 33;
     int8_t mode0_gpio = 29;

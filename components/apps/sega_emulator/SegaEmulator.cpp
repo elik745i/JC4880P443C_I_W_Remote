@@ -813,6 +813,7 @@ void SegaEmulator::releaseRuntimeResources()
 bool SegaEmulator::init()
 {
     _playerRotationDegrees = load_saved_rotation_degrees();
+    _lastSdMountedState = app_storage_is_sdcard_mounted();
     return true;
 }
 
@@ -827,11 +828,19 @@ bool SegaEmulator::run()
     refreshRomList();
     setBrowserChrome();
     lv_scr_load(_browserScreen);
+    if (_sdStateTimer == nullptr) {
+        _sdStateTimer = lv_timer_create(onSdStateTimer, 1000, this);
+    } else {
+        lv_timer_resume(_sdStateTimer);
+    }
     return true;
 }
 
 bool SegaEmulator::pause()
 {
+    if (_sdStateTimer != nullptr) {
+        lv_timer_pause(_sdStateTimer);
+    }
     restoreHomeChrome();
     stopEmulation();
     bsp_extra_display_idle_set_screen_off_suppressed(false);
@@ -861,6 +870,10 @@ bool SegaEmulator::resume()
         bsp_extra_display_idle_set_screen_off_suppressed(false);
         setBrowserChrome();
         lv_scr_load(_browserScreen);
+    }
+
+    if (_sdStateTimer != nullptr) {
+        lv_timer_resume(_sdStateTimer);
     }
     return true;
 }
@@ -901,6 +914,11 @@ bool SegaEmulator::close()
         return true;
     }
 
+    if (_sdStateTimer != nullptr) {
+        lv_timer_del(_sdStateTimer);
+        _sdStateTimer = nullptr;
+    }
+
     _closingApp.store(true);
     stopEmulation();
     bsp_extra_display_idle_set_screen_off_suppressed(false);
@@ -913,6 +931,24 @@ bool SegaEmulator::cleanResource()
     bsp_extra_codec_deinit();
     releaseRuntimeResources();
     return true;
+}
+
+void SegaEmulator::onSdStateTimer(lv_timer_t *timer)
+{
+    auto *app = static_cast<SegaEmulator *>(timer->user_data);
+    if ((app == nullptr) || app->_running.load() || app->_indexing.load() || (app->_browserScreen == nullptr)) {
+        return;
+    }
+
+    const bool mounted = ensure_sd_rom_root_available(true);
+    if (mounted == app->_lastSdMountedState) {
+        return;
+    }
+
+    app->_lastSdMountedState = mounted;
+    app->_indexLoaded = false;
+    app->_currentPage = 0;
+    app->refreshRomList();
 }
 
 void SegaEmulator::createBrowserScreen()

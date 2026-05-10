@@ -43,15 +43,13 @@
 #include "esp_brookesia.hpp"
 #include "app_examples/phone/squareline/src/phone_app_squareline.hpp"
 #include "apps.h"
+#include "LoRaPinProfile.hpp"
 #include "storage_access.h"
 #include "system_ui_service.h"
 #include "web_server/WebServerService.hpp"
  
 static const char *TAG = "main";
 static constexpr TickType_t kSdcardMountRetryPeriod = pdMS_TO_TICKS(2000);
-static constexpr TickType_t kSdcardStartupDelay = pdMS_TO_TICKS(1000);
-static constexpr uint32_t kSdcardStartupTaskStack = 4096;
-static constexpr uint32_t kSdcardStartupMountAttempts = 5;
 static constexpr uint32_t kSerialCommandTaskStack = 6144;
 static constexpr uint32_t kCrashReportUploadTaskStack = 6144;
 static constexpr const char *kNvsStorageNamespace = "storage";
@@ -94,6 +92,20 @@ static constexpr uint32_t kHapticDutyOff = 0;
 static constexpr uint32_t kHapticDutyLow = 384;
 static constexpr uint32_t kHapticDutyMedium = 700;
 static constexpr uint32_t kHapticDutyHigh = 1023;
+
+static void log_lora_pin_profile(void)
+{
+    ESP_LOGI(TAG, "LORA_MISO GPIO%d", jc4880::lora_mesh::pin_profile::kSpiMisoGpio);
+    ESP_LOGI(TAG, "LORA_MOSI GPIO%d", jc4880::lora_mesh::pin_profile::kSpiMosiGpio);
+    ESP_LOGI(TAG, "LORA_SCK GPIO%d", jc4880::lora_mesh::pin_profile::kSpiSckGpio);
+    ESP_LOGI(TAG, "LORA_NSS GPIO%d", jc4880::lora_mesh::pin_profile::kSpiNssGpio);
+    ESP_LOGI(TAG, "LORA_DIO1 GPIO%d", jc4880::lora_mesh::pin_profile::kDio1Gpio);
+    ESP_LOGI(TAG, "LORA_BUSY GPIO%d", jc4880::lora_mesh::pin_profile::kBusyGpio);
+    ESP_LOGI(TAG, "LORA_NRST GPIO%d", jc4880::lora_mesh::pin_profile::kNrstGpio);
+    ESP_LOGI(TAG, "LORA_TXEN GPIO%d", jc4880::lora_mesh::pin_profile::kTxEnableGpio);
+    ESP_LOGI(TAG, "LORA_RXEN GPIO%d", jc4880::lora_mesh::pin_profile::kRxEnableGpio);
+    ESP_LOGI(TAG, "LoRa profile guard USE_ETHERNET_RMII=%d USE_CSI_CAMERA=%d", USE_ETHERNET_RMII, USE_CSI_CAMERA);
+}
 
 struct PendingReleaseNotesContext {
     std::string version;
@@ -314,6 +326,14 @@ static bool init_ui_haptic_feedback_output(void)
         (void)nvs_get_i32(handle, kNvsKeyHapticGpio, &configured_gpio);
         (void)nvs_get_i32(handle, kNvsKeyHapticLevel, &configured_level);
         nvs_close(handle);
+    }
+
+    if (jc4880::lora_mesh::pin_profile::is_reserved_gpio(configured_gpio)) {
+        ESP_LOGW(TAG,
+                 "Stored haptic GPIO %ld conflicts with the reserved LoRa E22 pin set; reverting to GPIO%d",
+                 static_cast<long>(configured_gpio),
+                 static_cast<int>(kDefaultHapticFeedbackGpio));
+        configured_gpio = static_cast<int32_t>(kDefaultHapticFeedbackGpio);
     }
 
     jc_ui_haptic_feedback_set_gpio(configured_gpio);
@@ -2241,28 +2261,6 @@ static bool probe_sdcard_health(void)
     return (bsp_sdcard != nullptr) && (sdmmc_get_status(bsp_sdcard) == ESP_OK);
 }
 
-static void sdcard_startup_mount_task(void *arg)
-{
-    (void)arg;
-
-    vTaskDelay(kSdcardStartupDelay);
-
-    for (uint32_t attempt = 0; attempt < kSdcardStartupMountAttempts; ++attempt) {
-        const bool mounted = sync_sdcard_mount_state(true);
-        if (mounted) {
-            ESP_LOGI(TAG, "SD card mounted by background startup task");
-            vTaskDelete(nullptr);
-            return;
-        }
-
-        vTaskDelay(kSdcardMountRetryPeriod);
-    }
-
-    ESP_LOGI(TAG, "SD card not mounted during startup probe window");
-
-    vTaskDelete(nullptr);
-}
-
 static bool sync_sdcard_mount_state(bool try_mount)
 {
     if (s_sdcardMutex == nullptr) {
@@ -2616,15 +2614,6 @@ extern "C" void app_main(void)
     s_sdcardMutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_sdcardMutex != nullptr ? ESP_OK : ESP_ERR_NO_MEM);
 
-    if (create_background_task_prefer_psram(sdcard_startup_mount_task,
-                                            "sdcard_startup",
-                                            kSdcardStartupTaskStack,
-                                            nullptr,
-                                            1,
-                                            1) != pdPASS) {
-        ESP_LOGW(TAG, "Failed to start SD card startup mount task");
-    }
-
     ESP_ERROR_CHECK(bsp_spiffs_mount());
     ESP_LOGI(TAG, "SPIFFS mount successfully");
     capture_panic_report_if_present();
@@ -2667,6 +2656,7 @@ extern "C" void app_main(void)
     if (!system_ui_service::initialize(*phone)) {
         ESP_LOGW(TAG, "System UI service initialization failed");
     }
+    log_lora_pin_profile();
     if (!init_ui_haptic_feedback_output()) {
         ESP_LOGW(TAG, "Haptic feedback GPIO34 init failed");
     }

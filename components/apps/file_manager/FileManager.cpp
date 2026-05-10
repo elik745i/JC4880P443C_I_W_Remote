@@ -143,11 +143,13 @@ FileManager::FileManager()
       _inputTitleLabel(nullptr),
       _inputTextArea(nullptr),
       _keyboard(nullptr),
-            _dialogMessageBox(nullptr),
+        _dialogMessageBox(nullptr),
+    _sdStateTimer(nullptr),
       _activeRoot(StorageRoot::Spiffs),
       _currentPath(rootPath(StorageRoot::Spiffs)),
       _selectedEntry(nullptr),
-      _inputMode(InputMode::None)
+    _inputMode(InputMode::None),
+    _lastSdMountedState(false)
 {
 }
 
@@ -155,6 +157,7 @@ bool FileManager::init()
 {
     _activeRoot = StorageRoot::Spiffs;
     _currentPath = rootPath(StorageRoot::Spiffs);
+    _lastSdMountedState = app_storage_is_sdcard_mounted();
     return true;
 }
 
@@ -171,11 +174,20 @@ bool FileManager::run()
 
     lv_scr_load(_screen);
     refreshEntries();
+
+    if (_sdStateTimer == nullptr) {
+        _sdStateTimer = lv_timer_create(onSdStateTimer, 1000, this);
+    } else {
+        lv_timer_resume(_sdStateTimer);
+    }
     return true;
 }
 
 bool FileManager::pause()
 {
+    if (_sdStateTimer != nullptr) {
+        lv_timer_pause(_sdStateTimer);
+    }
     return true;
 }
 
@@ -183,6 +195,10 @@ bool FileManager::resume()
 {
     if (!ensureUiReady()) {
         return false;
+    }
+
+    if (_sdStateTimer != nullptr) {
+        lv_timer_resume(_sdStateTimer);
     }
 
     refreshEntries();
@@ -216,6 +232,10 @@ bool FileManager::back()
 
 bool FileManager::close()
 {
+    if (_sdStateTimer != nullptr) {
+        lv_timer_del(_sdStateTimer);
+        _sdStateTimer = nullptr;
+    }
     hideInputDialog();
     if ((_dialogMessageBox != nullptr) && lv_obj_is_valid(_dialogMessageBox)) {
         lv_msgbox_close(_dialogMessageBox);
@@ -837,6 +857,24 @@ void FileManager::resetUiPointers()
     _selectedEntry = nullptr;
     _entries.clear();
     _inputMode = InputMode::None;
+}
+
+void FileManager::onSdStateTimer(lv_timer_t *timer)
+{
+    auto *app = static_cast<FileManager *>(timer->user_data);
+    if ((app == nullptr) || (app->_activeRoot != StorageRoot::SdCard) || !app->ensureUiReady()) {
+        return;
+    }
+
+    const bool mounted = app_storage_ensure_sdcard_available();
+    if (mounted == app->_lastSdMountedState) {
+        return;
+    }
+
+    app->_lastSdMountedState = mounted;
+    app->_currentPath = app->rootPath(StorageRoot::SdCard);
+    app->selectEntry(nullptr);
+    app->refreshEntries();
 }
 
 void FileManager::showInputDialog(InputMode mode, const char *title, const std::string &initialValue)

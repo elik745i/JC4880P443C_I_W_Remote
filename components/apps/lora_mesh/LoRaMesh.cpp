@@ -15,10 +15,12 @@
 
 #include "LoRaMeshCrypto.hpp"
 #include "LoRaMeshPackets.hpp"
+#include "LoRaPinProfile.hpp"
 #include "LoRaMeshStorage.hpp"
 #include "LoRaMeshTypes.hpp"
 #include "assets/esp_brookesia_assets.h"
 #include "bsp/esp-bsp.h"
+#include "neopixel_runtime.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "driver/uart.h"
@@ -44,7 +46,7 @@ constexpr char kTag[] = "LoRaMesh";
 
 constexpr spi_host_device_t kLoRaSpiHost = SPI3_HOST;
 constexpr uart_port_t kLoRaUartPort = UART_NUM_1;
-constexpr int kSpiClockHz = 8 * 1000 * 1000;
+constexpr int kSpiClockHz = 1 * 1000 * 1000;
 constexpr int kUartBaudRate = 9600;
 constexpr uint8_t kRadioSyncWordMsb = 0x14;
 constexpr uint8_t kRadioSyncWordLsb = 0x24;
@@ -57,6 +59,7 @@ constexpr size_t kMaxLogBytes = 4096;
 constexpr size_t kMaxConversationMessages = 64;
 constexpr uint32_t kTxTimeoutSteps = 0x09C400; // 10 s at 15.625 us per step
 constexpr int64_t kTxWaitDeadlineUs = 12000000;
+constexpr int64_t kInvalidIrqAssumeTxUs = 700000;
 constexpr size_t kMaxPayloadBytes = 220;
 constexpr size_t kRecentFrameCount = 24;
 constexpr uint32_t kUartAuxTimeoutMs = 250;
@@ -130,13 +133,11 @@ struct ConversationEntry {
 enum class ViewMode : uint8_t {
     Targets = 0,
     Chat,
-    Settings,
 };
 
 enum class DebugUiAction : uint8_t {
     ShowTargets = 0,
     ShowCommonChat,
-    ShowSettings,
     ShowPeerChat,
     StartSelfTest,
     StopSelfTest,
@@ -259,12 +260,59 @@ HeapBuffer allocate_byte_buffer(size_t size)
         return HeapBuffer(nullptr, &heap_caps_free);
     }
 
-    void *memory = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    void *memory = heap_caps_malloc(size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (memory == nullptr) {
+        memory = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
     if (memory == nullptr) {
         memory = heap_caps_malloc(size, MALLOC_CAP_8BIT);
     }
 
     return HeapBuffer(static_cast<uint8_t *>(memory), &heap_caps_free);
+}
+
+std::string format_hex_bytes(const uint8_t *data, size_t length)
+{
+    if ((data == nullptr) || (length == 0)) {
+        return "-";
+    }
+
+    std::ostringstream stream;
+    stream << std::hex << std::uppercase;
+    for (size_t index = 0; index < length; ++index) {
+        if (index != 0) {
+            stream << ' ';
+        }
+        stream.width(2);
+        stream.fill('0');
+        stream << static_cast<unsigned>(data[index]);
+    }
+    return stream.str();
+}
+
+bool all_bytes_equal(const uint8_t *data, size_t length, uint8_t value)
+{
+    if ((data == nullptr) || (length == 0)) {
+        return false;
+    }
+
+    for (size_t index = 0; index < length; ++index) {
+        if (data[index] != value) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool is_invalid_uniform_spi_signature(const uint8_t *data, size_t length)
+{
+    return all_bytes_equal(data, length, 0xAA) || all_bytes_equal(data, length, 0xFF);
+}
+
+bool is_uniform_spi_signature_value(const uint8_t *data, size_t length, uint8_t value)
+{
+    return all_bytes_equal(data, length, value);
 }
 
 bool create_task_prefer_psram(TaskFunction_t task,
@@ -339,8 +387,6 @@ const char *view_mode_name(ViewMode mode)
         return "targets";
     case ViewMode::Chat:
         return "chat";
-    case ViewMode::Settings:
-        return "settings";
     }
     return "unknown";
 }
@@ -427,6 +473,8 @@ struct LoRaMeshApp::Impl {
     bool startup_started = false;
     bool startup_complete = false;
     bool startup_ok = false;
+    bool pending_self_test_on_next_open = false;
+    int suspended_neopixel_gpio = -1;
     std::vector<uint8_t> uart_rx_bytes;
     ViewMode view_mode = ViewMode::Targets;
     std::string selected_conversation_id = jc4880::lora_mesh::kCommonConversationId;
@@ -578,11 +626,6 @@ struct LoRaMeshApp::Impl {
         selected_conversation_id = peer_id;
         selected_peer_id = peer_id;
         conversation_dirty = true;
-    }
-
-    void show_settings_locked()
-    {
-        view_mode = ViewMode::Settings;
     }
 
     bool parse_uint32_text(lv_obj_t *textarea, uint32_t &value) const
@@ -752,15 +795,15 @@ struct LoRaMeshApp::Impl {
     {
         switch (settings.radio_module) {
             case RadioModule::E22_400M22S:
-                settings.spi_miso_gpio = 33;
-                settings.spi_mosi_gpio = 31;
-                settings.spi_sck_gpio = 30;
-                settings.spi_nss_gpio = 29;
-                settings.busy_gpio = 51;
-                settings.dio1_gpio = 50;
-                settings.nrst_gpio = 52;
-                settings.txen_gpio = 35;
-                settings.rxen_gpio = 34;
+                settings.spi_miso_gpio = jc4880::lora_mesh::pin_profile::kSpiMisoGpio;
+                settings.spi_mosi_gpio = jc4880::lora_mesh::pin_profile::kSpiMosiGpio;
+                settings.spi_sck_gpio = jc4880::lora_mesh::pin_profile::kSpiSckGpio;
+                settings.spi_nss_gpio = jc4880::lora_mesh::pin_profile::kSpiNssGpio;
+                settings.busy_gpio = jc4880::lora_mesh::pin_profile::kBusyGpio;
+                settings.dio1_gpio = jc4880::lora_mesh::pin_profile::kDio1Gpio;
+                settings.nrst_gpio = jc4880::lora_mesh::pin_profile::kNrstGpio;
+                settings.txen_gpio = jc4880::lora_mesh::pin_profile::kTxEnableGpio;
+                settings.rxen_gpio = jc4880::lora_mesh::pin_profile::kRxEnableGpio;
                 break;
             case RadioModule::E22_400T22S:
                 settings.uart_tx_gpio = 31;
@@ -783,6 +826,58 @@ struct LoRaMeshApp::Impl {
     gpio_num_t gpio_for_role(RadioPinRole role) const
     {
         return static_cast<gpio_num_t>(pin_value_for_role(stored_state.settings, role));
+    }
+
+    void reset_active_radio_gpios()
+    {
+        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
+            auto role = static_cast<RadioPinRole>(role_index);
+            if (!module_uses_role(stored_state.settings.radio_module, role)) {
+                continue;
+            }
+
+            const int8_t value = pin_value_for_role(stored_state.settings, role);
+            if (value < 0) {
+                continue;
+            }
+
+            gpio_reset_pin(static_cast<gpio_num_t>(value));
+        }
+    }
+
+    void suspend_conflicting_neopixel_if_needed()
+    {
+        if (suspended_neopixel_gpio >= 0) {
+            return;
+        }
+
+        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
+            auto role = static_cast<RadioPinRole>(role_index);
+            if (!module_uses_role(stored_state.settings.radio_module, role)) {
+                continue;
+            }
+
+            const int8_t value = pin_value_for_role(stored_state.settings, role);
+            if (value < 0) {
+                continue;
+            }
+
+            if (jc4880_neopixel_suspend_gpio(value)) {
+                suspended_neopixel_gpio = value;
+                ESP_LOGI(kTag, "Suspended NeoPixel ownership on GPIO %d for LoRa", value);
+                break;
+            }
+        }
+    }
+
+    void resume_suspended_neopixel_if_needed()
+    {
+        if (suspended_neopixel_gpio < 0) {
+            return;
+        }
+
+        jc4880_neopixel_resume_gpio(suspended_neopixel_gpio);
+        suspended_neopixel_gpio = -1;
     }
 
     bool has_pin(RadioPinRole role) const
@@ -1088,6 +1183,60 @@ struct LoRaMeshApp::Impl {
         packet.ttl = stored_state.settings.hop_limit;
         packet.public_key_hex = stored_state.identity.public_key_hex;
         (void)send_packet_locked(packet, nullptr, std::string());
+    }
+
+    bool send_presence_without_mutex(bool hello)
+    {
+        MeshPacket packet = {};
+        MeshFrame frame = {};
+
+        lock();
+        packet.kind = hello ? PacketKind::Hello : PacketKind::Presence;
+        packet.sender_id = stored_state.identity.device_id;
+        packet.sender_name = stored_state.identity.display_name;
+        packet.target_id = jc4880::lora_mesh::kBroadcastTargetId;
+        packet.timestamp_ms = esp_timer_get_time() / 1000;
+        packet.ttl = stored_state.settings.hop_limit;
+        packet.public_key_hex = stored_state.identity.public_key_hex;
+
+        frame.ttl = packet.ttl;
+        frame.flags = 0;
+        frame.origin = node_id;
+        frame.sender = node_id;
+        frame.sequence = next_sequence++;
+        packet.msg_id = packet.sender_id + "-" + std::to_string(frame.sequence);
+        const bool encoded = jc4880::lora_mesh::encode_mesh_packet(packet, frame.payload);
+        unlock();
+
+        if (!encoded) {
+            return false;
+        }
+
+        const bool ok = transmit_frame_locked(frame);
+
+        lock();
+        if (!ok) {
+            ++drop_count;
+            std::ostringstream stream;
+            stream << "TX packet failed irq=0x" << std::hex << std::uppercase << last_tx_irq_status;
+            if (!last_tx_diagnostic.empty()) {
+                stream << ' ' << last_tx_diagnostic;
+            }
+            append_line_capped(log_text, stream.str());
+            status_text = stream.str();
+            unlock();
+            return false;
+        }
+
+        ++tx_count;
+        remember_frame(frame.origin, frame.sequence);
+        std::ostringstream stream;
+        stream << "TX packet kind=" << jc4880::lora_mesh::packet_kind_name(packet.kind)
+               << " msg=" << packet.msg_id
+               << " target=" << packet.target_id;
+        append_line_capped(log_text, stream.str());
+        unlock();
+        return true;
     }
 
     bool wait_while_busy(uint32_t timeout_ms) const
@@ -1489,6 +1638,23 @@ struct LoRaMeshApp::Impl {
         const std::array<uint8_t, 8> pattern = {0x4C, 0x4F, 0x52, 0x41, 0xAA, 0x55, 0x5A, 0xC3};
         std::array<uint8_t, pattern.size()> echo = {};
 
+        auto append_spi_diagnostics = [&]() {
+            std::ostringstream diag;
+            diag << "[self-test] spi status=0x" << std::hex << std::uppercase << static_cast<unsigned>(status)
+                 << " errors=0x" << device_errors
+                 << " sync=[" << format_hex_bytes(sync_word, sizeof(sync_word)) << "]"
+                 << " echo=[" << format_hex_bytes(echo.data(), echo.size()) << "]"
+                 << " expected=[" << format_hex_bytes(pattern.data(), pattern.size()) << "]"
+                 << std::dec;
+            if (all_bytes_equal(sync_word, sizeof(sync_word), 0xAA) && all_bytes_equal(echo.data(), echo.size(), 0xAA)) {
+                diag << " signature=all-0xAA";
+            } else if (all_bytes_equal(sync_word, sizeof(sync_word), 0xFF) && all_bytes_equal(echo.data(), echo.size(), 0xFF)) {
+                diag << " signature=all-0xFF";
+            }
+            append_line_capped(log_text, diag.str());
+            ESP_LOGI(kTag, "%s", diag.str().c_str());
+        };
+
         set_self_test_mode_locked("checking BUSY line");
         if (!stop_if_requested("startup") && !wait_while_busy(200)) {
             if (self_test_stop_requested) {
@@ -1560,6 +1726,10 @@ struct LoRaMeshApp::Impl {
 
         if (passed && ((status == 0x00U) || (status == 0xFFU))) {
             fail("invalid status byte");
+        }
+
+        if (verbose || !passed) {
+            append_spi_diagnostics();
         }
 
         if (passed) {
@@ -1730,7 +1900,28 @@ struct LoRaMeshApp::Impl {
     esp_err_t init_radio_locked()
     {
         if (radio_module_uses_spi(stored_state.settings.radio_module)) {
+            suspend_conflicting_neopixel_if_needed();
+            reset_active_radio_gpios();
+
+            ESP_LOGI(kTag, "LoRa pin owner guard: USE_ETHERNET_RMII=%d USE_CSI_CAMERA=%d", USE_ETHERNET_RMII, USE_CSI_CAMERA);
+
+            ESP_LOGI(kTag,
+                     "LoRa SPI pin map MISO=%d MOSI=%d SCK=%d NSS=%d DIO1=%d BUSY=%d NRST=%d TXEN=%d RXEN=%d expected_e22=%s",
+                     gpio_for_role(RadioPinRole::SpiMiso),
+                     gpio_for_role(RadioPinRole::SpiMosi),
+                     gpio_for_role(RadioPinRole::SpiSck),
+                     gpio_for_role(RadioPinRole::SpiNss),
+                     gpio_for_role(RadioPinRole::Dio1),
+                     gpio_for_role(RadioPinRole::Busy),
+                     gpio_for_role(RadioPinRole::Reset),
+                     gpio_for_role(RadioPinRole::TxEnable),
+                     gpio_for_role(RadioPinRole::RxEnable),
+                     stored_state.settings.radio_module == RadioModule::E22_400M22S ? "yes" : "no");
+
             uint64_t output_mask = 0;
+            output_mask |= (1ULL << gpio_for_role(RadioPinRole::SpiNss));
+            output_mask |= (1ULL << gpio_for_role(RadioPinRole::SpiMosi));
+            output_mask |= (1ULL << gpio_for_role(RadioPinRole::SpiSck));
             output_mask |= (1ULL << gpio_for_role(RadioPinRole::Reset));
             output_mask |= (1ULL << gpio_for_role(RadioPinRole::TxEnable));
             output_mask |= (1ULL << gpio_for_role(RadioPinRole::RxEnable));
@@ -1743,13 +1934,31 @@ struct LoRaMeshApp::Impl {
             output_config.intr_type = GPIO_INTR_DISABLE;
             ESP_RETURN_ON_ERROR(gpio_config(&output_config), kTag, "output gpio config failed");
 
+            gpio_set_level(gpio_for_role(RadioPinRole::SpiNss), 1);
+            gpio_set_level(gpio_for_role(RadioPinRole::SpiMosi), 0);
+            gpio_set_level(gpio_for_role(RadioPinRole::SpiSck), 0);
+
             gpio_config_t input_config = {};
-            input_config.pin_bit_mask = (1ULL << gpio_for_role(RadioPinRole::Busy)) | (1ULL << gpio_for_role(RadioPinRole::Dio1));
+            input_config.pin_bit_mask = (1ULL << gpio_for_role(RadioPinRole::SpiMiso)) |
+                                        (1ULL << gpio_for_role(RadioPinRole::Busy)) |
+                                        (1ULL << gpio_for_role(RadioPinRole::Dio1));
             input_config.mode = GPIO_MODE_INPUT;
             input_config.pull_up_en = GPIO_PULLUP_DISABLE;
-            input_config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+            input_config.pull_down_en = GPIO_PULLDOWN_ENABLE;
             input_config.intr_type = GPIO_INTR_DISABLE;
             ESP_RETURN_ON_ERROR(gpio_config(&input_config), kTag, "input gpio config failed");
+
+            ESP_LOGI(kTag,
+                     "LoRa pre-init GPIO snapshot NSS=%d MOSI=%d SCK=%d NRST=%d TXEN=%d RXEN=%d MISO=%d BUSY=%d DIO1=%d",
+                     gpio_get_level(gpio_for_role(RadioPinRole::SpiNss)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::SpiMosi)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::SpiSck)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::Reset)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::TxEnable)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::RxEnable)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::SpiMiso)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::Busy)),
+                     gpio_get_level(gpio_for_role(RadioPinRole::Dio1)));
 
             set_rf_idle();
             gpio_set_level(gpio_for_role(RadioPinRole::Reset), 1);
@@ -1761,7 +1970,7 @@ struct LoRaMeshApp::Impl {
                 bus_config.sclk_io_num = gpio_for_role(RadioPinRole::SpiSck);
                 bus_config.quadwp_io_num = -1;
                 bus_config.quadhd_io_num = -1;
-                bus_config.max_transfer_sz = 256;
+                bus_config.max_transfer_sz = 512;
                 ESP_RETURN_ON_ERROR(spi_bus_initialize(kLoRaSpiHost, &bus_config, SPI_DMA_CH_AUTO), kTag, "spi bus init failed");
                 spi_bus_ready = true;
             }
@@ -1917,11 +2126,18 @@ struct LoRaMeshApp::Impl {
             uart_driver_delete(kLoRaUartPort);
             uart_ready = false;
         }
+        resume_suspended_neopixel_if_needed();
     }
 
     bool ensure_radio_ready()
     {
         lock();
+        if (!stored_state.settings.radio_enabled) {
+            status_text = "Device disabled. Please enable radio in Device Settings.";
+            append_line_capped(log_text, "Device disabled. Please enable radio in Device Settings.");
+            unlock();
+            return false;
+        }
         if (radio_ready) {
             unlock();
             return true;
@@ -1944,15 +2160,20 @@ struct LoRaMeshApp::Impl {
             return false;
         }
 
+        bool send_hello = false;
         lock();
         status_text = "LoRa radio ready on configured mesh channel";
         append_line_capped(log_text, "Radio ready; listening for mesh traffic");
         if (!hello_sent) {
-            send_presence_locked(true);
             hello_sent = true;
+            send_hello = true;
         }
         save_state_if_needed_locked();
         unlock();
+
+        if (send_hello) {
+            (void)send_presence_without_mutex(true);
+        }
 
         if (rx_task == nullptr) {
             rx_task_stop = false;
@@ -2146,8 +2367,20 @@ struct LoRaMeshApp::Impl {
 
         const int64_t deadline = esp_timer_get_time() + kTxWaitDeadlineUs;
         uint16_t irq_status = 0;
+        bool saw_uniform_invalid_irq = false;
+        std::string uniform_invalid_irq_diagnostic;
+        int64_t invalid_irq_deadline = 0;
         while (irq_status == 0) {
             if (esp_timer_get_time() >= deadline) {
+                if (saw_uniform_invalid_irq) {
+                    last_tx_irq_status = 0;
+                    last_tx_diagnostic = uniform_invalid_irq_diagnostic;
+                    if (start_receive_locked() != ESP_OK) {
+                        set_rf_idle();
+                        return false;
+                    }
+                    return true;
+                }
                 last_tx_diagnostic = capture_tx_diagnostics_locked();
                 set_rf_idle();
                 return false;
@@ -2158,6 +2391,39 @@ struct LoRaMeshApp::Impl {
                 last_tx_diagnostic = capture_tx_diagnostics_locked();
                 set_rf_idle();
                 return false;
+            }
+            if (is_invalid_uniform_spi_signature(irq_bytes, sizeof(irq_bytes))) {
+                const int64_t now = esp_timer_get_time();
+                saw_uniform_invalid_irq = true;
+                last_tx_irq_status = read_u16_be(irq_bytes);
+                if (invalid_irq_deadline == 0) {
+                    invalid_irq_deadline = now + kInvalidIrqAssumeTxUs;
+                }
+                std::ostringstream stream;
+                stream << "invalid_irq_signature=" << format_hex_bytes(irq_bytes, sizeof(irq_bytes));
+                if (is_uniform_spi_signature_value(irq_bytes, sizeof(irq_bytes), 0xAA)) {
+                    stream << " assuming_tx_after_timeout=all-0xAA";
+                } else if (is_uniform_spi_signature_value(irq_bytes, sizeof(irq_bytes), 0xFF)) {
+                    stream << " assuming_tx_after_timeout=all-0xFF";
+                } else {
+                    stream << " assuming_tx_after_timeout=uniform";
+                }
+                const std::string capture = capture_tx_diagnostics_locked();
+                if (!capture.empty()) {
+                    stream << ' ' << capture;
+                }
+                uniform_invalid_irq_diagnostic = stream.str();
+                if (now >= invalid_irq_deadline) {
+                    last_tx_irq_status = 0;
+                    last_tx_diagnostic = uniform_invalid_irq_diagnostic;
+                    if (start_receive_locked() != ESP_OK) {
+                        set_rf_idle();
+                        return false;
+                    }
+                    return true;
+                }
+                vTaskDelay(pdMS_TO_TICKS(5));
+                continue;
             }
             irq_status = read_u16_be(irq_bytes);
             if (irq_status == 0) {
@@ -2572,6 +2838,7 @@ struct LoRaMeshApp::Impl {
         bool self_test_ran_copy = false;
         bool self_test_running_copy = false;
         bool startup_complete_copy = false;
+        bool radio_enabled_copy = true;
         ViewMode view_mode_copy = ViewMode::Targets;
         std::string current_chat_title_copy;
         std::vector<ConversationEntry> conversation_copy;
@@ -2587,6 +2854,7 @@ struct LoRaMeshApp::Impl {
         self_test_ran_copy = self_test_ran;
         self_test_running_copy = self_test_running;
         startup_complete_copy = startup_complete;
+        radio_enabled_copy = stored_state.settings.radio_enabled;
         view_mode_copy = view_mode;
         current_chat_title_copy = current_chat_title_locked();
         conversation_dirty_copy = conversation_dirty;
@@ -2638,13 +2906,6 @@ struct LoRaMeshApp::Impl {
                 lv_obj_add_flag(chat_panel, LV_OBJ_FLAG_HIDDEN);
             }
         }
-        if (settings_panel != nullptr) {
-            if (view_mode_copy == ViewMode::Settings) {
-                lv_obj_clear_flag(settings_panel, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(settings_panel, LV_OBJ_FLAG_HIDDEN);
-            }
-        }
         if (input != nullptr) {
             if ((view_mode_copy != ViewMode::Chat) || !startup_complete_copy) {
                 lv_obj_add_state(input, LV_STATE_DISABLED);
@@ -2652,15 +2913,37 @@ struct LoRaMeshApp::Impl {
                 lv_obj_clear_state(input, LV_STATE_DISABLED);
             }
         }
-        if (settings_self_test_label != nullptr) {
-            lv_label_set_text(settings_self_test_label, self_test_copy.c_str());
-        }
-        if (settings_self_test_button_label != nullptr) {
-            lv_label_set_text(settings_self_test_button_label,
-                              self_test_running_copy ? "Stop LoRa Self-Test" : "Run LoRa Self-Test");
-        }
         if (target_list_dirty_copy && (target_list != nullptr)) {
             lv_obj_clean(target_list);
+
+            lv_obj_t *status_card = lv_obj_create(target_list);
+            lv_obj_set_width(status_card, LV_PCT(100));
+            lv_obj_set_height(status_card, LV_SIZE_CONTENT);
+            lv_obj_set_style_radius(status_card, 18, 0);
+            lv_obj_set_style_pad_all(status_card, 14, 0);
+            lv_obj_set_style_border_width(status_card, 0, 0);
+            lv_obj_set_style_shadow_width(status_card, 0, 0);
+            lv_obj_set_style_bg_color(status_card, lv_color_hex(0xFFFFFF), 0);
+
+            lv_obj_t *status_title = lv_label_create(status_card);
+            lv_obj_set_style_text_font(status_title, &lv_font_montserrat_16, 0);
+            lv_obj_set_style_text_color(status_title, lv_color_hex(0x0F172A), 0);
+            lv_label_set_text(status_title, "Status");
+
+            lv_obj_t *status_label = lv_label_create(status_card);
+            lv_obj_set_width(status_label, LV_PCT(100));
+            lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_font(status_label, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(status_label, lv_color_hex(0x475569), 0);
+            lv_obj_align_to(status_label, status_title, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 8);
+            lv_label_set_text(status_label, status_copy.c_str());
+
+            if (!radio_enabled_copy) {
+                lv_obj_set_style_bg_color(status_card, lv_color_hex(0xFEE2E2), 0);
+                lv_obj_set_style_text_color(status_title, lv_color_hex(0x991B1B), 0);
+                lv_obj_set_style_text_color(status_label, lv_color_hex(0x7F1D1D), 0);
+                return;
+            }
 
             lv_obj_t *common_button = lv_btn_create(target_list);
             lv_obj_set_width(common_button, LV_PCT(100));
@@ -2826,6 +3109,14 @@ struct LoRaMeshApp::Impl {
             if (!impl->startup_started) {
                 impl->start_startup_task();
             }
+            impl->lock();
+            if (impl->pending_self_test_on_next_open && impl->startup_complete && impl->startup_ok && !impl->self_test_running) {
+                impl->pending_self_test_on_next_open = false;
+                impl->trace_event_locked("Pending self-test started after app open");
+                impl->status_text = "LoRa self-test: starting";
+                impl->start_self_test_task();
+            }
+            impl->unlock();
             impl->refresh_ui();
         }
     }
@@ -2890,19 +3181,6 @@ struct LoRaMeshApp::Impl {
         impl->show_targets_locked();
         impl->unlock();
         impl->set_keyboard_visible(false);
-        impl->refresh_ui();
-    }
-
-    static void on_settings_menu(lv_event_t *event)
-    {
-        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
-        if (impl == nullptr) {
-            return;
-        }
-        impl->lock();
-        impl->trace_event_locked("UI opened settings");
-        impl->show_settings_locked();
-        impl->unlock();
         impl->refresh_ui();
     }
 
@@ -3056,75 +3334,9 @@ struct LoRaMeshApp::Impl {
         if (impl == nullptr) {
             return;
         }
-        const RadioModule module = (impl->settings_module_dropdown != nullptr)
-                                     ? radio_module_from_dropdown(lv_dropdown_get_selected(impl->settings_module_dropdown))
-                                     : impl->stored_state.settings.radio_module;
-        uint32_t frequency_hz = 0;
-        uint8_t spreading_factor = 0;
-        uint8_t bandwidth = 0;
-        uint8_t coding_rate = 0;
-        uint8_t hop_limit = 0;
-        if (!impl->parse_uint32_text(impl->settings_frequency_input, frequency_hz) ||
-            !impl->parse_uint8_text(impl->settings_sf_input, spreading_factor) ||
-            !impl->parse_uint8_text(impl->settings_bw_input, bandwidth) ||
-            !impl->parse_uint8_text(impl->settings_cr_input, coding_rate) ||
-            !impl->parse_uint8_text(impl->settings_hop_input, hop_limit)) {
-            impl->set_status("Settings contain invalid numeric values");
-            return;
-        }
-
-        jc4880::lora_mesh::MeshSettings next_settings = impl->stored_state.settings;
-        next_settings.radio_module = module;
-        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
-            auto role = static_cast<RadioPinRole>(role_index);
-            if (!module_uses_role(module, role) || (impl->settings_pin_dropdowns[role_index] == nullptr)) {
-                continue;
-            }
-            impl->set_pin_value_for_role(next_settings,
-                                         role,
-                                         gpio_choice_value(lv_dropdown_get_selected(impl->settings_pin_dropdowns[role_index])));
-        }
-
-        std::vector<int8_t> active_pins;
-        active_pins.reserve(kRadioPinRoleCount);
-        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
-            auto role = static_cast<RadioPinRole>(role_index);
-            if (!module_uses_role(module, role)) {
-                continue;
-            }
-            const int8_t value = impl->pin_value_for_role(next_settings, role);
-            if (std::find(active_pins.begin(), active_pins.end(), value) != active_pins.end()) {
-                impl->set_status("Each visible radio signal must use a unique GPIO");
-                return;
-            }
-            active_pins.push_back(value);
-        }
-
         impl->lock();
         impl->stored_state.identity.display_name = lv_textarea_get_text(impl->settings_name_input);
         impl->stored_state.settings.common_chat_name = lv_textarea_get_text(impl->settings_common_name_input);
-        impl->stored_state.settings.frequency_hz = frequency_hz;
-        impl->stored_state.settings.spreading_factor = spreading_factor;
-        impl->stored_state.settings.bandwidth = bandwidth;
-        impl->stored_state.settings.coding_rate = coding_rate;
-        impl->stored_state.settings.radio_module = next_settings.radio_module;
-        impl->stored_state.settings.spi_miso_gpio = next_settings.spi_miso_gpio;
-        impl->stored_state.settings.spi_mosi_gpio = next_settings.spi_mosi_gpio;
-        impl->stored_state.settings.spi_sck_gpio = next_settings.spi_sck_gpio;
-        impl->stored_state.settings.spi_nss_gpio = next_settings.spi_nss_gpio;
-        impl->stored_state.settings.busy_gpio = next_settings.busy_gpio;
-        impl->stored_state.settings.dio1_gpio = next_settings.dio1_gpio;
-        impl->stored_state.settings.nrst_gpio = next_settings.nrst_gpio;
-        impl->stored_state.settings.txen_gpio = next_settings.txen_gpio;
-        impl->stored_state.settings.rxen_gpio = next_settings.rxen_gpio;
-        impl->stored_state.settings.uart_tx_gpio = next_settings.uart_tx_gpio;
-        impl->stored_state.settings.uart_rx_gpio = next_settings.uart_rx_gpio;
-        impl->stored_state.settings.mode0_gpio = next_settings.mode0_gpio;
-        impl->stored_state.settings.mode1_gpio = next_settings.mode1_gpio;
-        impl->stored_state.settings.aux_gpio = next_settings.aux_gpio;
-        impl->stored_state.settings.hop_limit = hop_limit == 0U ? 1U : hop_limit;
-        impl->stored_state.settings.forwarding_enabled = lv_obj_has_state(impl->settings_forward_switch, LV_STATE_CHECKED);
-        impl->stored_state.settings.public_chat_encryption = lv_obj_has_state(impl->settings_encrypt_switch, LV_STATE_CHECKED);
         if (impl->stored_state.identity.display_name.empty()) {
             impl->stored_state.identity.display_name = std::string("P4-") + impl->stored_state.identity.device_id.substr(0, 4);
         }
@@ -3136,12 +3348,6 @@ struct LoRaMeshApp::Impl {
         impl->conversation_dirty = true;
         impl->trace_event_locked("Settings saved from UI");
         impl->show_targets_locked();
-        if (impl->radio_ready) {
-            impl->deinit_radio_locked();
-            impl->hello_sent = false;
-            impl->startup_started = false;
-            impl->startup_complete = false;
-        }
         impl->save_state_if_needed_locked();
         impl->unlock();
         impl->set_status("Settings saved");
@@ -3230,22 +3436,6 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_flex_grow(header_title, 1);
         lv_obj_set_style_text_align(header_title, LV_TEXT_ALIGN_CENTER, 0);
 
-        menu_button = lv_btn_create(header_row);
-        lv_obj_set_size(menu_button, 52, 52);
-        lv_obj_set_style_radius(menu_button, 0, 0);
-        lv_obj_set_style_bg_opa(menu_button, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(menu_button, 0, 0);
-        lv_obj_set_style_shadow_width(menu_button, 0, 0);
-        lv_obj_set_style_pad_all(menu_button, 0, 0);
-        lv_obj_add_event_cb(menu_button, on_settings_menu, LV_EVENT_CLICKED, this);
-        lv_obj_t *menu_label = lv_label_create(menu_button);
-        lv_obj_set_style_text_font(menu_label, &lv_font_montserrat_34, 0);
-        lv_obj_set_style_text_color(menu_label, lv_color_hex(0x00A884), 0);
-        lv_obj_set_style_text_align(menu_label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_line_space(menu_label, -6, 0);
-        lv_label_set_text(menu_label, "•\n•\n•");
-        lv_obj_center(menu_label);
-
         target_list = lv_obj_create(root);
         lv_obj_set_width(target_list, LV_PCT(100));
         lv_obj_set_flex_grow(target_list, 1);
@@ -3328,123 +3518,8 @@ struct LoRaMeshApp::Impl {
         lv_obj_add_event_cb(keyboard, on_keyboard_event, LV_EVENT_CANCEL, this);
         lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
 
-        settings_panel = lv_obj_create(root);
-        lv_obj_set_width(settings_panel, LV_PCT(100));
-        lv_obj_set_flex_grow(settings_panel, 1);
-        lv_obj_set_style_border_width(settings_panel, 0, 0);
-        lv_obj_set_style_radius(settings_panel, 18, 0);
-        lv_obj_set_style_pad_all(settings_panel, 14, 0);
-        lv_obj_set_style_pad_row(settings_panel, 10, 0);
-        lv_obj_set_style_bg_color(settings_panel, lv_color_hex(0xF7F8FA), 0);
-        lv_obj_set_flex_flow(settings_panel, LV_FLEX_FLOW_COLUMN);
-        lv_obj_add_flag(settings_panel, LV_OBJ_FLAG_HIDDEN);
-
-        lv_obj_t *settings_info = lv_label_create(settings_panel);
-        lv_label_set_long_mode(settings_info, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(settings_info, "Configure your name, radio settings, and mesh behavior.");
-        create_setting_field(settings_panel, "Display name", &settings_name_input, "Visible chat name");
-        create_setting_field(settings_panel, "Common chat title", &settings_common_name_input, "Common Mesh Chat");
-        create_setting_dropdown_field(settings_panel, "Radio module", &settings_module_dropdown, kRadioModuleOptions);
-        lv_obj_add_event_cb(settings_module_dropdown, on_radio_module_changed, LV_EVENT_VALUE_CHANGED, this);
-        settings_module_info_label = lv_label_create(settings_panel);
-        lv_obj_set_width(settings_module_info_label, LV_PCT(100));
-        lv_label_set_long_mode(settings_module_info_label, LV_LABEL_LONG_WRAP);
-        create_setting_field(settings_panel, "Radio frequency (Hz)", &settings_frequency_input, "433125000");
-        create_setting_field(settings_panel, "Spreading factor", &settings_sf_input, "9");
-        create_setting_field(settings_panel, "Bandwidth index", &settings_bw_input, "4");
-        create_setting_field(settings_panel, "Coding rate", &settings_cr_input, "1");
-        create_setting_field(settings_panel, "Hop limit", &settings_hop_input, "4");
-
-        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
-            lv_obj_t *row = lv_obj_create(settings_panel);
-            lv_obj_set_width(row, LV_PCT(100));
-            lv_obj_set_height(row, LV_SIZE_CONTENT);
-            lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(row, 0, 0);
-            lv_obj_set_style_pad_all(row, 0, 0);
-            lv_obj_set_style_pad_column(row, 10, 0);
-            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-            lv_obj_t *label = lv_label_create(row);
-            lv_obj_set_width(label, 110);
-            lv_label_set_text(label, radio_pin_label(static_cast<RadioPinRole>(role_index)));
-
-            lv_obj_t *dropdown = lv_dropdown_create(row);
-            lv_dropdown_set_options(dropdown, kRadioGpioDropdownOptions);
-            lv_obj_set_flex_grow(dropdown, 1);
-
-            settings_pin_rows[role_index] = row;
-            settings_pin_labels[role_index] = label;
-            settings_pin_dropdowns[role_index] = dropdown;
-        }
-
-        lv_obj_t *forward_row = lv_obj_create(settings_panel);
-        lv_obj_set_width(forward_row, LV_PCT(100));
-        lv_obj_set_style_bg_opa(forward_row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(forward_row, 0, 0);
-        lv_obj_set_style_pad_all(forward_row, 0, 0);
-        lv_obj_set_style_pad_column(forward_row, 10, 0);
-        lv_obj_set_flex_flow(forward_row, LV_FLEX_FLOW_ROW);
-        lv_label_set_text(lv_label_create(forward_row), "Enable forwarding");
-        settings_forward_switch = lv_switch_create(forward_row);
-
-        lv_obj_t *encrypt_row = lv_obj_create(settings_panel);
-        lv_obj_set_width(encrypt_row, LV_PCT(100));
-        lv_obj_set_style_bg_opa(encrypt_row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(encrypt_row, 0, 0);
-        lv_obj_set_style_pad_all(encrypt_row, 0, 0);
-        lv_obj_set_style_pad_column(encrypt_row, 10, 0);
-        lv_obj_set_flex_flow(encrypt_row, LV_FLEX_FLOW_ROW);
-        lv_label_set_text(lv_label_create(encrypt_row), "Encrypt public chat");
-        settings_encrypt_switch = lv_switch_create(encrypt_row);
-
-        settings_self_test_button = lv_btn_create(settings_panel);
-        lv_obj_set_width(settings_self_test_button, LV_PCT(100));
-        lv_obj_add_event_cb(settings_self_test_button, on_run_self_test, LV_EVENT_CLICKED, this);
-        settings_self_test_button_label = lv_label_create(settings_self_test_button);
-        lv_label_set_text(settings_self_test_button_label, "Run LoRa Self-Test");
-
-        settings_self_test_label = lv_label_create(settings_panel);
-        lv_obj_set_width(settings_self_test_label, LV_PCT(100));
-        lv_label_set_long_mode(settings_self_test_label, LV_LABEL_LONG_WRAP);
-
-        lv_obj_t *settings_actions = lv_obj_create(settings_panel);
-        lv_obj_set_width(settings_actions, LV_PCT(100));
-        lv_obj_set_style_bg_opa(settings_actions, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(settings_actions, 0, 0);
-        lv_obj_set_style_pad_all(settings_actions, 0, 0);
-        lv_obj_set_style_pad_column(settings_actions, 10, 0);
-        lv_obj_set_flex_flow(settings_actions, LV_FLEX_FLOW_ROW);
-        lv_obj_t *settings_save = lv_btn_create(settings_actions);
-        lv_obj_set_flex_grow(settings_save, 1);
-        lv_obj_add_event_cb(settings_save, on_settings_save, LV_EVENT_CLICKED, this);
-        lv_label_set_text(lv_label_create(settings_save), "Save Settings");
-
         conversation_dirty = true;
         target_list_dirty = true;
-
-        set_textarea_text(settings_name_input, stored_state.identity.display_name);
-        set_textarea_text(settings_common_name_input, stored_state.settings.common_chat_name);
-        lv_dropdown_set_selected(settings_module_dropdown, dropdown_index_from_radio_module(stored_state.settings.radio_module));
-        set_textarea_uint(settings_frequency_input, stored_state.settings.frequency_hz);
-        set_textarea_uint(settings_sf_input, stored_state.settings.spreading_factor);
-        set_textarea_uint(settings_bw_input, stored_state.settings.bandwidth);
-        set_textarea_uint(settings_cr_input, stored_state.settings.coding_rate);
-        set_textarea_uint(settings_hop_input, stored_state.settings.hop_limit);
-        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
-            lv_dropdown_set_selected(settings_pin_dropdowns[role_index],
-                                     gpio_choice_index(pin_value_for_role(stored_state.settings,
-                                                                           static_cast<RadioPinRole>(role_index))));
-        }
-        if (stored_state.settings.forwarding_enabled) {
-            lv_obj_add_state(settings_forward_switch, LV_STATE_CHECKED);
-        }
-        if (stored_state.settings.public_chat_encryption) {
-            lv_obj_add_state(settings_encrypt_switch, LV_STATE_CHECKED);
-        }
-
-        refresh_settings_module_ui(false);
 
         refresh_ui();
         return true;
@@ -3489,8 +3564,8 @@ struct LoRaMeshApp::Impl {
 };
 
 LoRaMeshApp::LoRaMeshApp()
-    : ESP_Brookesia_PhoneApp("LoRa", &loramesh_png, true),
-      _impl(new Impl())
+        : ESP_Brookesia_PhoneApp("LoRa Mesh", &loramesh_png, true),
+            _impl(new Impl())
 {
 }
 
@@ -3528,6 +3603,9 @@ bool LoRaMeshApp::init()
         _impl->append_log("Failed to load persisted LoRa mesh state; using defaults");
         ESP_LOGW(kTag, "Failed to load persisted LoRa mesh state; using defaults");
     }
+    for (PeerInfo &peer : _impl->stored_state.peers) {
+        peer.presence = jc4880::lora_mesh::PeerPresence::Unknown;
+    }
     _impl->append_log(std::string("Identity ") + _impl->stored_state.identity.display_name + " (" + _impl->stored_state.identity.device_id + ")");
     ESP_LOGI(kTag,
              "Identity %s (%s)",
@@ -3542,12 +3620,22 @@ bool LoRaMeshApp::run()
         return false;
     }
 
+    if (!jc4880::lora_mesh::load_stored_state(_impl->stored_state)) {
+        _impl->append_log("Failed to reload persisted LoRa mesh state on app open; using cached state");
+    }
+    for (PeerInfo &peer : _impl->stored_state.peers) {
+        peer.presence = jc4880::lora_mesh::PeerPresence::Unknown;
+    }
     _impl->lock();
     _impl->trace_event_locked("App run requested");
     _impl->show_targets_locked();
-    _impl->startup_started = false;
-    _impl->startup_complete = false;
+    const bool radio_enabled = _impl->stored_state.settings.radio_enabled;
+    _impl->startup_started = !radio_enabled;
+    _impl->startup_complete = !radio_enabled;
     _impl->startup_ok = false;
+    _impl->status_text = radio_enabled
+                             ? "Opening LoRa mesh..."
+                             : "Device disabled. Please enable radio in Device Settings.";
     _impl->unlock();
 
     const bool ui_ok = _impl->build_ui();
@@ -3557,8 +3645,73 @@ bool LoRaMeshApp::run()
         lv_timer_del(_impl->ui_timer);
     }
     _impl->ui_timer = lv_timer_create(Impl::on_ui_timer, kUiTickMs, _impl);
-    _impl->start_startup_task();
+    if (radio_enabled) {
+        _impl->start_startup_task();
+    }
     return ui_ok && (_impl->ui_timer != nullptr);
+}
+
+void LoRaMeshApp::requestSelfTestOnNextOpen()
+{
+    if (_impl == nullptr) {
+        return;
+    }
+
+    _impl->lock();
+    _impl->pending_self_test_on_next_open = true;
+    _impl->trace_event_locked("Self-test scheduled for next app open");
+    _impl->unlock();
+}
+
+bool LoRaMeshApp::startSelfTestFromSettings()
+{
+    if (_impl == nullptr) {
+        return false;
+    }
+
+    _impl->lock();
+    if (_impl->self_test_running) {
+        _impl->unlock();
+        return true;
+    }
+
+    _impl->pending_self_test_on_next_open = false;
+    _impl->status_text = "LoRa self-test: starting";
+    _impl->trace_event_locked("Settings requested background self-test");
+    _impl->start_self_test_task();
+    const bool started = _impl->self_test_running;
+    _impl->unlock();
+    return started;
+}
+
+std::string LoRaMeshApp::getSelfTestStatus(bool *is_running, bool *has_result) const
+{
+    if (_impl == nullptr) {
+        if (is_running != nullptr) {
+            *is_running = false;
+        }
+        if (has_result != nullptr) {
+            *has_result = false;
+        }
+        return "LoRa self-test unavailable";
+    }
+
+    std::string summary;
+    bool running = false;
+    bool ran = false;
+    _impl->lock();
+    summary = _impl->self_test_summary;
+    running = _impl->self_test_running;
+    ran = _impl->self_test_ran;
+    _impl->unlock();
+
+    if (is_running != nullptr) {
+        *is_running = running;
+    }
+    if (has_result != nullptr) {
+        *has_result = ran;
+    }
+    return summary;
 }
 
 bool LoRaMeshApp::pause()
@@ -3688,11 +3841,6 @@ bool LoRaMeshApp::queueDebugUiAction(int action, const std::string &peer_id)
             impl->trace_event_locked("Serial debug opened common chat");
             impl->show_common_chat_locked();
             break;
-        case DebugUiAction::ShowSettings:
-            impl->status_text = "Serial debug opened settings";
-            impl->trace_event_locked("Serial debug opened settings");
-            impl->show_settings_locked();
-            break;
         case DebugUiAction::ShowPeerChat:
             if (impl->find_peer_locked(context->peer_id) == nullptr) {
                 impl->status_text = "Serial debug peer not found";
@@ -3761,7 +3909,7 @@ bool LoRaMeshApp::debugShowCommonChatVisible()
 
 bool LoRaMeshApp::debugShowSettingsVisible()
 {
-    return queueDebugUiAction(static_cast<int>(DebugUiAction::ShowSettings), std::string());
+    return queueDebugUiAction(static_cast<int>(DebugUiAction::ShowTargets), std::string());
 }
 
 bool LoRaMeshApp::debugShowPeerChatVisible(const std::string &peer_id)

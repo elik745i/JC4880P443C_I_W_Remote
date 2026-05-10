@@ -205,9 +205,11 @@ EReaderApp::EReaderApp():
     _readerBody(nullptr),
     _sdButton(nullptr),
     _spiffsButton(nullptr),
+    _sdStateTimer(nullptr),
     _rootPath(BSP_SPIFFS_MOUNT_POINT),
     _currentPath(BSP_SPIFFS_MOUNT_POINT),
-    _usingSdCard(false)
+    _usingSdCard(false),
+    _lastSdMountedState(false)
 {
 }
 
@@ -216,6 +218,7 @@ bool EReaderApp::init()
     _usingSdCard = false;
     _rootPath = BSP_SPIFFS_MOUNT_POINT;
     _currentPath = _rootPath;
+    _lastSdMountedState = app_storage_is_sdcard_mounted();
     return true;
 }
 
@@ -226,11 +229,19 @@ bool EReaderApp::run()
     }
     showList();
     refreshEntries();
+    if (_sdStateTimer == nullptr) {
+        _sdStateTimer = lv_timer_create(onSdStateTimer, 1000, this);
+    } else {
+        lv_timer_resume(_sdStateTimer);
+    }
     return true;
 }
 
 bool EReaderApp::pause()
 {
+    if (_sdStateTimer != nullptr) {
+        lv_timer_pause(_sdStateTimer);
+    }
     return true;
 }
 
@@ -238,6 +249,9 @@ bool EReaderApp::resume()
 {
     if (!ensureUiReady()) {
         return false;
+    }
+    if (_sdStateTimer != nullptr) {
+        lv_timer_resume(_sdStateTimer);
     }
     refreshEntries();
     return true;
@@ -257,6 +271,10 @@ bool EReaderApp::back()
 
 bool EReaderApp::close()
 {
+    if (_sdStateTimer != nullptr) {
+        lv_timer_del(_sdStateTimer);
+        _sdStateTimer = nullptr;
+    }
     _entries.clear();
     _buttonIndexMap.clear();
     return true;
@@ -576,6 +594,28 @@ void EReaderApp::resetUiPointers()
     _spiffsButton = nullptr;
 }
 
+void EReaderApp::handleSdStatePoll()
+{
+    if (!_usingSdCard || !ensureUiReady()) {
+        return;
+    }
+
+    const bool mounted = app_storage_ensure_sdcard_available();
+    if (mounted == _lastSdMountedState) {
+        return;
+    }
+
+    _lastSdMountedState = mounted;
+    _currentPath = _rootPath;
+
+    if ((_readerPanel != nullptr) && !lv_obj_has_flag(_readerPanel, LV_OBJ_FLAG_HIDDEN) && !mounted) {
+        setStatus("SD card removed; current preview remains open.");
+        return;
+    }
+
+    refreshEntries();
+}
+
 void EReaderApp::onScreenDeleted(lv_event_t *event)
 {
     auto *app = static_cast<EReaderApp *>(lv_event_get_user_data(event));
@@ -633,5 +673,13 @@ void EReaderApp::onCloseReaderClicked(lv_event_t *event)
     auto *app = static_cast<EReaderApp *>(lv_event_get_user_data(event));
     if (app != nullptr) {
         app->showList();
+    }
+}
+
+void EReaderApp::onSdStateTimer(lv_timer_t *timer)
+{
+    auto *app = static_cast<EReaderApp *>(timer->user_data);
+    if (app != nullptr) {
+        app->handleSdStatePoll();
     }
 }

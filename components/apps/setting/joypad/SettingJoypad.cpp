@@ -2573,6 +2573,9 @@ void AppSettings::onJoypadConfigChangedEventCallback(lv_event_t *e)
     backend_toggle_changed = (target == app->_joypadManualActiveSwitch) || (target == app->_joypadBleActiveSwitch);
     app->persistJoypadConfigFromUi();
     if (backend_toggle_changed) {
+        if (local_controller_active) {
+            app->disableLoRaRadioForLocalController();
+        }
         app->applyNeopixelConfig();
     }
     app->refreshJoypadUi();

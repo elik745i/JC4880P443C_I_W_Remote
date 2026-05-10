@@ -85,6 +85,7 @@ private:
     static void onInfoMessageBoxEvent(lv_event_t *event);
     static void onDeleteMessageBoxEvent(lv_event_t *event);
     static void onScreenDeleted(lv_event_t *event);
+    static void onSdStateTimer(lv_timer_t *timer);
 
     lv_obj_t *_screen;
     lv_obj_t *_titleLabel;
@@ -110,10 +111,12 @@ private:
     lv_obj_t *_inputTextArea;
     lv_obj_t *_keyboard;
     lv_obj_t *_dialogMessageBox;
+    lv_timer_t *_sdStateTimer;
 
     StorageRoot _activeRoot;
     std::string _currentPath;
     std::vector<EntryInfo> _entries;
     EntryInfo *_selectedEntry;
     InputMode _inputMode;
+    bool _lastSdMountedState;
 };

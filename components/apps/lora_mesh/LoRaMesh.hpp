@@ -17,6 +17,9 @@ public:
     bool resume() override;
     bool back() override;
     bool close() override;
+    void requestSelfTestOnNextOpen();
+    bool startSelfTestFromSettings();
+    std::string getSelfTestStatus(bool *is_running = nullptr, bool *has_result = nullptr) const;
 
     bool debugShowTargetsVisible();
     bool debugShowCommonChatVisible();

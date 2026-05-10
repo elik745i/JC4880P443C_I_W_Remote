@@ -169,6 +169,7 @@ private:
     TickType_t _playbackStartedAt;
     uint32_t _playbackElapsedSeconds;
     uint32_t _playbackDurationSeconds;
+    bool _lastSdMountedState;
     std::string _statusMessage;
     std::string _activeRecordingPath;
     std::string _activePlaybackPath;

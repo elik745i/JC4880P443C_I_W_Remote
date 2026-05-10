@@ -40,6 +40,7 @@ bool s_initialized = false;
 NeoPixelConfig s_config = {};
 led_strip_handle_t s_strip = nullptr;
 int s_strip_gpio = -1;
+int s_suspended_gpio = -1;
 uint32_t s_frame = 0;
 bool s_failed_gpio_logged = false;
 
@@ -143,6 +144,11 @@ void releaseStripLocked()
 bool ensureStripLocked()
 {
     if (!isAllowedGpio(s_config.gpio)) {
+        releaseStripLocked();
+        return false;
+    }
+
+    if (s_suspended_gpio == s_config.gpio) {
         releaseStripLocked();
         return false;
     }
@@ -337,7 +343,7 @@ void neopixelTask(void *context)
         {
             std::lock_guard<std::mutex> guard(s_mutex);
 
-            if (!s_config.enabled || !isAllowedGpio(s_config.gpio)) {
+            if (!s_config.enabled || !isAllowedGpio(s_config.gpio) || (s_suspended_gpio == s_config.gpio)) {
                 clearStripLocked();
             } else if (ensureStripLocked()) {
                 writeFrameLocked(renderFrame(s_config, s_frame));
@@ -389,4 +395,30 @@ extern "C" void jc4880_neopixel_apply_config(bool enabled, int gpio, int brightn
     if (!enabled) {
         clearStripLocked();
     }
+}
+
+extern "C" bool jc4880_neopixel_suspend_gpio(int gpio)
+{
+    jc4880_neopixel_init();
+
+    std::lock_guard<std::mutex> guard(s_mutex);
+    if (!s_config.enabled || (s_config.gpio != gpio)) {
+        return false;
+    }
+
+    s_suspended_gpio = gpio;
+    releaseStripLocked();
+    ESP_LOGI(kTag, "Suspended NeoPixel on GPIO %d", gpio);
+    return true;
+}
+
+extern "C" void jc4880_neopixel_resume_gpio(int gpio)
+{
+    std::lock_guard<std::mutex> guard(s_mutex);
+    if (s_suspended_gpio != gpio) {
+        return;
+    }
+
+    s_suspended_gpio = -1;
+    ESP_LOGI(kTag, "Resumed NeoPixel on GPIO %d", gpio);
 }

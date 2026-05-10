@@ -393,6 +393,18 @@ void RecorderApp::refreshRecordButtonState()
 
 void RecorderApp::tickUi()
 {
+    const bool sdMounted = _recordingActive ? app_storage_is_sdcard_mounted() : app_storage_ensure_sdcard_available();
+    if (sdMounted != _lastSdMountedState) {
+        _lastSdMountedState = sdMounted;
+        if (xSemaphoreTake(_stateMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            _refreshListPending = true;
+            if (!sdMounted && !_recordingActive && !_playbackActive) {
+                _statusMessage = "Insert an SD card to record and browse files.";
+            }
+            xSemaphoreGive(_stateMutex);
+        }
+    }
+
     syncPlaybackState();
 
     std::array<int16_t, kSpectrumBins> spectrum = {};

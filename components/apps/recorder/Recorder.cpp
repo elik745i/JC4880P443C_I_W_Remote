@@ -33,6 +33,7 @@ RecorderApp::RecorderApp()
     _playbackStartedAt(0),
     _playbackElapsedSeconds(0),
     _playbackDurationSeconds(0),
+            _lastSdMountedState(false),
       _statusMessage("Ready to record to SD card")
 {
 }
@@ -57,6 +58,7 @@ bool RecorderApp::init()
     _spectrumValues.fill(0);
     _spectrumDisplayValues.fill(0);
     _spectrumPeakValues.fill(0);
+    _lastSdMountedState = app_storage_is_sdcard_mounted();
     return true;
 }
 

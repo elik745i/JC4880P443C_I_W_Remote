@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.3.6 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.3.7 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -43,7 +43,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - MQTT app with launch-page broker, credentials, client ID, and topic settings for quick connection testing.
 - Internet Radio app with station discovery by popularity, country, language, and category.
 - Native Recorder app for AAC recording on the built-in microphone, with SD-card saving under `/sdcard/record`, live spectrum visualization, in-app playback, and PSRAM-first runtime buffers.
-- Native LoRa Mesh app with common and peer chat flows, persisted radio-module selection, GPIO remapping for SPI and UART modules, and startup/send-path hardening so the app can bring the radio up without blocking the rest of the UI.
+- Native LoRa Mesh app with common and peer chat flows, persisted radio-module selection, GPIO remapping for SPI and UART modules, startup/send-path hardening, and corrected E22-400T22S UART default healing plus self-check persistence so the transparent UART path survives stale saved pin maps.
 - Native RS-485 HMI app for field-service scanning, raw terminal traffic, Modbus RTU master access, saved profiles, dashboard polling, and communication logs.
 - Native Labyrinth app with 100 IMU-driven levels, progressively shorter timers, score tracking, a last-10-attempt results chart, and app-local X/Y/Z tilt remapping for ball movement.
 - Native SEGA app with Master System, Game Gear, SG-1000, and Genesis / Mega Drive ROM support.
@@ -221,7 +221,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides two balanced OTA app slots of `0x7C0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage is `0x040000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
-- Version 1.3.6 validates at `0x766AE0`, leaving `0x059520` bytes free in either OTA app slot.
+- Version 1.3.7 validates at `0x766EE0`, leaving `0x059120` bytes free in either OTA app slot.
 - Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout

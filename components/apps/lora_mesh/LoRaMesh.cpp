@@ -782,7 +782,7 @@ struct LoRaMeshApp::Impl {
                 return role <= RadioPinRole::RxEnable;
             case RadioModule::E22_400T22S:
                 return (role == RadioPinRole::UartTx) || (role == RadioPinRole::UartRx) || (role == RadioPinRole::Mode0) ||
-                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux) || (role == RadioPinRole::Reset);
+                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux);
             case RadioModule::E220_400T22D:
                 return (role == RadioPinRole::UartTx) || (role == RadioPinRole::UartRx) || (role == RadioPinRole::Mode0) ||
                        (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux);
@@ -807,11 +807,11 @@ struct LoRaMeshApp::Impl {
                 break;
             case RadioModule::E22_400T22S:
                 settings.uart_tx_gpio = 31;
-                settings.uart_rx_gpio = 33;
-                settings.mode0_gpio = 29;
-                settings.mode1_gpio = 30;
-                settings.aux_gpio = 50;
-                settings.nrst_gpio = 51;
+                settings.uart_rx_gpio = 30;
+                settings.mode0_gpio = 51;
+                settings.mode1_gpio = 29;
+                settings.aux_gpio = 33;
+                settings.nrst_gpio = -1;
                 break;
             case RadioModule::E220_400T22D:
                 settings.uart_tx_gpio = 31;
@@ -2097,6 +2097,16 @@ struct LoRaMeshApp::Impl {
                             kTag,
                             "uart pin config failed");
 
+        ESP_LOGI(kTag,
+             "LoRa UART pin map TX=%d RX=%d AUX=%d M0=%d M1=%d NRST=%d module=%s",
+             stored_state.settings.uart_tx_gpio,
+             stored_state.settings.uart_rx_gpio,
+             has_pin(RadioPinRole::Aux) ? gpio_for_role(RadioPinRole::Aux) : -1,
+             has_pin(RadioPinRole::Mode0) ? gpio_for_role(RadioPinRole::Mode0) : -1,
+             has_pin(RadioPinRole::Mode1) ? gpio_for_role(RadioPinRole::Mode1) : -1,
+             has_pin(RadioPinRole::Reset) ? gpio_for_role(RadioPinRole::Reset) : -1,
+             radio_module_name(stored_state.settings.radio_module));
+
         set_uart_module_mode(true);
         if (has_pin(RadioPinRole::Reset)) {
             gpio_set_level(gpio_for_role(RadioPinRole::Reset), 1);
@@ -3335,22 +3345,90 @@ struct LoRaMeshApp::Impl {
             return;
         }
         impl->lock();
+        const auto previous_settings = impl->stored_state.settings;
         impl->stored_state.identity.display_name = lv_textarea_get_text(impl->settings_name_input);
         impl->stored_state.settings.common_chat_name = lv_textarea_get_text(impl->settings_common_name_input);
+        if (impl->settings_module_dropdown != nullptr) {
+            impl->stored_state.settings.radio_module = radio_module_from_dropdown(lv_dropdown_get_selected(impl->settings_module_dropdown));
+        }
+
+        uint32_t frequency_hz = 0;
+        if (impl->parse_uint32_text(impl->settings_frequency_input, frequency_hz)) {
+            impl->stored_state.settings.frequency_hz = frequency_hz;
+        }
+
+        uint8_t value8 = 0;
+        if (impl->parse_uint8_text(impl->settings_sf_input, value8)) {
+            impl->stored_state.settings.spreading_factor = value8;
+        }
+        if (impl->parse_uint8_text(impl->settings_bw_input, value8)) {
+            impl->stored_state.settings.bandwidth = value8;
+        }
+        if (impl->parse_uint8_text(impl->settings_cr_input, value8)) {
+            impl->stored_state.settings.coding_rate = value8;
+        }
+        if (impl->parse_uint8_text(impl->settings_hop_input, value8)) {
+            impl->stored_state.settings.hop_limit = value8;
+        }
+
+        if (impl->settings_forward_switch != nullptr) {
+            impl->stored_state.settings.forwarding_enabled = lv_obj_has_state(impl->settings_forward_switch, LV_STATE_CHECKED);
+        }
+        if (impl->settings_encrypt_switch != nullptr) {
+            impl->stored_state.settings.public_chat_encryption = lv_obj_has_state(impl->settings_encrypt_switch, LV_STATE_CHECKED);
+        }
+
+        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
+            lv_obj_t *dropdown = impl->settings_pin_dropdowns[role_index];
+            if (dropdown == nullptr) {
+                continue;
+            }
+            impl->set_pin_value_for_role(impl->stored_state.settings,
+                                         static_cast<RadioPinRole>(role_index),
+                                         gpio_choice_value(lv_dropdown_get_selected(dropdown)));
+        }
+
         if (impl->stored_state.identity.display_name.empty()) {
             impl->stored_state.identity.display_name = std::string("P4-") + impl->stored_state.identity.device_id.substr(0, 4);
         }
         if (impl->stored_state.settings.common_chat_name.empty()) {
             impl->stored_state.settings.common_chat_name = "Common Mesh Chat";
         }
+        const bool radio_settings_changed =
+            (impl->stored_state.settings.radio_module != previous_settings.radio_module) ||
+            (impl->stored_state.settings.frequency_hz != previous_settings.frequency_hz) ||
+            (impl->stored_state.settings.spreading_factor != previous_settings.spreading_factor) ||
+            (impl->stored_state.settings.bandwidth != previous_settings.bandwidth) ||
+            (impl->stored_state.settings.coding_rate != previous_settings.coding_rate) ||
+            (impl->stored_state.settings.hop_limit != previous_settings.hop_limit) ||
+            (impl->stored_state.settings.forwarding_enabled != previous_settings.forwarding_enabled) ||
+            (impl->stored_state.settings.public_chat_encryption != previous_settings.public_chat_encryption) ||
+            (impl->stored_state.settings.spi_miso_gpio != previous_settings.spi_miso_gpio) ||
+            (impl->stored_state.settings.spi_mosi_gpio != previous_settings.spi_mosi_gpio) ||
+            (impl->stored_state.settings.spi_sck_gpio != previous_settings.spi_sck_gpio) ||
+            (impl->stored_state.settings.spi_nss_gpio != previous_settings.spi_nss_gpio) ||
+            (impl->stored_state.settings.busy_gpio != previous_settings.busy_gpio) ||
+            (impl->stored_state.settings.dio1_gpio != previous_settings.dio1_gpio) ||
+            (impl->stored_state.settings.nrst_gpio != previous_settings.nrst_gpio) ||
+            (impl->stored_state.settings.txen_gpio != previous_settings.txen_gpio) ||
+            (impl->stored_state.settings.rxen_gpio != previous_settings.rxen_gpio) ||
+            (impl->stored_state.settings.uart_tx_gpio != previous_settings.uart_tx_gpio) ||
+            (impl->stored_state.settings.uart_rx_gpio != previous_settings.uart_rx_gpio) ||
+            (impl->stored_state.settings.mode0_gpio != previous_settings.mode0_gpio) ||
+            (impl->stored_state.settings.mode1_gpio != previous_settings.mode1_gpio) ||
+            (impl->stored_state.settings.aux_gpio != previous_settings.aux_gpio);
         impl->state_dirty = true;
         impl->target_list_dirty = true;
         impl->conversation_dirty = true;
+        if (radio_settings_changed) {
+            append_line_capped(impl->log_text, "Radio settings saved; close and reopen LoRa to apply hardware changes");
+            impl->trace_event_locked("Radio settings changed from UI save");
+        }
         impl->trace_event_locked("Settings saved from UI");
         impl->show_targets_locked();
         impl->save_state_if_needed_locked();
         impl->unlock();
-        impl->set_status("Settings saved");
+        impl->set_status(radio_settings_changed ? "Settings saved. Reopen LoRa to apply radio changes" : "Settings saved");
         impl->refresh_ui();
     }
 

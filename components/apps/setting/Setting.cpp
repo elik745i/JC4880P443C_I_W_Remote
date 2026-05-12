@@ -10004,15 +10004,16 @@ void AppSettings::onLoRaSelfCheckClickedEventCallback(lv_event_t *e)
         return;
     }
 
-    if ((app->_loraEnabledSwitch != nullptr) && lv_obj_ready(app->_loraEnabledSwitch) &&
-        lv_obj_has_state(app->_loraEnabledSwitch, LV_STATE_CHECKED)) {
-        if (!app->persistLoRaRadioEnabledFromUi()) {
-            if ((app->_loraSelfCheckStatusLabel != nullptr) && lv_obj_ready(app->_loraSelfCheckStatusLabel)) {
-                lv_label_set_text(app->_loraSelfCheckStatusLabel,
-                                  "Self check unavailable because the LoRa radio switch could not be saved.");
-            }
-            return;
+    if (!app->persistLoRaConfigFromUi()) {
+        if ((app->_loraSelfCheckStatusLabel != nullptr) && lv_obj_ready(app->_loraSelfCheckStatusLabel)) {
+            lv_label_set_text(app->_loraSelfCheckStatusLabel,
+                              "Self check unavailable because the current LoRa settings could not be saved.");
         }
+        if ((app->_loraInfoLabel != nullptr) && lv_obj_ready(app->_loraInfoLabel)) {
+            lv_label_set_text(app->_loraInfoLabel,
+                              "Fix the current LoRa settings and save them before running self check.");
+        }
+        return;
     }
 
     jc4880::lora_mesh::StoredState state = {};

@@ -74,7 +74,7 @@ struct MeshSettings {
     uint8_t bandwidth = 4;
     uint8_t coding_rate = 1;
     bool radio_enabled = true;
-    RadioModule radio_module = RadioModule::E22_400M22S;
+    RadioModule radio_module = RadioModule::E22_400T22S;
     int8_t spi_miso_gpio = pin_profile::kSpiMisoGpio;
     int8_t spi_mosi_gpio = pin_profile::kSpiMosiGpio;
     int8_t spi_sck_gpio = pin_profile::kSpiSckGpio;
@@ -85,10 +85,10 @@ struct MeshSettings {
     int8_t txen_gpio = pin_profile::kTxEnableGpio;
     int8_t rxen_gpio = pin_profile::kRxEnableGpio;
     int8_t uart_tx_gpio = 31;
-    int8_t uart_rx_gpio = 33;
-    int8_t mode0_gpio = 29;
-    int8_t mode1_gpio = 30;
-    int8_t aux_gpio = 50;
+    int8_t uart_rx_gpio = 30;
+    int8_t mode0_gpio = 51;
+    int8_t mode1_gpio = 29;
+    int8_t aux_gpio = 33;
     bool public_chat_encryption = false;
     std::string common_chat_name = "Common Mesh Chat";
     uint8_t hop_limit = 4;

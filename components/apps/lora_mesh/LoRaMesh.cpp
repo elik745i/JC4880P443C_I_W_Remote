@@ -64,6 +64,18 @@ constexpr size_t kMaxPayloadBytes = 220;
 constexpr size_t kRecentFrameCount = 24;
 constexpr uint32_t kUartAuxTimeoutMs = 250;
 constexpr uint32_t kUartFrameGapMs = 20;
+constexpr uint32_t kUartCommandTimeoutMs = 500;
+constexpr uint32_t kUartTxCompleteTimeoutMs = 1500;
+
+constexpr uint8_t kE22CommandWritePersistent = 0xC0;
+constexpr uint8_t kE22CommandReadRegisters = 0xC1;
+constexpr uint8_t kE22RegisterStart = 0x00;
+constexpr uint8_t kE22RegisterCount = 0x09;
+constexpr uint32_t kE22BaseFrequencyHz = 410125000;
+constexpr uint32_t kE22ChannelStepHz = 1000000;
+constexpr uint8_t kE22Reg0Default = 0x62;
+constexpr uint8_t kE22Reg1Default = 0x00;
+constexpr uint8_t kE22OptionTransparentDefault = 0x03;
 
 constexpr uint8_t SX126X_CMD_SET_STANDBY = 0x80;
 constexpr uint8_t SX126X_CMD_SET_RX = 0x82;
@@ -1303,6 +1315,146 @@ struct LoRaMeshApp::Impl {
         }
     }
 
+    uint8_t e22_channel_for_frequency(uint32_t frequency_hz) const
+    {
+        if (frequency_hz <= kE22BaseFrequencyHz) {
+            return 0;
+        }
+
+        const uint32_t delta_hz = frequency_hz - kE22BaseFrequencyHz;
+        const uint32_t rounded_channel = (delta_hz + (kE22ChannelStepHz / 2U)) / kE22ChannelStepHz;
+        return static_cast<uint8_t>(std::min<uint32_t>(rounded_channel, 0xFF));
+    }
+
+    esp_err_t uart_read_exact(uint8_t *buffer, size_t length, uint32_t timeout_ms)
+    {
+        if (buffer == nullptr) {
+            return ESP_ERR_INVALID_ARG;
+        }
+
+        size_t offset = 0;
+        const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
+        while (offset < length) {
+            const int64_t remaining_us = deadline_us - esp_timer_get_time();
+            if (remaining_us <= 0) {
+                return ESP_ERR_TIMEOUT;
+            }
+
+            const uint32_t chunk_timeout_ms = static_cast<uint32_t>(std::max<int64_t>(1, remaining_us / 1000));
+            const int read = uart_read_bytes(kLoRaUartPort,
+                                             buffer + offset,
+                                             length - offset,
+                                             pdMS_TO_TICKS(std::min<uint32_t>(chunk_timeout_ms, 50)));
+            if (read < 0) {
+                return ESP_FAIL;
+            }
+            offset += static_cast<size_t>(read);
+        }
+
+        return ESP_OK;
+    }
+
+    esp_err_t sync_e22_400t22s_config_locked()
+    {
+        if (stored_state.settings.radio_module != RadioModule::E22_400T22S) {
+            return ESP_OK;
+        }
+
+        const uint8_t channel = e22_channel_for_frequency(stored_state.settings.frequency_hz);
+        const std::array<uint8_t, 12> write_command = {
+            kE22CommandWritePersistent,
+            kE22RegisterStart,
+            kE22RegisterCount,
+            0x00,
+            0x00,
+            0x00,
+            kE22Reg0Default,
+            kE22Reg1Default,
+            channel,
+            kE22OptionTransparentDefault,
+            0x00,
+            0x00,
+        };
+        const std::array<uint8_t, 3> read_command = {
+            kE22CommandReadRegisters,
+            kE22RegisterStart,
+            kE22RegisterCount,
+        };
+
+        set_uart_module_mode(false);
+        if (!wait_for_uart_aux_ready(kUartCommandTimeoutMs)) {
+            return ESP_ERR_TIMEOUT;
+        }
+
+        uart_flush_input(kLoRaUartPort);
+        ESP_RETURN_ON_FALSE(uart_write_bytes(kLoRaUartPort,
+                                             reinterpret_cast<const char *>(write_command.data()),
+                                             write_command.size()) == static_cast<int>(write_command.size()),
+                            ESP_FAIL,
+                            kTag,
+                            "e22 config write failed");
+        ESP_RETURN_ON_ERROR(uart_wait_tx_done(kLoRaUartPort, pdMS_TO_TICKS(kUartCommandTimeoutMs)),
+                            kTag,
+                            "e22 config tx wait failed");
+        ESP_RETURN_ON_FALSE(wait_for_uart_aux_ready(kUartCommandTimeoutMs),
+                            ESP_ERR_TIMEOUT,
+                            kTag,
+                            "e22 config aux wait failed");
+
+        std::array<uint8_t, 12> write_response = {};
+        ESP_RETURN_ON_ERROR(uart_read_exact(write_response.data(), write_response.size(), kUartCommandTimeoutMs),
+                            kTag,
+                            "e22 config response timeout");
+
+        std::array<uint8_t, 12> expected_write_response = write_command;
+        expected_write_response[0] = kE22CommandReadRegisters;
+        if (write_response != expected_write_response) {
+            ESP_LOGW(kTag,
+                     "E22 config write response differed expected=[%s] actual=[%s]",
+                     format_hex_bytes(expected_write_response.data(), expected_write_response.size()).c_str(),
+                     format_hex_bytes(write_response.data(), write_response.size()).c_str());
+        }
+
+        uart_flush_input(kLoRaUartPort);
+        ESP_RETURN_ON_FALSE(uart_write_bytes(kLoRaUartPort,
+                                             reinterpret_cast<const char *>(read_command.data()),
+                                             read_command.size()) == static_cast<int>(read_command.size()),
+                            ESP_FAIL,
+                            kTag,
+                            "e22 config readback request failed");
+        ESP_RETURN_ON_ERROR(uart_wait_tx_done(kLoRaUartPort, pdMS_TO_TICKS(kUartCommandTimeoutMs)),
+                            kTag,
+                            "e22 config readback tx wait failed");
+
+        std::array<uint8_t, 12> read_response = {};
+        const esp_err_t readback_err = uart_read_exact(read_response.data(), read_response.size(), kUartCommandTimeoutMs);
+        if (readback_err == ESP_OK) {
+            if (read_response[0] != kE22CommandReadRegisters ||
+                read_response[1] != kE22RegisterStart ||
+                read_response[2] != kE22RegisterCount) {
+                ESP_LOGW(kTag,
+                         "E22 config readback header differed actual=[%s]",
+                         format_hex_bytes(read_response.data(), read_response.size()).c_str());
+            } else if (read_response != expected_write_response) {
+                ESP_LOGW(kTag,
+                         "E22 config readback differed desired=[%s] actual=[%s]",
+                         format_hex_bytes(expected_write_response.data(), expected_write_response.size()).c_str(),
+                         format_hex_bytes(read_response.data(), read_response.size()).c_str());
+            }
+        } else {
+            ESP_LOGW(kTag, "E22 config readback unavailable err=%s", esp_err_to_name(readback_err));
+        }
+
+        ESP_LOGI(kTag,
+                 "Synchronized E22-400T22S config freq=%" PRIu32 "Hz channel=%u reg0=0x%02X reg1=0x%02X option=0x%02X",
+                 stored_state.settings.frequency_hz,
+                 channel,
+                 kE22Reg0Default,
+                 kE22Reg1Default,
+                 kE22OptionTransparentDefault);
+        return ESP_OK;
+    }
+
     esp_err_t spi_transfer(const uint8_t *tx_data, uint8_t *rx_data, size_t length)
     {
         if (spi == nullptr) {
@@ -1576,20 +1728,106 @@ struct LoRaMeshApp::Impl {
         target_list_dirty = true;
     }
 
+    bool send_uart_self_test_probe_locked(std::string &failure_reason)
+    {
+        MeshPacket packet = {};
+        packet.kind = PacketKind::Presence;
+        packet.sender_id = stored_state.identity.device_id;
+        packet.sender_name = stored_state.identity.display_name;
+        packet.target_id = jc4880::lora_mesh::kBroadcastTargetId;
+        packet.timestamp_ms = esp_timer_get_time() / 1000;
+        packet.ttl = stored_state.settings.hop_limit;
+        packet.public_key_hex = stored_state.identity.public_key_hex;
+        if (send_packet_locked(packet, nullptr, std::string())) {
+            return true;
+        }
+
+        std::ostringstream detail;
+        detail << "send_probe_failed";
+        if (!last_tx_diagnostic.empty()) {
+            detail << ' ' << last_tx_diagnostic;
+        } else {
+            detail << " irq=0x" << std::hex << std::uppercase << last_tx_irq_status;
+        }
+        failure_reason = detail.str();
+        return false;
+    }
+
+    bool try_self_test_swap_uart_pins_locked(std::string &detail)
+    {
+        if ((stored_state.settings.radio_module != RadioModule::E22_400T22S) ||
+            (stored_state.settings.uart_tx_gpio == stored_state.settings.uart_rx_gpio)) {
+            return false;
+        }
+
+        const int8_t original_tx_gpio = stored_state.settings.uart_tx_gpio;
+        const int8_t original_rx_gpio = stored_state.settings.uart_rx_gpio;
+        const int8_t swapped_tx_gpio = original_rx_gpio;
+        const int8_t swapped_rx_gpio = original_tx_gpio;
+
+        deinit_radio_locked();
+        stored_state.settings.uart_tx_gpio = swapped_tx_gpio;
+        stored_state.settings.uart_rx_gpio = swapped_rx_gpio;
+
+        const esp_err_t init_err = init_radio_locked();
+        if ((init_err == ESP_OK) && send_uart_self_test_probe_locked(detail)) {
+            state_dirty = true;
+            trace_event_locked("Self-test auto-corrected E22 UART pin map by swapping TX/RX");
+            save_state_if_needed_locked();
+            detail = std::string("recovered_by_swap tx=") + std::to_string(swapped_tx_gpio) +
+                     " rx=" + std::to_string(swapped_rx_gpio);
+            return true;
+        }
+
+        std::string recovery_detail = detail;
+        if (recovery_detail.empty()) {
+            recovery_detail = std::string("swap_init_err=") + esp_err_to_name(init_err);
+        }
+
+        deinit_radio_locked();
+        stored_state.settings.uart_tx_gpio = original_tx_gpio;
+        stored_state.settings.uart_rx_gpio = original_rx_gpio;
+        const esp_err_t restore_err = init_radio_locked();
+        if (restore_err != ESP_OK) {
+            detail = recovery_detail + " restore_err=" + esp_err_to_name(restore_err);
+        } else {
+            detail = recovery_detail;
+        }
+        return false;
+    }
+
     bool perform_self_test_locked(bool verbose)
     {
         const bool first_run = !self_test_ran;
         if (!radio_module_uses_spi(stored_state.settings.radio_module)) {
             const bool aux_ready = wait_for_uart_aux_ready(kUartAuxTimeoutMs);
             const bool uart_ok = uart_ready;
-            const bool passed = aux_ready && uart_ok;
+            std::string probe_detail;
+            bool passed = aux_ready && uart_ok;
+            if (passed) {
+                passed = send_uart_self_test_probe_locked(probe_detail);
+                if (!passed) {
+                    std::string swap_detail;
+                    if (try_self_test_swap_uart_pins_locked(swap_detail)) {
+                        passed = true;
+                        probe_detail = swap_detail;
+                    } else if (!swap_detail.empty()) {
+                        probe_detail += probe_detail.empty() ? swap_detail : std::string(" ") + swap_detail;
+                    }
+                }
+            }
             std::ostringstream detail;
             detail << (passed ? "PASS" : "FAIL")
                    << " module=" << radio_module_name(stored_state.settings.radio_module)
                    << " uart=" << (uart_ok ? "ready" : "down")
-                   << " aux=" << (has_pin(RadioPinRole::Aux) ? gpio_get_level(gpio_for_role(RadioPinRole::Aux)) : 1);
+                   << " aux=" << (has_pin(RadioPinRole::Aux) ? gpio_get_level(gpio_for_role(RadioPinRole::Aux)) : 1)
+                   << " tx=" << static_cast<int>(stored_state.settings.uart_tx_gpio)
+                   << " rx=" << static_cast<int>(stored_state.settings.uart_rx_gpio);
             if (!passed) {
                 detail << " transparent UART module not ready";
+            }
+            if (!probe_detail.empty()) {
+                detail << ' ' << probe_detail;
             }
 
             self_test_summary = detail.str();
@@ -2089,29 +2327,71 @@ struct LoRaMeshApp::Impl {
             ESP_RETURN_ON_ERROR(uart_param_config(kLoRaUartPort, &config), kTag, "uart param config failed");
         }
 
-        ESP_RETURN_ON_ERROR(uart_set_pin(kLoRaUartPort,
-                                         stored_state.settings.uart_tx_gpio,
-                                         stored_state.settings.uart_rx_gpio,
-                                         UART_PIN_NO_CHANGE,
-                                         UART_PIN_NO_CHANGE),
-                            kTag,
-                            "uart pin config failed");
+        const int8_t configured_tx_gpio = stored_state.settings.uart_tx_gpio;
+        const int8_t configured_rx_gpio = stored_state.settings.uart_rx_gpio;
+        auto try_uart_pin_pair = [&](int8_t tx_gpio, int8_t rx_gpio) -> esp_err_t {
+            ESP_RETURN_ON_ERROR(uart_set_pin(kLoRaUartPort,
+                                             tx_gpio,
+                                             rx_gpio,
+                                             UART_PIN_NO_CHANGE,
+                                             UART_PIN_NO_CHANGE),
+                                kTag,
+                                "uart pin config failed");
 
-        ESP_LOGI(kTag,
-             "LoRa UART pin map TX=%d RX=%d AUX=%d M0=%d M1=%d NRST=%d module=%s",
-             stored_state.settings.uart_tx_gpio,
-             stored_state.settings.uart_rx_gpio,
-             has_pin(RadioPinRole::Aux) ? gpio_for_role(RadioPinRole::Aux) : -1,
-             has_pin(RadioPinRole::Mode0) ? gpio_for_role(RadioPinRole::Mode0) : -1,
-             has_pin(RadioPinRole::Mode1) ? gpio_for_role(RadioPinRole::Mode1) : -1,
-             has_pin(RadioPinRole::Reset) ? gpio_for_role(RadioPinRole::Reset) : -1,
-             radio_module_name(stored_state.settings.radio_module));
+            ESP_LOGI(kTag,
+                     "LoRa UART pin map TX=%d RX=%d AUX=%d M0=%d M1=%d NRST=%d module=%s",
+                     tx_gpio,
+                     rx_gpio,
+                     has_pin(RadioPinRole::Aux) ? gpio_for_role(RadioPinRole::Aux) : -1,
+                     has_pin(RadioPinRole::Mode0) ? gpio_for_role(RadioPinRole::Mode0) : -1,
+                     has_pin(RadioPinRole::Mode1) ? gpio_for_role(RadioPinRole::Mode1) : -1,
+                     has_pin(RadioPinRole::Reset) ? gpio_for_role(RadioPinRole::Reset) : -1,
+                     radio_module_name(stored_state.settings.radio_module));
 
-        set_uart_module_mode(true);
-        if (has_pin(RadioPinRole::Reset)) {
-            gpio_set_level(gpio_for_role(RadioPinRole::Reset), 1);
+            set_uart_module_mode(true);
+            if (has_pin(RadioPinRole::Reset)) {
+                gpio_set_level(gpio_for_role(RadioPinRole::Reset), 1);
+            }
+            ESP_RETURN_ON_ERROR(reset_radio(), kTag, "uart radio reset failed");
+            return sync_e22_400t22s_config_locked();
+        };
+
+        esp_err_t uart_sync_err = try_uart_pin_pair(configured_tx_gpio, configured_rx_gpio);
+        if ((uart_sync_err != ESP_OK) &&
+            (stored_state.settings.radio_module == RadioModule::E22_400T22S) &&
+            (configured_tx_gpio != configured_rx_gpio)) {
+            ESP_LOGW(kTag,
+                     "E22 config sync failed on configured UART pair TX=%d RX=%d err=%s; retrying swapped pair",
+                     configured_tx_gpio,
+                     configured_rx_gpio,
+                     esp_err_to_name(uart_sync_err));
+            const esp_err_t swapped_err = try_uart_pin_pair(configured_rx_gpio, configured_tx_gpio);
+            if (swapped_err == ESP_OK) {
+                stored_state.settings.uart_tx_gpio = configured_rx_gpio;
+                stored_state.settings.uart_rx_gpio = configured_tx_gpio;
+                state_dirty = true;
+                trace_event("Auto-corrected E22 UART pin map by swapping TX/RX");
+                uart_sync_err = ESP_OK;
+            } else {
+                ESP_LOGW(kTag,
+                         "E22 swapped UART pair TX=%d RX=%d also failed err=%s",
+                         configured_rx_gpio,
+                         configured_tx_gpio,
+                         esp_err_to_name(swapped_err));
+            }
         }
-        ESP_RETURN_ON_ERROR(reset_radio(), kTag, "uart radio reset failed");
+        if ((uart_sync_err == ESP_ERR_TIMEOUT) &&
+            (stored_state.settings.radio_module == RadioModule::E22_400T22S)) {
+            ESP_LOGW(kTag,
+                     "E22 config sync unavailable on UART; continuing with existing pin map TX=%d RX=%d",
+                     stored_state.settings.uart_tx_gpio,
+                     stored_state.settings.uart_rx_gpio);
+            trace_event("E22 config sync unavailable; using existing UART settings");
+            uart_sync_err = ESP_OK;
+        }
+        ESP_RETURN_ON_ERROR(uart_sync_err, kTag, "e22 config sync failed");
+        set_uart_module_mode(true);
+        ESP_RETURN_ON_FALSE(wait_for_uart_aux_ready(kUartCommandTimeoutMs), ESP_ERR_TIMEOUT, kTag, "uart normal mode wait failed");
         uart_flush_input(kLoRaUartPort);
         uart_rx_bytes.clear();
         ESP_RETURN_ON_ERROR(start_receive_locked(), kTag, "uart receive prep failed");
@@ -2320,16 +2600,21 @@ struct LoRaMeshApp::Impl {
         if (!radio_module_uses_spi(stored_state.settings.radio_module)) {
             set_uart_module_mode(true);
             if (!wait_for_uart_aux_ready(kUartAuxTimeoutMs)) {
+                last_tx_diagnostic = std::string("uart_aux_busy_before_tx len=") + std::to_string(bytes.size());
                 return false;
             }
             const int written = uart_write_bytes(kLoRaUartPort,
                                                  reinterpret_cast<const char *>(bytes.data()),
                                                  static_cast<uint32_t>(bytes.size()));
             if (written != static_cast<int>(bytes.size())) {
+                last_tx_diagnostic = std::string("uart_write_short written=") + std::to_string(written) +
+                                     " expected=" + std::to_string(bytes.size());
                 return false;
             }
             esp_rom_delay_us(kUartFrameGapMs * 1000U);
-            if (!wait_for_uart_aux_ready(kUartAuxTimeoutMs)) {
+            if (!wait_for_uart_aux_ready(kUartTxCompleteTimeoutMs)) {
+                last_tx_diagnostic = std::string("uart_aux_timeout_after_tx len=") + std::to_string(bytes.size()) +
+                                     " timeout_ms=" + std::to_string(kUartTxCompleteTimeoutMs);
                 return false;
             }
             last_tx_irq_status = 0xFFFF;

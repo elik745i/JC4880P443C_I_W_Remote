@@ -7,9 +7,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <cerrno>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
 
@@ -20,7 +23,9 @@
 #include "LoRaMeshTypes.hpp"
 #include "assets/esp_brookesia_assets.h"
 #include "bsp/esp-bsp.h"
+#include "bsp_board_extra.h"
 #include "neopixel_runtime.h"
+#include "storage_access.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "driver/uart.h"
@@ -40,6 +45,8 @@
 
 LV_IMG_DECLARE(loramesh_png);
 
+extern "C" bool jc_ui_tap_sound_is_enabled(void);
+
 namespace {
 
 constexpr char kTag[] = "LoRaMesh";
@@ -56,7 +63,8 @@ constexpr uint32_t kRxPollMs = 25;
 constexpr uint32_t kRxTaskStack = 6144;
 constexpr UBaseType_t kRxTaskPriority = 4;
 constexpr size_t kMaxLogBytes = 4096;
-constexpr size_t kMaxConversationMessages = 64;
+constexpr size_t kMaxConversationMessages = 256;
+constexpr size_t kChatHistoryLineBytes = 768;
 constexpr uint32_t kTxTimeoutSteps = 0x09C400; // 10 s at 15.625 us per step
 constexpr int64_t kTxWaitDeadlineUs = 12000000;
 constexpr int64_t kInvalidIrqAssumeTxUs = 700000;
@@ -120,6 +128,8 @@ constexpr uint8_t kMeshMagic1 = 'H';
 constexpr uint8_t kMeshVersion = 1;
 constexpr uint8_t kMeshFlagBeacon = 0x01;
 constexpr uint16_t kSyncWordRegister = 0x0740;
+constexpr char kChatHistoryRoot[] = "/sdcard/radio/chats";
+constexpr char kChatHistoryFieldSeparator[] = " | ";
 
 struct MeshFrame {
     uint8_t ttl = 0;
@@ -140,6 +150,9 @@ struct ConversationEntry {
     std::string text;
     std::string meta;
     bool outgoing = false;
+    uint64_t pending_token = 0;
+    bool transmit_pending = false;
+    bool transmit_failed = false;
 };
 
 enum class ViewMode : uint8_t {
@@ -434,6 +447,7 @@ struct LoRaMeshApp::Impl {
     lv_obj_t *header_title = nullptr;
     lv_obj_t *back_button = nullptr;
     lv_obj_t *menu_button = nullptr;
+    lv_obj_t *chat_action_overlay = nullptr;
     lv_obj_t *target_list = nullptr;
     lv_obj_t *chat_panel = nullptr;
     lv_obj_t *settings_panel = nullptr;
@@ -442,6 +456,7 @@ struct LoRaMeshApp::Impl {
     lv_obj_t *message_list = nullptr;
     lv_obj_t *composer = nullptr;
     lv_obj_t *input = nullptr;
+    lv_obj_t *clear_chat_button = nullptr;
     lv_obj_t *send_button = nullptr;
     lv_obj_t *keyboard = nullptr;
     lv_obj_t *settings_name_input = nullptr;
@@ -486,6 +501,7 @@ struct LoRaMeshApp::Impl {
     bool startup_complete = false;
     bool startup_ok = false;
     bool pending_self_test_on_next_open = false;
+    uint64_t next_pending_message_token = 1;
     int suspended_neopixel_gpio = -1;
     std::vector<uint8_t> uart_rx_bytes;
     ViewMode view_mode = ViewMode::Targets;
@@ -499,9 +515,13 @@ struct LoRaMeshApp::Impl {
 
     struct PendingSendContext {
         Impl *impl = nullptr;
+        std::string conversation_id;
+        std::string peer_id;
         std::string payload;
+        std::string bubble_text;
+        std::string bubble_meta;
         bool beacon = false;
-        bool clear_input_on_success = false;
+        uint64_t pending_token = 0;
     };
 
     ~Impl()
@@ -629,6 +649,7 @@ struct LoRaMeshApp::Impl {
         view_mode = ViewMode::Chat;
         selected_conversation_id = jc4880::lora_mesh::kCommonConversationId;
         selected_peer_id.clear();
+        load_conversation_history_locked(selected_conversation_id);
         conversation_dirty = true;
     }
 
@@ -637,7 +658,295 @@ struct LoRaMeshApp::Impl {
         view_mode = ViewMode::Chat;
         selected_conversation_id = peer_id;
         selected_peer_id = peer_id;
+        load_conversation_history_locked(selected_conversation_id);
         conversation_dirty = true;
+    }
+
+    bool clear_conversation_history_locked(const std::string &conversation_id)
+    {
+        conversation.erase(std::remove_if(conversation.begin(),
+                                          conversation.end(),
+                                          [&conversation_id](const ConversationEntry &entry) {
+                                              return entry.conversation_id == conversation_id;
+                                          }),
+                           conversation.end());
+        conversation_dirty = true;
+
+        const std::string path = conversation_history_path(conversation_id);
+        if (std::remove(path.c_str()) == 0) {
+            return true;
+        }
+
+        return errno == ENOENT;
+    }
+
+    static void play_chat_feedback_sound(bsp_extra_audio_system_sound_t sound)
+    {
+        if (jc_ui_tap_sound_is_enabled()) {
+            (void)bsp_extra_audio_play_system_sound(sound);
+        }
+    }
+
+    uint64_t next_pending_message_token_locked()
+    {
+        return next_pending_message_token++;
+    }
+
+    uint64_t append_pending_outgoing_message_locked(const std::string &conversation_id,
+                                                    const std::string &text,
+                                                    const std::string &meta)
+    {
+        const uint64_t token = next_pending_message_token_locked();
+        push_conversation_entry_locked(conversation_id, text, meta, true, false, token, true, false);
+        status_text = "Sending mesh message...";
+        return token;
+    }
+
+    void settle_pending_outgoing_message_locked(uint64_t pending_token,
+                                                const std::string &conversation_id,
+                                                const std::string &text,
+                                                const std::string &meta,
+                                                bool ok)
+    {
+        auto entry = std::find_if(conversation.rbegin(), conversation.rend(),
+                                  [pending_token, &conversation_id](const ConversationEntry &candidate) {
+                                      return (candidate.pending_token == pending_token) &&
+                                             (candidate.conversation_id == conversation_id);
+                                  });
+
+        if (entry == conversation.rend()) {
+            if (ok) {
+                push_conversation_entry_locked(conversation_id, text, meta, true, true);
+            }
+            return;
+        }
+
+        entry->transmit_pending = false;
+        entry->transmit_failed = !ok;
+        entry->pending_token = 0;
+        conversation_dirty = true;
+
+        if (ok) {
+            append_conversation_history_locked(conversation_id, text, meta, true);
+        }
+    }
+
+    static const char *delivery_status_symbol(const ConversationEntry &entry)
+    {
+        if (!entry.outgoing) {
+            return "";
+        }
+        if (entry.transmit_pending) {
+            return "...";
+        }
+        if (entry.transmit_failed) {
+            return "!";
+        }
+        return LV_SYMBOL_OK;
+    }
+
+    static lv_color_t delivery_status_color(const ConversationEntry &entry)
+    {
+        if (entry.transmit_failed) {
+            return lv_color_hex(0xB42318);
+        }
+        if (entry.transmit_pending) {
+            return lv_color_hex(0xB54708);
+        }
+        return lv_color_hex(0x027A48);
+    }
+
+    void close_chat_action_overlay()
+    {
+        if (chat_action_overlay != nullptr) {
+            lv_obj_del(chat_action_overlay);
+            chat_action_overlay = nullptr;
+        }
+    }
+
+    static void on_chat_overlay_dismiss(lv_event_t *event)
+    {
+        if (lv_event_get_code(event) != LV_EVENT_CLICKED) {
+            return;
+        }
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl != nullptr) {
+            impl->close_chat_action_overlay();
+        }
+    }
+
+    static void on_chat_actions_cancel(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl != nullptr) {
+            impl->close_chat_action_overlay();
+        }
+    }
+
+    static void on_chat_actions_clear_confirmed(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl == nullptr) {
+            return;
+        }
+
+        impl->close_chat_action_overlay();
+
+        impl->lock();
+        const std::string conversation_id = impl->selected_conversation_id;
+        const bool cleared = !conversation_id.empty() && impl->clear_conversation_history_locked(conversation_id);
+        if (cleared && (impl->input != nullptr)) {
+            lv_textarea_set_text(impl->input, "");
+        }
+        impl->trace_event_locked(std::string("UI cleared chat history for ") +
+                                 (conversation_id.empty() ? std::string("<none>") : conversation_id));
+        impl->unlock();
+
+        impl->set_status(cleared ? "Chat cleared" : "Failed to clear saved chat history");
+        impl->refresh_ui();
+    }
+
+    void open_clear_chat_confirmation_overlay()
+    {
+        close_chat_action_overlay();
+
+        if (root == nullptr) {
+            return;
+        }
+
+        chat_action_overlay = lv_obj_create(root);
+        lv_obj_set_size(chat_action_overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_add_flag(chat_action_overlay, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_style_bg_color(chat_action_overlay, lv_color_hex(0x111B21), 0);
+        lv_obj_set_style_bg_opa(chat_action_overlay, LV_OPA_40, 0);
+        lv_obj_set_style_border_width(chat_action_overlay, 0, 0);
+        lv_obj_set_style_radius(chat_action_overlay, 0, 0);
+        lv_obj_set_style_pad_all(chat_action_overlay, 0, 0);
+        lv_obj_clear_flag(chat_action_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(chat_action_overlay, on_chat_overlay_dismiss, LV_EVENT_CLICKED, this);
+
+        lv_obj_t *card = lv_obj_create(chat_action_overlay);
+        lv_obj_set_width(card, 280);
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_center(card);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(card, 22, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 16, 0);
+        lv_obj_set_style_pad_row(card, 12, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *title = lv_label_create(card);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x111B21), 0);
+        lv_label_set_text(title, "Chat settings");
+
+        lv_obj_t *body = lv_label_create(card);
+        lv_obj_set_width(body, LV_PCT(100));
+        lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(body, lv_color_hex(0x475467), 0);
+        lv_label_set_text(body, "Clear the current conversation and delete its saved history from the SD card?");
+
+        lv_obj_t *actions = lv_obj_create(card);
+        lv_obj_set_width(actions, LV_PCT(100));
+        lv_obj_set_height(actions, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(actions, 0, 0);
+        lv_obj_set_style_pad_all(actions, 0, 0);
+        lv_obj_set_style_pad_column(actions, 8, 0);
+        lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *cancel_button = lv_btn_create(actions);
+        lv_obj_set_height(cancel_button, 42);
+        lv_obj_set_style_radius(cancel_button, 21, 0);
+        lv_obj_set_style_bg_color(cancel_button, lv_color_hex(0xE4E7EC), 0);
+        lv_obj_add_event_cb(cancel_button, on_chat_actions_cancel, LV_EVENT_CLICKED, this);
+        lv_label_set_text(lv_label_create(cancel_button), "Cancel");
+
+        lv_obj_t *clear_button = lv_btn_create(actions);
+        lv_obj_set_height(clear_button, 42);
+        lv_obj_set_style_radius(clear_button, 21, 0);
+        lv_obj_set_style_bg_color(clear_button, lv_color_hex(0xD92D20), 0);
+        lv_obj_add_event_cb(clear_button, on_chat_actions_clear_confirmed, LV_EVENT_CLICKED, this);
+        lv_obj_t *clear_label = lv_label_create(clear_button);
+        lv_obj_set_style_text_color(clear_label, lv_color_hex(0xFFFFFF), 0);
+        lv_label_set_text(clear_label, "Clear chat");
+    }
+
+    static void on_chat_action_clear_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl != nullptr) {
+            impl->open_clear_chat_confirmation_overlay();
+        }
+    }
+
+    void open_chat_action_overlay()
+    {
+        if ((root == nullptr) || (chat_action_overlay != nullptr)) {
+            return;
+        }
+
+        chat_action_overlay = lv_obj_create(root);
+        lv_obj_set_size(chat_action_overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_add_flag(chat_action_overlay, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_style_bg_color(chat_action_overlay, lv_color_hex(0x111B21), 0);
+        lv_obj_set_style_bg_opa(chat_action_overlay, LV_OPA_40, 0);
+        lv_obj_set_style_border_width(chat_action_overlay, 0, 0);
+        lv_obj_set_style_radius(chat_action_overlay, 0, 0);
+        lv_obj_set_style_pad_all(chat_action_overlay, 0, 0);
+        lv_obj_clear_flag(chat_action_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(chat_action_overlay, on_chat_overlay_dismiss, LV_EVENT_CLICKED, this);
+
+        lv_obj_t *card = lv_obj_create(chat_action_overlay);
+        lv_obj_set_width(card, 220);
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_align(card, LV_ALIGN_TOP_RIGHT, -14, 62);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(card, 18, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 10, 0);
+        lv_obj_set_style_pad_row(card, 6, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *clear_button = lv_btn_create(card);
+        lv_obj_set_width(clear_button, LV_PCT(100));
+        lv_obj_set_height(clear_button, 42);
+        lv_obj_set_style_radius(clear_button, 14, 0);
+        lv_obj_set_style_bg_color(clear_button, lv_color_hex(0xFFF1F1), 0);
+        lv_obj_set_style_shadow_width(clear_button, 0, 0);
+        lv_obj_set_style_border_width(clear_button, 0, 0);
+        lv_obj_add_event_cb(clear_button, on_chat_action_clear_clicked, LV_EVENT_CLICKED, this);
+
+        lv_obj_t *clear_row = lv_obj_create(clear_button);
+        lv_obj_set_size(clear_row, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(clear_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(clear_row, 0, 0);
+        lv_obj_set_style_pad_all(clear_row, 0, 0);
+        lv_obj_set_style_pad_column(clear_row, 8, 0);
+        lv_obj_set_flex_flow(clear_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(clear_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *clear_icon = lv_label_create(clear_row);
+        lv_obj_set_style_text_color(clear_icon, lv_color_hex(0xD92D20), 0);
+        lv_obj_set_style_text_font(clear_icon, &lv_font_montserrat_16, 0);
+        lv_label_set_text(clear_icon, LV_SYMBOL_TRASH);
+
+        lv_obj_t *clear_text = lv_label_create(clear_row);
+        lv_obj_set_style_text_color(clear_text, lv_color_hex(0xB42318), 0);
+        lv_obj_set_style_text_font(clear_text, &lv_font_montserrat_16, 0);
+        lv_label_set_text(clear_text, "Clear chat");
+    }
+
+    static void on_chat_settings_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl != nullptr) {
+            impl->open_chat_action_overlay();
+        }
     }
 
     bool parse_uint32_text(lv_obj_t *textarea, uint32_t &value) const
@@ -984,15 +1293,21 @@ struct LoRaMeshApp::Impl {
         }
 
         Impl *impl = request->impl;
-        const bool ok = impl->send_user_message(request->payload, request->beacon);
+        const bool ok = impl->send_user_message(request->conversation_id,
+                                                request->peer_id,
+                                                request->payload,
+                                                request->beacon,
+                                                request->pending_token,
+                                                request->bubble_text,
+                                                request->bubble_meta);
 
         bsp_display_lock(0);
-        if (ok && request->clear_input_on_success) {
-            (void)lv_async_call(&Impl::finish_send_ui, impl);
-        } else {
-            (void)lv_async_call(&Impl::refresh_ui_async, impl);
-        }
+        (void)lv_async_call(&Impl::refresh_ui_async, impl);
         bsp_display_unlock();
+
+        if (ok) {
+            play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_SENT);
+        }
 
         impl->lock();
         if (impl->send_task == xTaskGetCurrentTaskHandle()) {
@@ -1002,12 +1317,22 @@ struct LoRaMeshApp::Impl {
         vTaskDelete(nullptr);
     }
 
-    bool start_send_task(const std::string &payload, bool beacon, bool clear_input_on_success)
+    bool start_send_task(const std::string &conversation_id,
+                         const std::string &peer_id,
+                         const std::string &payload,
+                         bool beacon,
+                         uint64_t pending_token,
+                         const std::string &bubble_text,
+                         const std::string &bubble_meta)
     {
         auto *context = new PendingSendContext{.impl = this,
+                                               .conversation_id = conversation_id,
+                                               .peer_id = peer_id,
                                                .payload = payload,
+                                               .bubble_text = bubble_text,
+                                               .bubble_meta = bubble_meta,
                                                .beacon = beacon,
-                                               .clear_input_on_success = clear_input_on_success};
+                                               .pending_token = pending_token};
         if (context == nullptr) {
             set_status("Failed to allocate LoRa send task");
             return false;
@@ -1703,15 +2028,253 @@ struct LoRaMeshApp::Impl {
         }
     }
 
-    void push_conversation_locked(const std::string &text, const std::string &meta, bool outgoing)
+    static std::string sanitize_chat_history_field(const std::string &value)
     {
-        conversation.push_back(ConversationEntry{.conversation_id = selected_conversation_id,
+        std::string sanitized;
+        sanitized.reserve(value.size());
+        for (char character : value) {
+            if ((character == '\r') || (character == '\n')) {
+                sanitized.push_back(' ');
+            } else {
+                sanitized.push_back(character);
+            }
+        }
+
+        size_t separator_pos = 0;
+        while ((separator_pos = sanitized.find(kChatHistoryFieldSeparator, separator_pos)) != std::string::npos) {
+            sanitized.replace(separator_pos, std::strlen(kChatHistoryFieldSeparator), " / ");
+            separator_pos += 3;
+        }
+        return sanitized;
+    }
+
+    std::string current_timestamp_text() const
+    {
+        const std::time_t now = std::time(nullptr);
+        std::tm local_time = {};
+#if defined(_WIN32)
+        localtime_s(&local_time, &now);
+#else
+        localtime_r(&now, &local_time);
+#endif
+        char buffer[32] = {};
+        if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &local_time) == 0) {
+            return "1970-01-01 00:00:00";
+        }
+        return std::string(buffer);
+    }
+
+    std::string conversation_history_path(const std::string &conversation_id) const
+    {
+        std::string file_stem = conversation_id == jc4880::lora_mesh::kCommonConversationId ? "common" : conversation_id;
+        for (char &character : file_stem) {
+            if (!std::isalnum(static_cast<unsigned char>(character)) && (character != '-') && (character != '_')) {
+                character = '_';
+            }
+        }
+        if (file_stem.empty()) {
+            file_stem = "conversation";
+        }
+        return std::string(kChatHistoryRoot) + "/" + file_stem + ".txt";
+    }
+
+    bool ensure_chat_history_directory() const
+    {
+        if (!app_storage_ensure_sdcard_available()) {
+            return false;
+        }
+
+        struct stat sdcard_stat = {};
+        if ((stat("/sdcard", &sdcard_stat) != 0) || !S_ISDIR(sdcard_stat.st_mode)) {
+            return false;
+        }
+
+        std::string partial;
+        const std::string full_path = kChatHistoryRoot;
+        for (char character : full_path) {
+            partial.push_back(character);
+            if (character != '/') {
+                continue;
+            }
+            if (partial.size() == 1) {
+                continue;
+            }
+            if ((mkdir(partial.c_str(), 0775) != 0) && (errno != EEXIST)) {
+                return false;
+            }
+        }
+
+        return ((mkdir(full_path.c_str(), 0775) == 0) || (errno == EEXIST));
+    }
+
+    std::string conversation_author_from_meta_locked(const std::string &meta, bool outgoing) const
+    {
+        if (outgoing) {
+            return stored_state.identity.display_name.empty() ? stored_state.identity.device_id : stored_state.identity.display_name;
+        }
+
+        const size_t rssi_pos = meta.find("  RSSI ");
+        if (rssi_pos != std::string::npos) {
+            return meta.substr(0, rssi_pos);
+        }
+        return meta;
+    }
+
+    void append_conversation_history_locked(const std::string &conversation_id,
+                                            const std::string &text,
+                                            const std::string &meta,
+                                            bool outgoing)
+    {
+        if (!ensure_chat_history_directory()) {
+            return;
+        }
+
+        const std::string path = conversation_history_path(conversation_id);
+        FILE *file = std::fopen(path.c_str(), "ab");
+        if (file == nullptr) {
+            return;
+        }
+
+        const std::string timestamp = sanitize_chat_history_field(current_timestamp_text());
+        const std::string author = sanitize_chat_history_field(conversation_author_from_meta_locked(meta, outgoing));
+        const std::string line = timestamp + kChatHistoryFieldSeparator + author + kChatHistoryFieldSeparator +
+                                 sanitize_chat_history_field(text) + "\n";
+        (void)std::fwrite(line.data(), 1, line.size(), file);
+        std::fclose(file);
+    }
+
+    void push_conversation_entry_locked(const std::string &conversation_id,
+                                        const std::string &text,
+                                        const std::string &meta,
+                                        bool outgoing,
+                                        bool persist_history,
+                                        uint64_t pending_token = 0,
+                                        bool transmit_pending = false,
+                                        bool transmit_failed = false)
+    {
+        conversation.push_back(ConversationEntry{.conversation_id = conversation_id,
                                                  .text = text,
                                                  .meta = meta,
-                                                 .outgoing = outgoing});
+                                                 .outgoing = outgoing,
+                                                 .pending_token = pending_token,
+                                                 .transmit_pending = transmit_pending,
+                                                 .transmit_failed = transmit_failed});
         trim_conversation_locked();
         conversation_dirty = true;
         target_list_dirty = true;
+        if (persist_history) {
+            append_conversation_history_locked(conversation_id, text, meta, outgoing);
+        }
+    }
+
+    void load_conversation_history_locked(const std::string &conversation_id)
+    {
+        if (!app_storage_ensure_sdcard_available()) {
+            return;
+        }
+
+        const std::string path = conversation_history_path(conversation_id);
+        FILE *file = std::fopen(path.c_str(), "rb");
+        if (file == nullptr) {
+            return;
+        }
+
+        std::vector<ConversationEntry> loaded_entries;
+        char line[kChatHistoryLineBytes] = {};
+        while (std::fgets(line, sizeof(line), file) != nullptr) {
+            std::string record(line);
+            while (!record.empty() && ((record.back() == '\n') || (record.back() == '\r'))) {
+                record.pop_back();
+            }
+            if (record.empty()) {
+                continue;
+            }
+
+            const size_t first_sep = record.find(kChatHistoryFieldSeparator);
+            if (first_sep == std::string::npos) {
+                continue;
+            }
+            const size_t second_sep = record.find(kChatHistoryFieldSeparator,
+                                                  first_sep + std::strlen(kChatHistoryFieldSeparator));
+            if (second_sep == std::string::npos) {
+                continue;
+            }
+
+            const std::string timestamp = record.substr(0, first_sep);
+            const std::string author = record.substr(first_sep + std::strlen(kChatHistoryFieldSeparator),
+                                                     second_sep - first_sep - std::strlen(kChatHistoryFieldSeparator));
+            const std::string text = record.substr(second_sep + std::strlen(kChatHistoryFieldSeparator));
+            const bool outgoing = (author == stored_state.identity.display_name) || (author == stored_state.identity.device_id);
+            loaded_entries.push_back(ConversationEntry{.conversation_id = conversation_id,
+                                                       .text = text,
+                                                       .meta = author + "  " + timestamp,
+                                                       .outgoing = outgoing});
+        }
+        std::fclose(file);
+
+        conversation.erase(std::remove_if(conversation.begin(),
+                                          conversation.end(),
+                                          [&conversation_id](const ConversationEntry &entry) {
+                                              return entry.conversation_id == conversation_id;
+                                          }),
+                           conversation.end());
+        conversation.insert(conversation.end(), loaded_entries.begin(), loaded_entries.end());
+        trim_conversation_locked();
+        conversation_dirty = true;
+    }
+
+    bool queue_outgoing_message_from_input()
+    {
+        if (input == nullptr) {
+            return false;
+        }
+
+        const char *raw_text = lv_textarea_get_text(input);
+        if ((raw_text == nullptr) || (raw_text[0] == '\0')) {
+            set_status("Enter a message before sending");
+            return false;
+        }
+
+        std::string payload(raw_text);
+        std::string conversation_id;
+        std::string peer_id;
+        std::string bubble_text;
+        std::string bubble_meta;
+        uint64_t pending_token = 0;
+
+        lock();
+        if (send_task != nullptr) {
+            status_text = "LoRa transmit already in progress";
+            unlock();
+            refresh_ui();
+            return false;
+        }
+
+        conversation_id = selected_conversation_id;
+        peer_id = selected_peer_id;
+        bubble_text = (conversation_id == jc4880::lora_mesh::kCommonConversationId) ? payload : std::string("[private] ") + payload;
+        bubble_meta = stored_state.identity.display_name.empty() ? stored_state.identity.device_id : stored_state.identity.display_name;
+        pending_token = append_pending_outgoing_message_locked(conversation_id, bubble_text, bubble_meta);
+        unlock();
+
+        finish_send_ui(this);
+
+        if (!start_send_task(conversation_id, peer_id, payload, false, pending_token, bubble_text, bubble_meta)) {
+            lock();
+            settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
+            status_text = "Failed to start LoRa send task";
+            unlock();
+            refresh_ui();
+            return false;
+        }
+
+        refresh_ui();
+        return true;
+    }
+
+    void push_conversation_locked(const std::string &text, const std::string &meta, bool outgoing)
+    {
+        push_conversation_entry_locked(selected_conversation_id, text, meta, outgoing, true);
     }
 
     void push_conversation_locked(const std::string &conversation_id,
@@ -1719,13 +2282,7 @@ struct LoRaMeshApp::Impl {
                                   const std::string &meta,
                                   bool outgoing)
     {
-        conversation.push_back(ConversationEntry{.conversation_id = conversation_id,
-                                                 .text = text,
-                                                 .meta = meta,
-                                                 .outgoing = outgoing});
-        trim_conversation_locked();
-        conversation_dirty = true;
-        target_list_dirty = true;
+        push_conversation_entry_locked(conversation_id, text, meta, outgoing, true);
     }
 
     bool send_uart_self_test_probe_locked(std::string &failure_reason)
@@ -1753,69 +2310,158 @@ struct LoRaMeshApp::Impl {
         return false;
     }
 
-    bool try_self_test_swap_uart_pins_locked(std::string &detail)
+    static std::array<int8_t, 5> e22_uart_pin_profile(const jc4880::lora_mesh::MeshSettings &settings)
     {
-        if ((stored_state.settings.radio_module != RadioModule::E22_400T22S) ||
-            (stored_state.settings.uart_tx_gpio == stored_state.settings.uart_rx_gpio)) {
+        return {
+            settings.uart_tx_gpio,
+            settings.uart_rx_gpio,
+            settings.mode0_gpio,
+            settings.mode1_gpio,
+            settings.aux_gpio,
+        };
+    }
+
+    static void apply_e22_uart_pin_profile(jc4880::lora_mesh::MeshSettings &settings, const std::array<int8_t, 5> &profile)
+    {
+        settings.uart_tx_gpio = profile[0];
+        settings.uart_rx_gpio = profile[1];
+        settings.mode0_gpio = profile[2];
+        settings.mode1_gpio = profile[3];
+        settings.aux_gpio = profile[4];
+    }
+
+    static std::string describe_e22_uart_pin_profile(const std::array<int8_t, 5> &profile)
+    {
+        std::ostringstream detail;
+        detail << "tx=" << static_cast<int>(profile[0])
+               << " rx=" << static_cast<int>(profile[1])
+               << " m0=" << static_cast<int>(profile[2])
+               << " m1=" << static_cast<int>(profile[3])
+               << " aux=" << static_cast<int>(profile[4]);
+        return detail.str();
+    }
+
+    static void add_unique_e22_uart_pin_candidates(std::vector<std::array<int8_t, 5>> &candidates,
+                                                   const std::array<int8_t, 5> &seed_profile)
+    {
+        std::array<int8_t, 5> permutation = seed_profile;
+        std::sort(permutation.begin(), permutation.end());
+        do {
+            if (permutation[0] == permutation[1]) {
+                continue;
+            }
+
+            if (std::find(candidates.begin(), candidates.end(), permutation) == candidates.end()) {
+                candidates.push_back(permutation);
+            }
+        } while (std::next_permutation(permutation.begin(), permutation.end()));
+    }
+
+    static void sync_settings_ui_async(void *context)
+    {
+        auto *impl = static_cast<Impl *>(context);
+        if (impl != nullptr) {
+            impl->sync_settings_controls_from_state();
+            impl->refresh_ui();
+        }
+    }
+
+    bool try_self_test_recover_e22_uart_pins_locked(std::string &detail)
+    {
+        if (stored_state.settings.radio_module != RadioModule::E22_400T22S) {
             return false;
         }
 
-        const int8_t original_tx_gpio = stored_state.settings.uart_tx_gpio;
-        const int8_t original_rx_gpio = stored_state.settings.uart_rx_gpio;
-        const int8_t swapped_tx_gpio = original_rx_gpio;
-        const int8_t swapped_rx_gpio = original_tx_gpio;
+        const jc4880::lora_mesh::MeshSettings original_settings = stored_state.settings;
+        const std::array<int8_t, 5> original_profile = e22_uart_pin_profile(original_settings);
 
-        deinit_radio_locked();
-        stored_state.settings.uart_tx_gpio = swapped_tx_gpio;
-        stored_state.settings.uart_rx_gpio = swapped_rx_gpio;
+        jc4880::lora_mesh::MeshSettings defaults = original_settings;
+        apply_module_defaults(defaults);
+        jc4880::lora_mesh::MeshSettings legacy = defaults;
+        legacy.uart_tx_gpio = 31;
+        legacy.uart_rx_gpio = 33;
+        legacy.mode0_gpio = 29;
+        legacy.mode1_gpio = 30;
+        legacy.aux_gpio = 50;
 
-        const esp_err_t init_err = init_radio_locked();
-        if ((init_err == ESP_OK) && send_uart_self_test_probe_locked(detail)) {
-            state_dirty = true;
-            trace_event_locked("Self-test auto-corrected E22 UART pin map by swapping TX/RX");
-            save_state_if_needed_locked();
-            detail = std::string("recovered_by_swap tx=") + std::to_string(swapped_tx_gpio) +
-                     " rx=" + std::to_string(swapped_rx_gpio);
-            return true;
+        std::vector<std::array<int8_t, 5>> candidates;
+        add_unique_e22_uart_pin_candidates(candidates, original_profile);
+        add_unique_e22_uart_pin_candidates(candidates, e22_uart_pin_profile(defaults));
+        add_unique_e22_uart_pin_candidates(candidates, e22_uart_pin_profile(legacy));
+
+        std::string last_failure_detail;
+        for (const auto &candidate : candidates) {
+            deinit_radio_locked();
+            stored_state.settings = original_settings;
+            apply_e22_uart_pin_profile(stored_state.settings, candidate);
+
+            std::string candidate_detail;
+            const esp_err_t init_err = init_radio_locked();
+            if ((init_err == ESP_OK) && send_uart_self_test_probe_locked(candidate_detail)) {
+                const bool mapping_changed = candidate != original_profile;
+                if (mapping_changed) {
+                    state_dirty = true;
+                    trace_event_locked(std::string("Self-test auto-corrected E22 UART/control pin map ") +
+                                       describe_e22_uart_pin_profile(candidate));
+                    save_state_if_needed_locked();
+                } else {
+                    trace_event_locked("Self-test reconfigured E22 module and verified UART link");
+                }
+                detail = std::string(mapping_changed ? "recovered_by_pin_reorder " : "reconfigured_module ") +
+                         describe_e22_uart_pin_profile(candidate);
+                (void)lv_async_call(&Impl::sync_settings_ui_async, this);
+                return true;
+            }
+
+            if (!candidate_detail.empty()) {
+                last_failure_detail = std::string("candidate ") + describe_e22_uart_pin_profile(candidate) +
+                                      " " + candidate_detail;
+            } else {
+                last_failure_detail = std::string("candidate ") + describe_e22_uart_pin_profile(candidate) +
+                                      " init_err=" + esp_err_to_name(init_err);
+            }
         }
 
-        std::string recovery_detail = detail;
-        if (recovery_detail.empty()) {
-            recovery_detail = std::string("swap_init_err=") + esp_err_to_name(init_err);
-        }
-
         deinit_radio_locked();
-        stored_state.settings.uart_tx_gpio = original_tx_gpio;
-        stored_state.settings.uart_rx_gpio = original_rx_gpio;
+        stored_state.settings = original_settings;
         const esp_err_t restore_err = init_radio_locked();
         if (restore_err != ESP_OK) {
-            detail = recovery_detail + " restore_err=" + esp_err_to_name(restore_err);
+            detail = (last_failure_detail.empty() ? std::string("no_recovery_candidate_succeeded") : last_failure_detail) +
+                     " restore_err=" + esp_err_to_name(restore_err);
         } else {
-            detail = recovery_detail;
+            detail = last_failure_detail.empty() ? "no_recovery_candidate_succeeded" : last_failure_detail;
         }
         return false;
+    }
+
+    bool validate_uart_link_locked(std::string &detail)
+    {
+        const bool aux_ready = wait_for_uart_aux_ready(kUartAuxTimeoutMs);
+        const bool uart_ok = uart_ready;
+        bool passed = aux_ready && uart_ok;
+        if (passed) {
+            passed = send_uart_self_test_probe_locked(detail);
+        }
+        if (!passed && uart_ok && (stored_state.settings.radio_module == RadioModule::E22_400T22S)) {
+            std::string recovery_detail;
+            if (try_self_test_recover_e22_uart_pins_locked(recovery_detail)) {
+                detail = recovery_detail;
+                return true;
+            }
+            if (!recovery_detail.empty()) {
+                detail += detail.empty() ? recovery_detail : std::string(" ") + recovery_detail;
+            }
+        }
+        return passed;
     }
 
     bool perform_self_test_locked(bool verbose)
     {
         const bool first_run = !self_test_ran;
         if (!radio_module_uses_spi(stored_state.settings.radio_module)) {
-            const bool aux_ready = wait_for_uart_aux_ready(kUartAuxTimeoutMs);
-            const bool uart_ok = uart_ready;
             std::string probe_detail;
-            bool passed = aux_ready && uart_ok;
-            if (passed) {
-                passed = send_uart_self_test_probe_locked(probe_detail);
-                if (!passed) {
-                    std::string swap_detail;
-                    if (try_self_test_swap_uart_pins_locked(swap_detail)) {
-                        passed = true;
-                        probe_detail = swap_detail;
-                    } else if (!swap_detail.empty()) {
-                        probe_detail += probe_detail.empty() ? swap_detail : std::string(" ") + swap_detail;
-                    }
-                }
-            }
+            const bool uart_ok = uart_ready;
+            const bool passed = validate_uart_link_locked(probe_detail);
             std::ostringstream detail;
             detail << (passed ? "PASS" : "FAIL")
                    << " module=" << radio_module_name(stored_state.settings.radio_module)
@@ -2450,6 +3096,31 @@ struct LoRaMeshApp::Impl {
             return false;
         }
 
+        if (!radio_module_uses_spi(stored_state.settings.radio_module)) {
+            lock();
+            std::string uart_detail;
+            const bool uart_valid = validate_uart_link_locked(uart_detail);
+            if (uart_valid) {
+                self_test_ran = true;
+                self_test_ok = true;
+                if (!uart_detail.empty()) {
+                    self_test_summary = std::string("PASS startup ") + uart_detail;
+                }
+            } else {
+                self_test_ran = true;
+                self_test_ok = false;
+                self_test_summary = std::string("FAIL startup ") +
+                                    (uart_detail.empty() ? std::string("transparent UART module not ready") : uart_detail);
+                const std::string error_text = std::string("LoRa init failed: ") + self_test_summary;
+                status_text = error_text;
+                append_line_capped(log_text, error_text);
+            }
+            unlock();
+            if (!uart_valid) {
+                return false;
+            }
+        }
+
         bool send_hello = false;
         lock();
         status_text = "LoRa radio ready on configured mesh channel";
@@ -2745,7 +3416,13 @@ struct LoRaMeshApp::Impl {
         return (irq_status & SX126X_IRQ_TX_DONE) != 0;
     }
 
-    bool send_user_message(const std::string &payload, bool beacon)
+    bool send_user_message(const std::string &conversation_id,
+                           const std::string &peer_id,
+                           const std::string &payload,
+                           bool beacon,
+                           uint64_t pending_token,
+                           const std::string &bubble_text,
+                           const std::string &bubble_meta)
     {
         if (payload.empty()) {
             set_status("Enter a message before sending");
@@ -2791,14 +3468,13 @@ struct LoRaMeshApp::Impl {
         packet.sender_name = stored_state.identity.display_name;
         packet.timestamp_ms = esp_timer_get_time() / 1000;
         packet.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
-        std::string bubble_text = payload;
-        std::string bubble_meta = stored_state.identity.display_name;
-        if (selected_conversation_id == jc4880::lora_mesh::kCommonConversationId) {
+        if (conversation_id == jc4880::lora_mesh::kCommonConversationId) {
             packet.kind = PacketKind::PublicChat;
             packet.target_id = jc4880::lora_mesh::kBroadcastTargetId;
         } else {
-            PeerInfo *peer = find_peer_locked(selected_peer_id);
+            PeerInfo *peer = find_peer_locked(peer_id);
             if ((peer == nullptr) || peer->pair_secret_hex.empty() || peer->public_key_hex.empty()) {
+                settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
                 unlock();
                 set_status("Selected peer is not fully paired yet");
                 return false;
@@ -2814,11 +3490,11 @@ struct LoRaMeshApp::Impl {
                                                         payload,
                                                         packet.payload,
                                                         packet.auth_hex)) {
+                settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
                 unlock();
                 set_status("Private chat encryption failed");
                 return false;
             }
-            bubble_text = std::string("[private] ") + payload;
         }
         if ((packet.kind == PacketKind::PublicChat) && stored_state.settings.public_chat_encryption) {
             packet.encrypted = true;
@@ -2830,6 +3506,7 @@ struct LoRaMeshApp::Impl {
                                                         payload,
                                                         packet.payload,
                                                         packet.auth_hex)) {
+                settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
                 unlock();
                 set_status("Public chat encryption failed");
                 return false;
@@ -2837,7 +3514,8 @@ struct LoRaMeshApp::Impl {
         } else {
             packet.payload = payload;
         }
-        const bool ok = send_packet_locked(packet, &bubble_text, bubble_meta);
+        const bool ok = send_packet_locked(packet, nullptr, bubble_meta);
+        settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, ok);
         save_state_if_needed_locked();
         unlock();
 
@@ -2916,6 +3594,7 @@ struct LoRaMeshApp::Impl {
                                          make_message_meta_locked(packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
                                          false);
                 status_text = "Mesh message received";
+                play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
                 break;
             }
             case PacketKind::PairRequest: {
@@ -2984,6 +3663,7 @@ struct LoRaMeshApp::Impl {
                 if (packet.target_id == stored_state.identity.device_id) {
                     status_text = "Pairing confirmed";
                 }
+                [[fallthrough]];
             case PacketKind::PrivateChat: {
                 if (packet.target_id != stored_state.identity.device_id) {
                     break;
@@ -3011,6 +3691,7 @@ struct LoRaMeshApp::Impl {
                                          make_message_meta_locked(peer->display_name.empty() ? peer->device_id : peer->display_name),
                                          false);
                 status_text = "Private message received";
+                play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
                 break;
             }
             case PacketKind::Hello:
@@ -3180,11 +3861,12 @@ struct LoRaMeshApp::Impl {
         if (chat_status_label != nullptr) {
             lv_label_set_text(chat_status_label, status_copy.c_str());
         }
-        if (back_button != nullptr) {
-            if (view_mode_copy == ViewMode::Targets) {
-                lv_obj_add_flag(back_button, LV_OBJ_FLAG_HIDDEN);
+        if (menu_button != nullptr) {
+            if (view_mode_copy == ViewMode::Chat) {
+                lv_obj_clear_flag(menu_button, LV_OBJ_FLAG_HIDDEN);
             } else {
-                lv_obj_clear_flag(back_button, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(menu_button, LV_OBJ_FLAG_HIDDEN);
+                close_chat_action_overlay();
             }
         }
         if (target_list != nullptr) {
@@ -3329,12 +4011,29 @@ struct LoRaMeshApp::Impl {
                 lv_obj_set_style_text_color(message_label, lv_color_hex(0x111B21), 0);
                 lv_label_set_text(message_label, entry.text.c_str());
 
-                lv_obj_t *meta_label = lv_label_create(bubble);
-                lv_obj_set_width(meta_label, LV_PCT(100));
+                lv_obj_t *meta_row = lv_obj_create(bubble);
+                lv_obj_set_width(meta_row, LV_PCT(100));
+                lv_obj_set_height(meta_row, LV_SIZE_CONTENT);
+                lv_obj_set_style_bg_opa(meta_row, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(meta_row, 0, 0);
+                lv_obj_set_style_pad_all(meta_row, 0, 0);
+                lv_obj_set_style_pad_column(meta_row, 6, 0);
+                lv_obj_set_flex_flow(meta_row, LV_FLEX_FLOW_ROW);
+                lv_obj_set_flex_align(meta_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+                lv_obj_t *meta_label = lv_label_create(meta_row);
+                lv_obj_set_flex_grow(meta_label, 1);
                 lv_obj_set_style_text_font(meta_label, &lv_font_montserrat_12, 0);
                 lv_obj_set_style_text_color(meta_label, lv_color_hex(0x667781), 0);
                 lv_obj_set_style_text_align(meta_label, entry.outgoing ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
                 lv_label_set_text(meta_label, entry.meta.c_str());
+
+                if (entry.outgoing) {
+                    lv_obj_t *status_label = lv_label_create(meta_row);
+                    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
+                    lv_obj_set_style_text_color(status_label, delivery_status_color(entry), 0);
+                    lv_label_set_text(status_label, delivery_status_symbol(entry));
+                }
             }
 
             if (lv_obj_get_child_cnt(message_list) > 0) {
@@ -3511,19 +4210,10 @@ struct LoRaMeshApp::Impl {
     static void on_send_clicked(lv_event_t *event)
     {
         auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
-        if ((impl == nullptr) || (impl->input == nullptr)) {
+        if (impl == nullptr) {
             return;
         }
-
-        const char *text = lv_textarea_get_text(impl->input);
-        if ((text == nullptr) || (text[0] == '\0')) {
-            impl->set_status("Enter a message before sending");
-            return;
-        }
-        impl->set_status("Sending mesh message...");
-        if (!impl->start_send_task(text, false, true)) {
-            impl->refresh_ui();
-        }
+        (void)impl->queue_outgoing_message_from_input();
     }
 
     static void on_input_ready(lv_event_t *event)
@@ -3612,6 +4302,25 @@ struct LoRaMeshApp::Impl {
                 lv_label_set_text(settings_pin_labels[role_index], radio_pin_label(role));
             }
         }
+    }
+
+    void sync_settings_controls_from_state()
+    {
+        jc4880::lora_mesh::MeshSettings settings = {};
+        lock();
+        settings = stored_state.settings;
+        unlock();
+
+        if (settings_module_dropdown != nullptr) {
+            lv_dropdown_set_selected(settings_module_dropdown, dropdown_index_from_radio_module(settings.radio_module));
+        }
+        for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
+            if (settings_pin_dropdowns[role_index] != nullptr) {
+                lv_dropdown_set_selected(settings_pin_dropdowns[role_index],
+                                         gpio_choice_index(pin_value_for_role(settings, static_cast<RadioPinRole>(role_index))));
+            }
+        }
+        refresh_settings_module_ui(false);
     }
 
     static void on_radio_module_changed(lv_event_t *event)
@@ -3786,18 +4495,21 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
         lv_obj_set_style_pad_column(header_row, 8, 0);
 
-        back_button = lv_btn_create(header_row);
-        lv_obj_set_size(back_button, 42, 42);
-        lv_obj_set_style_radius(back_button, 21, 0);
-        lv_obj_add_event_cb(back_button, on_back_clicked, LV_EVENT_CLICKED, this);
-        lv_obj_add_flag(back_button, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(lv_label_create(back_button), LV_SYMBOL_LEFT);
-
         header_title = lv_label_create(header_row);
         lv_obj_set_style_text_font(header_title, &lv_font_montserrat_28, 0);
         lv_label_set_text(header_title, "LoRa");
         lv_obj_set_flex_grow(header_title, 1);
-        lv_obj_set_style_text_align(header_title, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(header_title, LV_TEXT_ALIGN_LEFT, 0);
+
+        menu_button = lv_btn_create(header_row);
+        lv_obj_set_size(menu_button, 42, 42);
+        lv_obj_set_style_radius(menu_button, 21, 0);
+        lv_obj_add_event_cb(menu_button, on_chat_settings_clicked, LV_EVENT_CLICKED, this);
+        lv_obj_add_flag(menu_button, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t *menu_label = lv_label_create(menu_button);
+        lv_obj_set_style_text_font(menu_label, &lv_font_montserrat_18, 0);
+        lv_label_set_text(menu_label, LV_SYMBOL_SETTINGS);
+        lv_obj_center(menu_label);
 
         target_list = lv_obj_create(root);
         lv_obj_set_width(target_list, LV_PCT(100));
@@ -3865,7 +4577,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_size(send_button, 48, 48);
         lv_obj_set_style_radius(send_button, 24, 0);
         lv_obj_set_style_bg_color(send_button, lv_color_hex(0x00A884), 0);
-        lv_obj_add_event_cb(send_button, on_send_clicked, LV_EVENT_CLICKED, this);
+        lv_obj_add_event_cb(send_button, on_send_clicked, LV_EVENT_PRESSED, this);
         lv_obj_t *send_label = lv_label_create(send_button);
         lv_obj_set_style_text_font(send_label, &lv_font_montserrat_22, 0);
         lv_label_set_text(send_label, LV_SYMBOL_RIGHT);
@@ -3897,6 +4609,7 @@ struct LoRaMeshApp::Impl {
         header_title = nullptr;
         back_button = nullptr;
         menu_button = nullptr;
+        chat_action_overlay = nullptr;
         target_list = nullptr;
         chat_panel = nullptr;
         settings_panel = nullptr;
@@ -4240,10 +4953,23 @@ bool LoRaMeshApp::queueDebugUiAction(int action, const std::string &peer_id)
             impl->selected_peer_id.clear();
             impl->show_common_chat_locked();
             impl->trace_event_locked(std::string("Serial debug sending common message: ") + context->peer_id);
-            impl->unlock();
-            (void)impl->start_send_task(context->peer_id, false, false);
-            impl->refresh_ui();
-            return;
+            {
+                const std::string bubble_meta = impl->stored_state.identity.display_name.empty()
+                                                    ? impl->stored_state.identity.device_id
+                                                    : impl->stored_state.identity.display_name;
+                const std::string payload = context->peer_id;
+                const std::string bubble_text = payload;
+                impl->unlock();
+                (void)impl->start_send_task(jc4880::lora_mesh::kCommonConversationId,
+                                            std::string(),
+                                            payload,
+                                            false,
+                                            0,
+                                            bubble_text,
+                                            bubble_meta);
+                impl->refresh_ui();
+                return;
+            }
         }
         impl->unlock();
         impl->refresh_ui();

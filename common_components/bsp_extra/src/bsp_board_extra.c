@@ -44,6 +44,12 @@ static int s_mic_gain_level = 10;
 static bool s_codec_devices_open = false;
 
 typedef struct {
+    uint16_t frequency_hz;
+    uint16_t duration_ms;
+    float amplitude;
+} audio_notification_profile_t;
+
+typedef struct {
     SemaphoreHandle_t mutex;
     uint8_t *mix_buffer;
     size_t mix_buffer_size;
@@ -56,6 +62,7 @@ typedef struct {
     uint32_t notification_remaining_frames;
     float notification_phase;
     float notification_phase_step;
+    float notification_amplitude;
     int applied_output_volume;
 } audio_mix_state_t;
 
@@ -72,6 +79,7 @@ static audio_mix_state_t s_audio_mix_state = {
     .notification_remaining_frames = 0,
     .notification_phase = 0.0f,
     .notification_phase_step = 0.0f,
+    .notification_amplitude = 0.35f,
     .applied_output_volume = -1,
 };
 
@@ -82,9 +90,6 @@ static char audio_file_path[512];
 #define AUDIO_NOTIFICATION_TASK_STACK_SIZE       (4096)
 #define AUDIO_NOTIFICATION_TASK_PRIORITY         (4)
 #define AUDIO_NOTIFICATION_CHUNK_FRAMES         (256)
-#define AUDIO_NOTIFICATION_FREQUENCY_HZ         (1046)
-#define AUDIO_NOTIFICATION_DURATION_MS          (180)
-#define AUDIO_NOTIFICATION_AMPLITUDE            (0.35f)
 #define AUDIO_WRITE_STALL_WARN_MS               (100)
 
 #define DISPLAY_IDLE_TASK_STACK_SIZE            (4096)
@@ -177,6 +182,73 @@ static int audio_clamp_volume(int volume)
         return 100;
     }
     return volume;
+}
+
+static audio_notification_profile_t audio_get_notification_profile(bsp_extra_audio_system_sound_t sound)
+{
+    switch (sound) {
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_BOOT:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 784,
+            .duration_ms = 220,
+            .amplitude = 0.32f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_SENT:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 1320,
+            .duration_ms = 110,
+            .amplitude = 0.30f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 988,
+            .duration_ms = 180,
+            .amplitude = 0.34f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_ALARM_CLOCK:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 880,
+            .duration_ms = 600,
+            .amplitude = 0.35f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_AVAILABLE:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 1175,
+            .duration_ms = 220,
+            .amplitude = 0.30f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_SUCCESS:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 1568,
+            .duration_ms = 260,
+            .amplitude = 0.34f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_SHUTTING_DOWN:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 494,
+            .duration_ms = 320,
+            .amplitude = 0.32f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_REBOOTING:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 659,
+            .duration_ms = 220,
+            .amplitude = 0.32f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_ERROR:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 330,
+            .duration_ms = 420,
+            .amplitude = 0.38f,
+        };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_TAP:
+    default:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 1046,
+            .duration_ms = 180,
+            .amplitude = 0.35f,
+        };
+    }
 }
 
 bool bsp_extra_network_has_ip(void)
@@ -279,14 +351,15 @@ static inline int16_t audio_clip_sample(int32_t sample)
 static inline int16_t audio_generate_notification_sample(uint32_t total_frames,
                                                          uint32_t *remaining_frames,
                                                          float *phase,
-                                                         float phase_step)
+                                                         float phase_step,
+                                                         float amplitude)
 {
     if ((remaining_frames == NULL) || (phase == NULL) || (*remaining_frames == 0) || (total_frames == 0)) {
         return 0;
     }
 
     const float envelope = (float)(*remaining_frames) / (float)total_frames;
-    const float sample = sinf(*phase) * envelope * AUDIO_NOTIFICATION_AMPLITUDE * (float)INT16_MAX;
+    const float sample = sinf(*phase) * envelope * amplitude * (float)INT16_MAX;
 
     *phase += phase_step;
     if (*phase >= (2.0f * (float)M_PI)) {
@@ -316,6 +389,7 @@ static esp_err_t audio_player_write_with_mix(void *audio_buffer, size_t len, siz
     uint32_t notification_remaining_frames = 0;
     float notification_phase = 0.0f;
     float notification_phase_step = 0.0f;
+    float notification_amplitude = 0.35f;
     uint32_t bits_per_sample = CODEC_DEFAULT_BIT_WIDTH;
     i2s_slot_mode_t channel_mode = CODEC_DEFAULT_CHANNEL;
     int media_volume = _vloume_intensity;
@@ -328,6 +402,7 @@ static esp_err_t audio_player_write_with_mix(void *audio_buffer, size_t len, siz
         notification_remaining_frames = s_audio_mix_state.notification_remaining_frames;
         notification_phase = s_audio_mix_state.notification_phase;
         notification_phase_step = s_audio_mix_state.notification_phase_step;
+        notification_amplitude = s_audio_mix_state.notification_amplitude;
         bits_per_sample = s_audio_mix_state.bits_per_sample;
         channel_mode = s_audio_mix_state.channel_mode;
         media_volume = _vloume_intensity;
@@ -355,7 +430,8 @@ static esp_err_t audio_player_write_with_mix(void *audio_buffer, size_t len, siz
         const int16_t notification_sample = audio_generate_notification_sample(notification_total_frames,
                                                                                &notification_remaining_frames,
                                                                                &notification_phase,
-                                                                               notification_phase_step);
+                                                                               notification_phase_step,
+                                                                               notification_amplitude);
         for (size_t channel_index = 0; channel_index < channel_count; ++channel_index) {
             const size_t sample_index = frame_index * channel_count + channel_index;
             int32_t mixed_sample = 0;
@@ -404,6 +480,7 @@ static void audio_notification_output_task(void *arg)
         uint32_t remaining_frames = 0;
         float phase = 0.0f;
         float phase_step = 0.0f;
+        float amplitude = 0.35f;
         int system_volume = CODEC_DEFAULT_VOLUME;
 
         if (!audio_mix_lock(pdMS_TO_TICKS(1000))) {
@@ -421,6 +498,7 @@ static void audio_notification_output_task(void *arg)
         remaining_frames = s_audio_mix_state.notification_remaining_frames;
         phase = s_audio_mix_state.notification_phase;
         phase_step = s_audio_mix_state.notification_phase_step;
+        amplitude = s_audio_mix_state.notification_amplitude;
         system_volume = s_system_volume_intensity;
         audio_apply_output_volume_locked();
         audio_mix_unlock();
@@ -429,7 +507,11 @@ static void audio_notification_output_task(void *arg)
                                            ? AUDIO_NOTIFICATION_CHUNK_FRAMES
                                            : remaining_frames;
         for (size_t frame_index = 0; frame_index < frames_to_write; ++frame_index) {
-            const int16_t sample = audio_generate_notification_sample(total_frames, &remaining_frames, &phase, phase_step);
+            const int16_t sample = audio_generate_notification_sample(total_frames,
+                                                                      &remaining_frames,
+                                                                      &phase,
+                                                                      phase_step,
+                                                                      amplitude);
             buffer[(frame_index * 2) + 0] = sample;
             buffer[(frame_index * 2) + 1] = sample;
         }
@@ -793,8 +875,9 @@ int bsp_extra_audio_mic_gain_get_level(void)
     return s_mic_gain_level;
 }
 
-esp_err_t bsp_extra_audio_play_system_notification(void)
+esp_err_t bsp_extra_audio_play_system_sound(bsp_extra_audio_system_sound_t sound)
 {
+    const audio_notification_profile_t profile = audio_get_notification_profile(sound);
     const bool media_playing = (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING);
     if (!media_playing) {
         ESP_RETURN_ON_ERROR(bsp_extra_codec_init(), TAG, "speaker codec init failed");
@@ -808,11 +891,12 @@ esp_err_t bsp_extra_audio_play_system_notification(void)
         return ESP_ERR_TIMEOUT;
     }
 
-    s_audio_mix_state.notification_total_frames = (CODEC_DEFAULT_SAMPLE_RATE * AUDIO_NOTIFICATION_DURATION_MS) / 1000U;
+    s_audio_mix_state.notification_total_frames = (CODEC_DEFAULT_SAMPLE_RATE * (uint32_t)profile.duration_ms) / 1000U;
     s_audio_mix_state.notification_remaining_frames = s_audio_mix_state.notification_total_frames;
     s_audio_mix_state.notification_phase = 0.0f;
-    s_audio_mix_state.notification_phase_step = (2.0f * (float)M_PI * (float)AUDIO_NOTIFICATION_FREQUENCY_HZ) /
+    s_audio_mix_state.notification_phase_step = (2.0f * (float)M_PI * (float)profile.frequency_hz) /
                                                (float)CODEC_DEFAULT_SAMPLE_RATE;
+    s_audio_mix_state.notification_amplitude = profile.amplitude;
     s_audio_mix_state.notification_active = s_audio_mix_state.notification_remaining_frames > 0;
 
     const bool start_direct_task = !media_playing &&
@@ -1061,6 +1145,13 @@ void bsp_extra_display_idle_set_base_brightness(int brightness_percent)
         (s_display_idle_state.base_brightness_percent <= DISPLAY_ADAPTIVE_TRIGGER_BRIGHTNESS)) {
         s_display_idle_state.applied_brightness_percent = -1;
     }
+
+    return;
+}
+
+esp_err_t bsp_extra_audio_play_system_notification(void)
+{
+    return bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_TAP);
 }
 
 void bsp_extra_display_idle_configure(bool adaptive_brightness_enabled, bool screensaver_enabled,

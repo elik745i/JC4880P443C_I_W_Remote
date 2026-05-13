@@ -6187,6 +6187,7 @@ bool AppSettings::factoryResetPreferences(void)
     updateUiByNvsParam();
     setFirmwareStatus(FACTORY_RESET_STATUS_RESTARTING, !ok);
 
+    (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_REBOOTING);
     esp_restart();
     return ok;
 }
@@ -8061,6 +8062,7 @@ void AppSettings::applyAsyncOtaAvailabilityResult(void *arg)
         return;
     }
 
+    (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_AVAILABLE);
     lv_obj_set_width(app->_otaUpdateAvailableMsgbox, LV_MIN(LV_HOR_RES - 24, 460));
     lv_obj_center(app->_otaUpdateAvailableMsgbox);
     lv_obj_add_event_cb(app->_otaUpdateAvailableMsgbox, onOtaUpdateAvailablePopupEventCallback, LV_EVENT_VALUE_CHANGED, app);
@@ -8220,6 +8222,7 @@ void AppSettings::applyAsyncFirmwareUiUpdate(void *arg)
         context->app->refreshFirmwareUi();
         context->app->setFirmwareStatus(context->status, true);
         context->app->setFirmwareProgress(context->percent, context->status, true);
+        (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_ERROR);
         delete context;
         return;
     }
@@ -8793,6 +8796,7 @@ void AppSettings::firmwareUpdateTask(void *arg)
              entry.version.c_str());
     app->persistPendingReleaseNotes(entry);
     app->queueFirmwareUiUpdate("Firmware update complete. Rebooting...", 100, false, false);
+    (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_REBOOTING);
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
 }

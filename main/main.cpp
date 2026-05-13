@@ -993,6 +993,7 @@ static void on_display_rotation_preview_popup_event(lv_event_t *event)
             printf("[display] failed to revert preview; restarting anyway\r\n");
         }
         fflush(stdout);
+        (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_REBOOTING);
         esp_restart();
     }
 }
@@ -1037,6 +1038,7 @@ static void show_display_rotation_preview_popup(void *context)
                  static_cast<long>(pending_degrees),
                  static_cast<long>(previous_degrees));
         (void)revert_display_orientation_preview();
+        (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_REBOOTING);
         esp_restart();
     }
 
@@ -2366,6 +2368,45 @@ static bool get_running_ota_image_state(esp_ota_img_states_t &state)
     return esp_ota_get_state_partition(running, &state) == ESP_OK;
 }
 
+static int compare_version_strings_relaxed(const std::string &lhs, const std::string &rhs)
+{
+    auto parse_values = [](const std::string &input) {
+        std::vector<int> values;
+        int current_value = -1;
+
+        for (char ch : input) {
+            if (std::isdigit(static_cast<unsigned char>(ch))) {
+                if (current_value < 0) {
+                    current_value = 0;
+                }
+                current_value = (current_value * 10) + (ch - '0');
+            } else if (current_value >= 0) {
+                values.push_back(current_value);
+                current_value = -1;
+            }
+        }
+
+        if (current_value >= 0) {
+            values.push_back(current_value);
+        }
+
+        return values;
+    };
+
+    const std::vector<int> lhs_values = parse_values(lhs);
+    const std::vector<int> rhs_values = parse_values(rhs);
+    const size_t count = std::max(lhs_values.size(), rhs_values.size());
+    for (size_t index = 0; index < count; ++index) {
+        const int lhs_value = (index < lhs_values.size()) ? lhs_values[index] : 0;
+        const int rhs_value = (index < rhs_values.size()) ? rhs_values[index] : 0;
+        if (lhs_value != rhs_value) {
+            return (lhs_value < rhs_value) ? -1 : 1;
+        }
+    }
+
+    return 0;
+}
+
 static bool pending_release_notes_match_running_version(void)
 {
     std::string pending_version;
@@ -2378,7 +2419,7 @@ static bool pending_release_notes_match_running_version(void)
         return false;
     }
 
-    return pending_version == app_desc->version;
+    return compare_version_strings_relaxed(pending_version, app_desc->version) == 0;
 }
 
 static void close_release_notes_popup(lv_event_t *event)
@@ -2429,6 +2470,7 @@ static void show_pending_release_notes_popup(void *context)
         return;
     }
 
+    (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_SUCCESS);
     lv_obj_set_size(msgbox, lv_pct(100), lv_pct(100));
     lv_obj_set_style_radius(msgbox, 0, 0);
     lv_obj_center(msgbox);
@@ -2565,6 +2607,7 @@ static void show_reset_notice_popup(void *context)
         return;
     }
 
+    (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_ERROR);
     lv_obj_set_width(msgbox, 420);
     lv_obj_center(msgbox);
     lv_obj_add_event_cb(msgbox, close_reset_notice_popup, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -2747,6 +2790,8 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG,"setup done");
     bsp_display_unlock();
     init_serial_command_console();
+
+    (void)bsp_extra_audio_play_system_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_BOOT);
 
 #if CONFIG_JC4880_FEATURE_SECURITY
     device_security::promptBootUnlockIfNeeded();

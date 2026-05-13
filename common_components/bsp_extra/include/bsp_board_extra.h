@@ -29,6 +29,19 @@ extern "C" {
 #define BSP_LCD_BACKLIGHT_BRIGHTNESS_MIN    (0)
 #define LCD_LEDC_CH                         (CONFIG_BSP_DISPLAY_BRIGHTNESS_LEDC_CH)
 
+typedef enum {
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_TAP = 0,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_BOOT,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_SENT,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_ALARM_CLOCK,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_AVAILABLE,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_SUCCESS,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_SHUTTING_DOWN,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_REBOOTING,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_ERROR,
+} bsp_extra_audio_system_sound_t;
+
 /**************************************************************************************************
  * BSP Extra interface
  * Mainly provided some I2S Codec interfaces.
@@ -119,6 +132,17 @@ int bsp_extra_audio_mic_gain_get_level(void);
  *
  * If media playback is active, the notification is mixed into the PCM stream.
  * Otherwise the tone is written directly to the codec path.
+ *
+ * @return
+ *    - ESP_OK: Success
+ *    - Others: Fail
+ */
+esp_err_t bsp_extra_audio_play_system_sound(bsp_extra_audio_system_sound_t sound);
+
+/**
+ * @brief Play the default short system tap/notification tone.
+ *
+ * This is kept as a compatibility wrapper around the generic system sound API.
  *
  * @return
  *    - ESP_OK: Success

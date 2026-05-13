@@ -18,6 +18,24 @@ std::string read_string(const cJSON *object, const char *key)
     return cJSON_IsString(item) && (item->valuestring != nullptr) ? std::string(item->valuestring) : std::string();
 }
 
+std::string read_string_alias(const cJSON *object, const char *short_key, const char *legacy_key)
+{
+    std::string value = read_string(object, short_key);
+    if (value.empty() && (legacy_key != nullptr)) {
+        value = read_string(object, legacy_key);
+    }
+    return value;
+}
+
+const cJSON *get_item_alias(const cJSON *object, const char *short_key, const char *legacy_key)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, short_key);
+    if ((item == nullptr) && (legacy_key != nullptr)) {
+        item = cJSON_GetObjectItemCaseSensitive(object, legacy_key);
+    }
+    return item;
+}
+
 } // namespace
 
 bool encode_mesh_packet(const MeshPacket &packet, std::string &encoded)
@@ -27,19 +45,19 @@ bool encode_mesh_packet(const MeshPacket &packet, std::string &encoded)
         return false;
     }
 
-    add_string(root, "kind", packet_kind_name(packet.kind));
-    add_string(root, "sender_id", packet.sender_id);
-    add_string(root, "sender_name", packet.sender_name);
-    add_string(root, "target_id", packet.target_id);
-    add_string(root, "msg_id", packet.msg_id);
-    cJSON_AddNumberToObject(root, "timestamp", static_cast<double>(packet.timestamp_ms));
-    cJSON_AddNumberToObject(root, "ttl", packet.ttl);
-    cJSON_AddBoolToObject(root, "encrypted", packet.encrypted);
-    add_string(root, "payload", packet.payload);
-    add_string(root, "nonce", packet.nonce_hex);
-    add_string(root, "auth", packet.auth_hex);
-    add_string(root, "public_key", packet.public_key_hex);
-    add_string(root, "pair_secret", packet.pair_secret_hex);
+    add_string(root, "k", packet_kind_name(packet.kind));
+    add_string(root, "sid", packet.sender_id);
+    add_string(root, "sn", packet.sender_name);
+    add_string(root, "tid", packet.target_id);
+    add_string(root, "m", packet.msg_id);
+    cJSON_AddNumberToObject(root, "ts", static_cast<double>(packet.timestamp_ms));
+    cJSON_AddNumberToObject(root, "t", packet.ttl);
+    cJSON_AddBoolToObject(root, "e", packet.encrypted);
+    add_string(root, "p", packet.payload);
+    add_string(root, "n", packet.nonce_hex);
+    add_string(root, "a", packet.auth_hex);
+    add_string(root, "pk", packet.public_key_hex);
+    add_string(root, "ps", packet.pair_secret_hex);
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -59,7 +77,7 @@ bool decode_mesh_packet(const std::string &encoded, MeshPacket &packet)
         return false;
     }
 
-    const std::string kind = read_string(root, "kind");
+    const std::string kind = read_string_alias(root, "k", "kind");
     if (kind == "public_chat") {
         packet.kind = PacketKind::PublicChat;
     } else if (kind == "private_chat") {
@@ -83,27 +101,27 @@ bool decode_mesh_packet(const std::string &encoded, MeshPacket &packet)
         return false;
     }
 
-    packet.sender_id = read_string(root, "sender_id");
-    packet.sender_name = read_string(root, "sender_name");
-    packet.target_id = read_string(root, "target_id");
-    packet.msg_id = read_string(root, "msg_id");
-    packet.payload = read_string(root, "payload");
-    packet.nonce_hex = read_string(root, "nonce");
-    packet.auth_hex = read_string(root, "auth");
-    packet.public_key_hex = read_string(root, "public_key");
-    packet.pair_secret_hex = read_string(root, "pair_secret");
+    packet.sender_id = read_string_alias(root, "sid", "sender_id");
+    packet.sender_name = read_string_alias(root, "sn", "sender_name");
+    packet.target_id = read_string_alias(root, "tid", "target_id");
+    packet.msg_id = read_string_alias(root, "m", "msg_id");
+    packet.payload = read_string_alias(root, "p", "payload");
+    packet.nonce_hex = read_string_alias(root, "n", "nonce");
+    packet.auth_hex = read_string_alias(root, "a", "auth");
+    packet.public_key_hex = read_string_alias(root, "pk", "public_key");
+    packet.pair_secret_hex = read_string_alias(root, "ps", "pair_secret");
 
-    const cJSON *timestamp = cJSON_GetObjectItemCaseSensitive(root, "timestamp");
+    const cJSON *timestamp = get_item_alias(root, "ts", "timestamp");
     if (cJSON_IsNumber(timestamp)) {
         packet.timestamp_ms = static_cast<int64_t>(timestamp->valuedouble);
     }
 
-    const cJSON *ttl = cJSON_GetObjectItemCaseSensitive(root, "ttl");
+    const cJSON *ttl = get_item_alias(root, "t", "ttl");
     if (cJSON_IsNumber(ttl)) {
         packet.ttl = static_cast<uint8_t>(ttl->valueint);
     }
 
-    const cJSON *encrypted = cJSON_GetObjectItemCaseSensitive(root, "encrypted");
+    const cJSON *encrypted = get_item_alias(root, "e", "encrypted");
     packet.encrypted = cJSON_IsTrue(encrypted);
 
     cJSON_Delete(root);

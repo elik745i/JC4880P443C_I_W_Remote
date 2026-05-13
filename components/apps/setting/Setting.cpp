@@ -212,6 +212,284 @@ static constexpr int64_t kValidUnixTimeFloor = 1700000000LL;
 static constexpr int32_t kOtaRescheduleHourOptions[] = {0, 1, 2, 4, 8, 12, 24};
 static constexpr int32_t kOtaRescheduleMinuteOptions[] = {0, 15, 30, 45};
 static constexpr int32_t kOtaRescheduleMinuteFutureOnlyOptions[] = {15, 30, 45};
+static constexpr uint32_t kPeripheralSummaryBufferSize = 768;
+
+static void *allocate_psram_preferred_buffer(size_t size);
+
+namespace {
+
+static LoRaMeshApp *find_installed_lora_mesh_app(ESP_Brookesia_Core *core);
+
+struct PeripheralSummaryRuntime {
+    SemaphoreHandle_t mutex = nullptr;
+    char *text = nullptr;
+    bool imuDetected = false;
+    bool loraDetected = false;
+};
+
+PeripheralSummaryRuntime s_peripheralSummaryRuntime;
+
+bool init_peripheral_summary_runtime()
+{
+    if ((s_peripheralSummaryRuntime.mutex != nullptr) && (s_peripheralSummaryRuntime.text != nullptr)) {
+        return true;
+    }
+
+    if (s_peripheralSummaryRuntime.mutex == nullptr) {
+        s_peripheralSummaryRuntime.mutex = xSemaphoreCreateMutex();
+        if (s_peripheralSummaryRuntime.mutex == nullptr) {
+            ESP_LOGW(TAG, "Failed to create peripheral summary mutex");
+            return false;
+        }
+    }
+
+    if (s_peripheralSummaryRuntime.text == nullptr) {
+        s_peripheralSummaryRuntime.text = static_cast<char *>(
+            allocate_psram_preferred_buffer(kPeripheralSummaryBufferSize));
+        if (s_peripheralSummaryRuntime.text == nullptr) {
+            ESP_LOGW(TAG, "Failed to allocate peripheral summary buffer");
+            vSemaphoreDelete(s_peripheralSummaryRuntime.mutex);
+            s_peripheralSummaryRuntime.mutex = nullptr;
+            return false;
+        }
+        snprintf(s_peripheralSummaryRuntime.text,
+                 kPeripheralSummaryBufferSize,
+                 "%s",
+                 "Scanning every 2 sec...");
+    }
+
+    return true;
+}
+
+void shutdown_peripheral_summary_runtime()
+{
+    if (s_peripheralSummaryRuntime.text != nullptr) {
+        free(s_peripheralSummaryRuntime.text);
+        s_peripheralSummaryRuntime.text = nullptr;
+    }
+    if (s_peripheralSummaryRuntime.mutex != nullptr) {
+        vSemaphoreDelete(s_peripheralSummaryRuntime.mutex);
+        s_peripheralSummaryRuntime.mutex = nullptr;
+    }
+}
+
+void store_peripheral_summary_text(const std::string &text)
+{
+    if (!init_peripheral_summary_runtime()) {
+        return;
+    }
+    if (xSemaphoreTake(s_peripheralSummaryRuntime.mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return;
+    }
+
+    const char *source = text.empty() ? "No accessory modules detected." : text.c_str();
+    snprintf(s_peripheralSummaryRuntime.text, kPeripheralSummaryBufferSize, "%s", source);
+    xSemaphoreGive(s_peripheralSummaryRuntime.mutex);
+}
+
+void store_peripheral_detection_state(bool imu_detected, bool lora_detected)
+{
+    if (!init_peripheral_summary_runtime()) {
+        return;
+    }
+    if (xSemaphoreTake(s_peripheralSummaryRuntime.mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return;
+    }
+
+    s_peripheralSummaryRuntime.imuDetected = imu_detected;
+    s_peripheralSummaryRuntime.loraDetected = lora_detected;
+    xSemaphoreGive(s_peripheralSummaryRuntime.mutex);
+}
+
+std::string load_peripheral_summary_text()
+{
+    if (!init_peripheral_summary_runtime()) {
+        return "Peripheral summary unavailable.";
+    }
+    if (xSemaphoreTake(s_peripheralSummaryRuntime.mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return "Peripheral summary busy...";
+    }
+
+    const std::string copy = s_peripheralSummaryRuntime.text != nullptr ? s_peripheralSummaryRuntime.text
+                                                                        : "Peripheral summary unavailable.";
+    xSemaphoreGive(s_peripheralSummaryRuntime.mutex);
+    return copy;
+}
+
+void load_peripheral_detection_state(bool &imu_detected, bool &lora_detected)
+{
+    imu_detected = false;
+    lora_detected = false;
+    if (!init_peripheral_summary_runtime()) {
+        return;
+    }
+    if (xSemaphoreTake(s_peripheralSummaryRuntime.mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
+        return;
+    }
+
+    imu_detected = s_peripheralSummaryRuntime.imuDetected;
+    lora_detected = s_peripheralSummaryRuntime.loraDetected;
+    xSemaphoreGive(s_peripheralSummaryRuntime.mutex);
+}
+
+const char *lora_module_label(jc4880::lora_mesh::RadioModule module)
+{
+    switch (module) {
+        case jc4880::lora_mesh::RadioModule::E22_400M22S:
+            return "Ebyte E22-400M22S";
+        case jc4880::lora_mesh::RadioModule::E22_400T22S:
+            return "Ebyte E22-400T22S";
+        case jc4880::lora_mesh::RadioModule::E220_400T22D:
+            return "Ebyte E220-400T22D";
+        default:
+            return "Unknown radio";
+    }
+}
+
+void append_gpio_label(std::ostringstream &stream, const char *label, int8_t gpio, bool &first)
+{
+    if (gpio < 0) {
+        return;
+    }
+    if (!first) {
+        stream << ", ";
+    }
+    stream << label << " GPIO" << static_cast<int>(gpio);
+    first = false;
+}
+
+std::string describe_imu_attachment()
+{
+#if !APP_SETTINGS_FEATURE_IMU
+    return std::string();
+#else
+    jc4880::imu::ImuConfig config = {};
+    auto &imu_service = jc4880::imu::ImuService::instance();
+    if (!imu_service.loadConfig(config)) {
+        return "IMU: configuration unavailable";
+    }
+    if (config.busType != jc4880::imu::ImuBusType::I2C) {
+        std::ostringstream stream;
+        stream << "IMU: bus " << jc4880::imu::imu_bus_type_label(config.busType)
+               << " configured, live auto-detect currently covers I2C modules only";
+        return stream.str();
+    }
+
+    jc4880::imu::ImuModel detected_model = jc4880::imu::ImuModel::IMU_NONE;
+    uint8_t detected_address = 0;
+    std::string status;
+    if (!imu_service.detectI2cModel(config, detected_model, detected_address, status)) {
+        std::ostringstream stream;
+        stream << "IMU: not detected on SDA GPIO" << static_cast<int>(config.i2cSda)
+               << ", SCL GPIO" << static_cast<int>(config.i2cScl);
+        if (!status.empty()) {
+            stream << " (" << status << ")";
+        }
+        return stream.str();
+    }
+
+    std::ostringstream stream;
+    stream << "IMU: " << jc4880::imu::imu_model_label(detected_model)
+           << " - SDA GPIO" << static_cast<int>(config.i2cSda)
+           << ", SCL GPIO" << static_cast<int>(config.i2cScl);
+    if (config.intPin >= 0) {
+        stream << ", INT GPIO" << static_cast<int>(config.intPin);
+    }
+    if (config.drdyPin >= 0) {
+        stream << ", DRDY GPIO" << static_cast<int>(config.drdyPin);
+    }
+    stream << ", I2C 0x" << std::hex << std::uppercase << static_cast<int>(detected_address) << std::dec;
+    return stream.str();
+#endif
+}
+
+std::string describe_lora_profile(AppSettings *app, bool &detected)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    (void)app;
+    detected = false;
+    return std::string();
+#else
+    detected = false;
+    jc4880::lora_mesh::StoredState state = {};
+    if (!jc4880::lora_mesh::load_stored_state(state)) {
+        return "Radio: settings unavailable";
+    }
+
+    LoRaMeshApp *lora_app = (app != nullptr) ? find_installed_lora_mesh_app(app->getCore()) : nullptr;
+    if (lora_app != nullptr) {
+        bool self_test_running = false;
+        bool self_test_ran = false;
+        const std::string self_test_status = lora_app->getSelfTestStatus(&self_test_running, &self_test_ran);
+        if ((self_test_running || self_test_ran) && !self_test_status.empty() && (self_test_status != "Mode: idle")) {
+            detected = self_test_status.find("PASS") != std::string::npos;
+            return std::string("Radio self-test: ") + self_test_status;
+        }
+    }
+
+    detected = state.settings.radio_enabled;
+
+    std::ostringstream stream;
+    stream << "Radio profile: " << lora_module_label(state.settings.radio_module)
+           << (state.settings.radio_enabled ? " enabled" : " saved") << " - ";
+    bool first = true;
+    switch (state.settings.radio_module) {
+        case jc4880::lora_mesh::RadioModule::E22_400M22S:
+            append_gpio_label(stream, "NSS", state.settings.spi_nss_gpio, first);
+            append_gpio_label(stream, "SCK", state.settings.spi_sck_gpio, first);
+            append_gpio_label(stream, "MOSI", state.settings.spi_mosi_gpio, first);
+            append_gpio_label(stream, "MISO", state.settings.spi_miso_gpio, first);
+            append_gpio_label(stream, "BUSY", state.settings.busy_gpio, first);
+            append_gpio_label(stream, "DIO1", state.settings.dio1_gpio, first);
+            append_gpio_label(stream, "NRST", state.settings.nrst_gpio, first);
+            append_gpio_label(stream, "TXEN", state.settings.txen_gpio, first);
+            append_gpio_label(stream, "RXEN", state.settings.rxen_gpio, first);
+            break;
+        case jc4880::lora_mesh::RadioModule::E22_400T22S:
+        case jc4880::lora_mesh::RadioModule::E220_400T22D:
+            append_gpio_label(stream, "TX", state.settings.uart_tx_gpio, first);
+            append_gpio_label(stream, "RX", state.settings.uart_rx_gpio, first);
+            append_gpio_label(stream, "M0", state.settings.mode0_gpio, first);
+            append_gpio_label(stream, "M1", state.settings.mode1_gpio, first);
+            append_gpio_label(stream, "AUX", state.settings.aux_gpio, first);
+            break;
+    }
+    if (first) {
+        stream << "no GPIO map saved";
+    }
+    return stream.str();
+#endif
+}
+
+void update_peripheral_summary_snapshot(AppSettings *app)
+{
+    std::ostringstream stream;
+    const std::string imu_line = describe_imu_attachment();
+    const bool imu_detected = !imu_line.empty() && (imu_line.find("IMU: ") == 0) &&
+                              (imu_line.find("IMU: not detected") != 0) &&
+                              (imu_line.find("IMU: configuration unavailable") != 0) &&
+                              (imu_line.find("IMU: bus ") != 0);
+    bool lora_detected = false;
+    const std::string lora_line = describe_lora_profile(app, lora_detected);
+
+    if (!imu_line.empty()) {
+        stream << imu_line;
+    }
+    if (!lora_line.empty()) {
+        if (!stream.str().empty()) {
+            stream << '\n';
+        }
+        stream << lora_line;
+    }
+    if (stream.str().empty()) {
+        stream << "No accessory modules detected.";
+    }
+    stream << "\nRefresh: background scan every 2 sec";
+    store_peripheral_summary_text(stream.str());
+    store_peripheral_detection_state(imu_detected, lora_detected);
+}
+
+} // namespace
 
 static string formatDelayMinutes(int32_t total_minutes)
 {
@@ -1961,6 +2239,7 @@ AppSettings::AppSettings():
     _savedWifiListExpanded(false),
     _suppressDisconnectRecovery(false),
     _aboutWifiValueLabel(nullptr),
+    _aboutPeripheralValueLabel(nullptr),
     _displayAdaptiveBrightnessSwitch(nullptr),
     _displayNeopixelPowerSwitch(nullptr),
     _displayNeopixelGpioDropdown(nullptr),
@@ -2108,6 +2387,8 @@ AppSettings::AppSettings():
     _imuInfoLabel(nullptr),
     _loraEnabledSwitch(nullptr),
     _loraModuleDropdown(nullptr),
+    _loraKeyboard(nullptr),
+    _loraKeyboardTarget(nullptr),
     _loraDisplayNameTextArea(nullptr),
     _loraCommonChatTitleTextArea(nullptr),
     _loraFrequencyTextArea(nullptr),
@@ -2230,6 +2511,7 @@ AppSettings::AppSettings():
 AppSettings::~AppSettings()
 {
     stopLoRaSelfCheckStatusPolling();
+    shutdown_peripheral_summary_runtime();
     if (_hardwareFastHistoryScratch != nullptr) {
         free(_hardwareFastHistoryScratch);
         _hardwareFastHistoryScratch = nullptr;
@@ -2329,6 +2611,7 @@ bool AppSettings::run(void)
     }
     refreshRadioStatusBar();
     updateUiByNvsParam();
+    refreshPeripheralMenuVisibility();
 
     xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_UI_INIT_DONE);
 
@@ -2476,6 +2759,8 @@ bool AppSettings::init(void)
 #endif
 
     refreshRadioStatusBar();
+
+    init_peripheral_summary_runtime();
 
 #if CONFIG_JC4880_FEATURE_OTA
     _nextOtaAvailabilityCheckUs = static_cast<uint64_t>(esp_timer_get_time()) + kOtaAvailabilityInitialDelayUs;
@@ -3594,6 +3879,32 @@ void AppSettings::extraUiInit(void)
     lv_obj_set_style_text_color(_aboutWifiValueLabel, lv_color_hex(0x334155), 0);
     lv_obj_align_to(_aboutWifiValueLabel, wifiInfoTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
 
+    lv_obj_t *peripheralInfoCard = lv_obj_create(ui_PanelScreenSettingAbout);
+    lv_obj_set_width(peripheralInfoCard, lv_pct(100));
+    lv_obj_set_height(peripheralInfoCard, LV_SIZE_CONTENT);
+    lv_obj_clear_flag(peripheralInfoCard, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(peripheralInfoCard, 0, 0);
+    lv_obj_set_style_border_width(peripheralInfoCard, 0, 0);
+    lv_obj_set_style_bg_opa(peripheralInfoCard, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_left(peripheralInfoCard, 16, 0);
+    lv_obj_set_style_pad_right(peripheralInfoCard, 16, 0);
+    lv_obj_set_style_pad_top(peripheralInfoCard, 14, 0);
+    lv_obj_set_style_pad_bottom(peripheralInfoCard, 14, 0);
+
+    lv_obj_t *peripheralInfoTitle = lv_label_create(peripheralInfoCard);
+    lv_label_set_text(peripheralInfoTitle, "Peripheral Summary");
+    lv_obj_set_style_text_font(peripheralInfoTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(peripheralInfoTitle, lv_color_hex(0x0F172A), 0);
+    lv_obj_align(peripheralInfoTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    _aboutPeripheralValueLabel = lv_label_create(peripheralInfoCard);
+    lv_obj_set_width(_aboutPeripheralValueLabel, lv_pct(100));
+    lv_label_set_long_mode(_aboutPeripheralValueLabel, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(_aboutPeripheralValueLabel, "Scanning every 2 sec...");
+    lv_obj_set_style_text_font(_aboutPeripheralValueLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(_aboutPeripheralValueLabel, lv_color_hex(0x334155), 0);
+    lv_obj_align_to(_aboutPeripheralValueLabel, peripheralInfoTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 10);
+
     // Record the screen index and install the screen loaded event callback
     _screen_list[UI_ABOUT_SETTING_INDEX] = ui_ScreenSettingAbout;
     lv_obj_add_event_cb(ui_ScreenSettingAbout, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
@@ -3609,6 +3920,7 @@ void AppSettings::extraUiInit(void)
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAbout6, char_ui_version);
     #if CONFIG_JC4880_FEATURE_ABOUT_DEVICE
     refreshAboutWifiUi();
+    refreshAboutPeripheralUi();
     #endif
     #if APP_SETTINGS_FEATURE_WIFI
     refreshSavedWifiUi();
@@ -5274,7 +5586,7 @@ void AppSettings::ensureLoRaScreen(void)
         return row;
     };
 
-    auto createTextRow = [](lv_obj_t *parent, const char *row_title, const char *placeholder, lv_obj_t **textarea_out) {
+    auto createTextRow = [this](lv_obj_t *parent, const char *row_title, const char *placeholder, lv_obj_t **textarea_out) {
         lv_obj_t *row = create_settings_toggle_row(parent, row_title);
         lv_obj_t *textarea = lv_textarea_create(row);
         lv_obj_set_size(textarea, 220, 46);
@@ -5287,6 +5599,7 @@ void AppSettings::ensureLoRaScreen(void)
         lv_obj_set_style_bg_color(textarea, lv_color_hex(0xF8FAFC), 0);
         lv_obj_set_style_pad_left(textarea, 12, 0);
         lv_obj_set_style_pad_right(textarea, 12, 0);
+        lv_obj_add_event_cb(textarea, onLoRaTextAreaEventCallback, LV_EVENT_ALL, this);
         if (textarea_out != nullptr) {
             *textarea_out = textarea;
         }
@@ -5366,6 +5679,13 @@ void AppSettings::ensureLoRaScreen(void)
     lv_label_set_long_mode(_loraInfoLabel, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(_loraInfoLabel, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(_loraInfoLabel, lv_color_hex(0x475569), 0);
+
+    _loraKeyboard = lv_keyboard_create(_loraScreen);
+    lv_obj_set_size(_loraKeyboard, lv_pct(100), lv_pct(34));
+    lv_obj_align(_loraKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(_loraKeyboard, LV_OBJ_FLAG_HIDDEN);
+    jc4880_keyboard_install_case_behavior(_loraKeyboard);
+    lv_obj_add_event_cb(_loraKeyboard, onLoRaKeyboardEventCallback, LV_EVENT_ALL, this);
 
     _screen_list[UI_LORA_SETTING_INDEX] = _loraScreen;
     lv_obj_add_event_cb(_loraScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
@@ -6252,6 +6572,47 @@ void AppSettings::refreshDisplayIdleUi(void)
     #if CONFIG_JC4880_FEATURE_TIME_SYNC
     refreshTimezoneUi();
     #endif
+}
+
+void AppSettings::refreshAboutPeripheralUi(void)
+{
+    if (!isUiActive() || !lv_obj_ready(_aboutPeripheralValueLabel)) {
+        return;
+    }
+
+    const std::string summary = load_peripheral_summary_text();
+    lv_label_set_text(_aboutPeripheralValueLabel, summary.c_str());
+}
+
+void AppSettings::refreshPeripheralMenuVisibility(void)
+{
+    if (!isUiActive()) {
+        return;
+    }
+
+    bool imu_detected = false;
+    bool lora_detected = false;
+    load_peripheral_detection_state(imu_detected, lora_detected);
+
+#if APP_SETTINGS_FEATURE_IMU
+    if (lv_obj_ready(_imuMenuItem)) {
+        if (imu_detected) {
+            lv_obj_clear_flag(_imuMenuItem, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(_imuMenuItem, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+#endif
+
+#if CONFIG_JC4880_APP_LORA_MESH
+    if (lv_obj_ready(_loraMenuItem)) {
+        if (lora_detected) {
+            lv_obj_clear_flag(_loraMenuItem, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(_loraMenuItem, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+#endif
 }
 
 void AppSettings::refreshDisplayAutorotateUi(void)
@@ -8946,6 +9307,7 @@ void AppSettings::updateUiByNvsParam(void)
     refreshBluetoothUi();
 #endif
     refreshRadioStatusBar();
+    refreshPeripheralMenuVisibility();
 
 #if CONFIG_JC4880_FEATURE_ZIGBEE
     refreshZigbeeUi();
@@ -8980,6 +9342,34 @@ void AppSettings::setZigbeeKeyboardVisible(bool visible)
     } else {
         lv_keyboard_set_textarea(_zigbeeKeyboard, nullptr);
         lv_obj_add_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void AppSettings::setLoRaKeyboardVisible(bool visible, lv_obj_t *textarea)
+{
+    if (!isUiActive() || !lv_obj_ready(_loraKeyboard)) {
+        return;
+    }
+
+    if (visible) {
+        if (lv_obj_ready(textarea)) {
+            _loraKeyboardTarget = textarea;
+        }
+
+        if (!lv_obj_ready(_loraKeyboardTarget)) {
+            return;
+        }
+
+        lv_keyboard_set_textarea(_loraKeyboard, _loraKeyboardTarget);
+        lv_keyboard_set_mode(_loraKeyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
+        lv_obj_clear_flag(_loraKeyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(_loraKeyboard);
+        lv_obj_align(_loraKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    } else {
+        lv_keyboard_set_textarea(_loraKeyboard, nullptr);
+        lv_keyboard_set_mode(_loraKeyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
+        lv_obj_add_flag(_loraKeyboard, LV_OBJ_FLAG_HIDDEN);
+        _loraKeyboardTarget = nullptr;
     }
 }
 
@@ -9506,8 +9896,16 @@ void AppSettings::euiRefresTask(void *arg)
 #endif
         app->maybeRunOtaAvailabilityCheck();
         if (app->isUiActive()) {
+            const bool should_refresh_peripherals = (app->_screen_index == UI_MAIN_SETTING_INDEX) ||
+                                                   (app->_screen_index == UI_ABOUT_SETTING_INDEX);
+            if (should_refresh_peripherals) {
+                update_peripheral_summary_snapshot(app);
+            }
             bsp_display_lock(0);
             app->refreshRadioStatusBar();
+            if (should_refresh_peripherals) {
+                app->refreshPeripheralMenuVisibility();
+            }
 #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
             if (app->_screen_index == UI_BLUETOOTH_SETTING_INDEX) {
                 app->refreshBluetoothUi();
@@ -9525,6 +9923,9 @@ void AppSettings::euiRefresTask(void *arg)
                 if (lv_scr_act() == app->_joypadLocalScreen) {
                     refresh_period_ms = JOYPAD_BLE_LIVE_REFRESH_MS;
                 }
+            } else if (app->_screen_index == UI_ABOUT_SETTING_INDEX) {
+                app->refreshAboutWifiUi();
+                app->refreshAboutPeripheralUi();
             }
             bsp_display_unlock();
         }
@@ -9599,6 +10000,12 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     }
     #endif
 
+    #if CONFIG_JC4880_APP_LORA_MESH
+    if (app->_screen_index != UI_LORA_SETTING_INDEX) {
+        app->setLoRaKeyboardVisible(false);
+    }
+    #endif
+
     #if CONFIG_JC4880_FEATURE_ZIGBEE
     if (app->_screen_index != UI_ZIGBEE_SETTING_INDEX) {
         app->setZigbeeKeyboardVisible(false);
@@ -9631,6 +10038,11 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     }
     #endif
 
+    if (app->_screen_index == UI_MAIN_SETTING_INDEX) {
+        update_peripheral_summary_snapshot(app);
+        app->refreshPeripheralMenuVisibility();
+    }
+
     if (app->_screen_index == UI_JOYPAD_SETTING_INDEX) {
         app->refreshJoypadUi();
     }
@@ -9662,7 +10074,10 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
 
     #if CONFIG_JC4880_FEATURE_ABOUT_DEVICE
     if (app->_screen_index == UI_ABOUT_SETTING_INDEX) {
+        update_peripheral_summary_snapshot(app);
+        app->refreshPeripheralMenuVisibility();
         app->refreshAboutWifiUi();
+        app->refreshAboutPeripheralUi();
     }
     #endif
 
@@ -9992,6 +10407,7 @@ void AppSettings::onLoRaSaveClickedEventCallback(lv_event_t *e)
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
     ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
     app->persistLoRaConfigFromUi();
+    app->setLoRaKeyboardVisible(false);
 end:
     return;
 }
@@ -10597,6 +11013,43 @@ void AppSettings::onZigbeePermitJoinChangedEventCallback(lv_event_t *e)
         app->_nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN] = kZigbeePermitJoinOptionsSec[selected];
         app->setNvsParam(NVS_KEY_ZIGBEE_PERMIT_JOIN, kZigbeePermitJoinOptionsSec[selected]);
         app->refreshZigbeeUi();
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onLoRaTextAreaEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    const lv_event_code_t code = lv_event_get_code(e);
+
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    if ((code == LV_EVENT_FOCUSED) || (code == LV_EVENT_CLICKED)) {
+        app->setLoRaKeyboardVisible(true, lv_event_get_target(e));
+    } else if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
+        app->setLoRaKeyboardVisible(false);
+    }
+
+end:
+    return;
+}
+
+void AppSettings::onLoRaKeyboardEventCallback(lv_event_t *e)
+{
+    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
+    const lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *target = nullptr;
+
+    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+
+    target = app->_loraKeyboardTarget;
+    if ((code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
+        app->setLoRaKeyboardVisible(false);
+        if ((target != nullptr) && lv_obj_ready(target)) {
+            lv_obj_clear_state(target, LV_STATE_FOCUSED);
+        }
     }
 
 end:

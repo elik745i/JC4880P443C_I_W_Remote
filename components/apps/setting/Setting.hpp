@@ -155,6 +155,8 @@ private:
     void deinitWifiListButton(void);
     void refreshSavedWifiUi(void);
     void refreshAboutWifiUi(void);
+    void refreshAboutPeripheralUi(void);
+    void refreshPeripheralMenuVisibility(void);
     void refreshDisplayIdleUi(void);
     void refreshDisplayAutorotateUi(void);
     void applyNeopixelConfig(void);
@@ -180,6 +182,7 @@ private:
     void setWifiKeyboardVisible(bool visible);
     void setWifiApKeyboardVisible(bool visible, lv_obj_t *textarea = nullptr);
     void setBluetoothKeyboardVisible(bool visible);
+    void setLoRaKeyboardVisible(bool visible, lv_obj_t *textarea = nullptr);
     void setZigbeeKeyboardVisible(bool visible);
     void refreshWifiApUi(void);
     bool persistWifiApSettingsFromUi(bool apply_runtime);
@@ -333,6 +336,8 @@ private:
     static void onImuZeroClickedEventCallback(lv_event_t *e);
     static void onImuLiveTimerCallback(lv_timer_t *timer);
     static void onLoRaConfigChangedEventCallback(lv_event_t *e);
+    static void onLoRaTextAreaEventCallback(lv_event_t *e);
+    static void onLoRaKeyboardEventCallback(lv_event_t *e);
     static void onLoRaSaveClickedEventCallback(lv_event_t *e);
     static void onLoRaSelfCheckClickedEventCallback(lv_event_t *e);
     static void onLoRaSelfCheckStatusTimerCallback(lv_timer_t *timer);
@@ -419,6 +424,7 @@ private:
     std::string _savedWifiUiStateKey;
     std::string _wifiScanUiStateKey;
     lv_obj_t *_aboutWifiValueLabel;
+    lv_obj_t *_aboutPeripheralValueLabel;
     lv_obj_t *_displayAdaptiveBrightnessSwitch;
     lv_obj_t *_displayNeopixelPowerSwitch;
     lv_obj_t *_displayNeopixelGpioDropdown;
@@ -566,6 +572,8 @@ private:
     lv_obj_t *_imuInfoLabel;
     lv_obj_t *_loraEnabledSwitch;
     lv_obj_t *_loraModuleDropdown;
+    lv_obj_t *_loraKeyboard;
+    lv_obj_t *_loraKeyboardTarget;
     lv_obj_t *_loraDisplayNameTextArea;
     lv_obj_t *_loraCommonChatTitleTextArea;
     lv_obj_t *_loraFrequencyTextArea;

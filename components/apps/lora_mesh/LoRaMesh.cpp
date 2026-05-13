@@ -1103,10 +1103,12 @@ struct LoRaMeshApp::Impl {
                 return role <= RadioPinRole::RxEnable;
             case RadioModule::E22_400T22S:
                 return (role == RadioPinRole::UartTx) || (role == RadioPinRole::UartRx) || (role == RadioPinRole::Mode0) ||
-                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux);
+                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux) || (role == RadioPinRole::TxEnable) ||
+                       (role == RadioPinRole::RxEnable);
             case RadioModule::E220_400T22D:
                 return (role == RadioPinRole::UartTx) || (role == RadioPinRole::UartRx) || (role == RadioPinRole::Mode0) ||
-                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux);
+                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux) || (role == RadioPinRole::TxEnable) ||
+                       (role == RadioPinRole::RxEnable);
             default:
                 return false;
         }
@@ -1132,6 +1134,8 @@ struct LoRaMeshApp::Impl {
                 settings.mode0_gpio = 51;
                 settings.mode1_gpio = 29;
                 settings.aux_gpio = 33;
+                settings.txen_gpio = jc4880::lora_mesh::pin_profile::kTxEnableGpio;
+                settings.rxen_gpio = jc4880::lora_mesh::pin_profile::kRxEnableGpio;
                 settings.nrst_gpio = -1;
                 break;
             case RadioModule::E220_400T22D:
@@ -1140,6 +1144,8 @@ struct LoRaMeshApp::Impl {
                 settings.mode0_gpio = 29;
                 settings.mode1_gpio = 30;
                 settings.aux_gpio = 50;
+                settings.txen_gpio = jc4880::lora_mesh::pin_profile::kTxEnableGpio;
+                settings.rxen_gpio = jc4880::lora_mesh::pin_profile::kRxEnableGpio;
                 break;
         }
     }
@@ -1633,11 +1639,12 @@ struct LoRaMeshApp::Impl {
     void set_uart_module_mode(bool normal_mode) const
     {
         if (has_pin(RadioPinRole::Mode0)) {
-            gpio_set_level(gpio_for_role(RadioPinRole::Mode0), normal_mode ? 0 : 1);
+            gpio_set_level(gpio_for_role(RadioPinRole::Mode0), normal_mode ? 0 : 0);
         }
         if (has_pin(RadioPinRole::Mode1)) {
             gpio_set_level(gpio_for_role(RadioPinRole::Mode1), normal_mode ? 0 : 1);
         }
+        esp_rom_delay_us(2000);
     }
 
     uint8_t e22_channel_for_frequency(uint32_t frequency_hz) const
@@ -2939,6 +2946,12 @@ struct LoRaMeshApp::Impl {
         uint64_t output_mask = 0;
         output_mask |= (1ULL << gpio_for_role(RadioPinRole::Mode0));
         output_mask |= (1ULL << gpio_for_role(RadioPinRole::Mode1));
+        if (has_pin(RadioPinRole::TxEnable)) {
+            output_mask |= (1ULL << gpio_for_role(RadioPinRole::TxEnable));
+        }
+        if (has_pin(RadioPinRole::RxEnable)) {
+            output_mask |= (1ULL << gpio_for_role(RadioPinRole::RxEnable));
+        }
         if (has_pin(RadioPinRole::Reset)) {
             output_mask |= (1ULL << gpio_for_role(RadioPinRole::Reset));
         }
@@ -3213,24 +3226,34 @@ struct LoRaMeshApp::Impl {
     void process_uart_rx_bytes_locked()
     {
         while (uart_rx_bytes.size() >= 18) {
-            auto magic = uart_rx_bytes.begin();
-            while ((magic != uart_rx_bytes.end()) &&
-                   ((*magic != kMeshMagic0) || ((magic + 1) == uart_rx_bytes.end()) || (*(magic + 1) != kMeshMagic1))) {
-                ++magic;
-            }
-            if ((magic == uart_rx_bytes.end()) || ((magic + 1) == uart_rx_bytes.end())) {
+            auto magic = std::find(uart_rx_bytes.begin(), uart_rx_bytes.end(), kMeshMagic0);
+            if (magic == uart_rx_bytes.end()) {
                 uart_rx_bytes.clear();
                 return;
             }
             if (magic != uart_rx_bytes.begin()) {
                 uart_rx_bytes.erase(uart_rx_bytes.begin(), magic);
             }
+
+            if (uart_rx_bytes.size() < 2) {
+                return;
+            }
+
+            if (uart_rx_bytes[1] != kMeshMagic1) {
+                uart_rx_bytes.erase(uart_rx_bytes.begin());
+                continue;
+            }
+
             if (uart_rx_bytes.size() < 18) {
                 return;
             }
 
             const uint16_t payload_length = read_u16_be(uart_rx_bytes.data() + 16);
             const size_t frame_length = 18U + payload_length;
+            append_line_capped(log_text,
+                               std::string("UART frame candidate buffer=") + std::to_string(uart_rx_bytes.size()) +
+                                   " payload_len=" + std::to_string(payload_length) +
+                                   " frame_len=" + std::to_string(frame_length));
             if ((payload_length == 0U) || (payload_length > kMaxPayloadBytes)) {
                 uart_rx_bytes.erase(uart_rx_bytes.begin());
                 ++drop_count;
@@ -3267,6 +3290,9 @@ struct LoRaMeshApp::Impl {
             last_tx_diagnostic = std::string("frame_len=") + std::to_string(bytes.size()) + " max_frame=255";
             return false;
         }
+        append_line_capped(log_text,
+                           std::string("TX frame bytes=") + std::to_string(bytes.size()) +
+                               " header=" + format_hex_bytes(bytes.data(), std::min<size_t>(18, bytes.size())));
 
         if (!radio_module_uses_spi(stored_state.settings.radio_module)) {
             set_uart_module_mode(true);
@@ -3737,6 +3763,9 @@ struct LoRaMeshApp::Impl {
                 const int read = uart_read_bytes(kLoRaUartPort, buffer, sizeof(buffer), pdMS_TO_TICKS(kRxPollMs));
                 if (read > 0) {
                     lock();
+                    append_line_capped(log_text,
+                                       std::string("UART RX bytes=") + std::to_string(read) +
+                                           " data=" + format_hex_bytes(buffer, std::min<int>(read, 16)));
                     uart_rx_bytes.insert(uart_rx_bytes.end(), buffer, buffer + read);
                     process_uart_rx_bytes_locked();
                     unlock();

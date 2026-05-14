@@ -74,6 +74,10 @@ constexpr uint32_t kUartAuxTimeoutMs = 250;
 constexpr uint32_t kUartFrameGapMs = 20;
 constexpr uint32_t kUartCommandTimeoutMs = 500;
 constexpr uint32_t kUartTxCompleteTimeoutMs = 1500;
+// Maximum time we wait for AUX to drop LOW after sending bytes to the module.
+// E22-400T22S drops AUX within a couple of milliseconds of receiving UART data.
+// We give it generous margin to cope with FreeRTOS scheduling jitter.
+constexpr uint32_t kUartAuxBusyTimeoutMs = 150;
 
 constexpr uint8_t kE22CommandWritePersistent = 0xC0;
 constexpr uint8_t kE22CommandReadRegisters = 0xC1;
@@ -441,6 +445,7 @@ struct LoRaMeshApp::Impl {
     TaskHandle_t startup_task = nullptr;
     TaskHandle_t send_task = nullptr;
     TaskHandle_t self_test_task = nullptr;
+    TaskHandle_t settings_apply_task = nullptr;
     SemaphoreHandle_t mutex = nullptr;
     lv_timer_t *ui_timer = nullptr;
     lv_obj_t *root = nullptr;
@@ -500,6 +505,9 @@ struct LoRaMeshApp::Impl {
     bool startup_started = false;
     bool startup_complete = false;
     bool startup_ok = false;
+    bool ui_paused = false;
+    bool settings_apply_pending = false;
+    bool settings_apply_run_self_test = false;
     bool pending_self_test_on_next_open = false;
     uint64_t next_pending_message_token = 1;
     int suspended_neopixel_gpio = -1;
@@ -1230,6 +1238,30 @@ struct LoRaMeshApp::Impl {
         }
     }
 
+    bool start_settings_apply_task_locked(bool run_self_test)
+    {
+        settings_apply_pending = true;
+        settings_apply_run_self_test = settings_apply_run_self_test || run_self_test;
+        if (settings_apply_task != nullptr) {
+            return true;
+        }
+
+        trace_event_locked(run_self_test ? "Settings apply task requested for self-test"
+                                         : "Settings apply task requested");
+        if (!create_task_prefer_psram(&Impl::settings_apply_task_entry,
+                                      "lora_mesh_apply",
+                                      6144,
+                                      this,
+                                      kRxTaskPriority,
+                                      &settings_apply_task)) {
+            settings_apply_pending = false;
+            settings_apply_run_self_test = false;
+            trace_event_locked("Failed to start settings apply task");
+            return false;
+        }
+        return true;
+    }
+
     static void startup_task_entry(void *context)
     {
         auto *impl = static_cast<Impl *>(context);
@@ -1250,6 +1282,78 @@ struct LoRaMeshApp::Impl {
         vTaskDelete(nullptr);
     }
 
+    static void settings_apply_task_entry(void *context)
+    {
+        auto *impl = static_cast<Impl *>(context);
+        if (impl != nullptr) {
+            while (true) {
+                impl->lock();
+                const bool run_self_test = impl->settings_apply_run_self_test;
+                impl->settings_apply_pending = false;
+                impl->settings_apply_run_self_test = false;
+                impl->trace_event_locked(run_self_test ? "Settings apply task running self-test refresh"
+                                                       : "Settings apply task refreshing runtime");
+                impl->request_self_test_stop_locked(run_self_test ? "settings self-test requested" : "settings changed");
+                impl->unlock();
+
+                impl->rx_task_stop = true;
+                while (impl->rx_task != nullptr) {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+                while (impl->startup_task != nullptr) {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+                while (impl->self_test_task != nullptr) {
+                    vTaskDelay(pdMS_TO_TICKS(20));
+                }
+
+                impl->lock();
+                impl->deinit_radio_locked();
+                impl->self_test_ran = false;
+                impl->self_test_ok = false;
+                impl->self_test_running = false;
+                impl->self_test_stop_requested = false;
+                impl->self_test_task = nullptr;
+                impl->self_test_summary = "Mode: idle";
+                impl->startup_started = false;
+                impl->startup_complete = false;
+                impl->startup_ok = false;
+                const bool runtime_active = (impl->root != nullptr) && (impl->ui_timer != nullptr) && !impl->ui_paused;
+                bool start_self_test = false;
+                if (run_self_test) {
+                    impl->status_text = "LoRa self-test: starting";
+                    impl->trace_event_locked("Settings requested background self-test");
+                    start_self_test = true;
+                } else if (runtime_active && impl->stored_state.settings.radio_enabled) {
+                    impl->start_startup_task();
+                } else if (!impl->stored_state.settings.radio_enabled) {
+                    impl->status_text = "Device disabled. Please enable radio in Device Settings.";
+                }
+                const bool request_refresh = runtime_active;
+                const bool repeat = impl->settings_apply_pending;
+                if (!repeat) {
+                    impl->settings_apply_task = nullptr;
+                }
+                impl->unlock();
+
+                if (start_self_test) {
+                    impl->start_self_test_task_from_worker();
+                }
+
+                if (request_refresh) {
+                    bsp_display_lock(0);
+                    (void)lv_async_call(&Impl::refresh_ui_async, impl);
+                    bsp_display_unlock();
+                }
+
+                if (!repeat) {
+                    break;
+                }
+            }
+        }
+        vTaskDelete(nullptr);
+    }
+
     void start_self_test_task()
     {
         if (self_test_task != nullptr) {
@@ -1265,6 +1369,36 @@ struct LoRaMeshApp::Impl {
             append_line_capped(log_text, "Failed to start LoRa self-test task");
             ESP_LOGW(kTag, "Failed to start LoRa self-test task");
         }
+    }
+
+    void start_self_test_task_from_worker()
+    {
+        TaskHandle_t task = nullptr;
+
+        lock();
+        if (self_test_task != nullptr) {
+            unlock();
+            return;
+        }
+        self_test_stop_requested = false;
+        self_test_running = true;
+        set_self_test_mode_locked("starting");
+        trace_event_locked("Self-test task start requested");
+        unlock();
+
+        if (!create_task_prefer_psram(&Impl::self_test_task_entry, "lora_mesh_test", 6144, this, kRxTaskPriority, &task)) {
+            lock();
+            self_test_running = false;
+            self_test_summary = "Mode: failed to start";
+            append_line_capped(log_text, "Failed to start LoRa self-test task");
+            ESP_LOGW(kTag, "Failed to start LoRa self-test task");
+            unlock();
+            return;
+        }
+
+        lock();
+        self_test_task = task;
+        unlock();
     }
 
     static void finish_send_ui(void *context)
@@ -1636,13 +1770,33 @@ struct LoRaMeshApp::Impl {
         return true;
     }
 
+    // Returns true when AUX is observed LOW (busy) within timeout. This proves the
+    // E22 actually received UART bytes / is processing — a positive ack of the link
+    // direction. When the AUX pin is not wired the function returns true so callers
+    // can still operate, but the link-quality discriminator collapses.
+    bool wait_for_uart_aux_busy(uint32_t timeout_ms) const
+    {
+        if (!has_pin(RadioPinRole::Aux)) {
+            return true;
+        }
+        const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
+        while (gpio_get_level(gpio_for_role(RadioPinRole::Aux)) != 0) {
+            if (esp_timer_get_time() >= deadline) {
+                return false;
+            }
+            esp_rom_delay_us(200);
+        }
+        return true;
+    }
+
     void set_uart_module_mode(bool normal_mode) const
     {
+        const int mode_level = normal_mode ? 0 : 1;
         if (has_pin(RadioPinRole::Mode0)) {
-            gpio_set_level(gpio_for_role(RadioPinRole::Mode0), normal_mode ? 0 : 0);
+            gpio_set_level(gpio_for_role(RadioPinRole::Mode0), mode_level);
         }
         if (has_pin(RadioPinRole::Mode1)) {
-            gpio_set_level(gpio_for_role(RadioPinRole::Mode1), normal_mode ? 0 : 1);
+            gpio_set_level(gpio_for_role(RadioPinRole::Mode1), mode_level);
         }
         esp_rom_delay_us(2000);
     }
@@ -1738,12 +1892,14 @@ struct LoRaMeshApp::Impl {
                             kTag,
                             "e22 config response timeout");
 
-        std::array<uint8_t, 12> expected_write_response = write_command;
-        expected_write_response[0] = kE22CommandReadRegisters;
-        if (write_response != expected_write_response) {
+        const std::array<uint8_t, 12> write_echo_response = write_command;
+        std::array<uint8_t, 12> read_style_write_response = write_command;
+        read_style_write_response[0] = kE22CommandReadRegisters;
+        if ((write_response != write_echo_response) && (write_response != read_style_write_response)) {
             ESP_LOGW(kTag,
-                     "E22 config write response differed expected=[%s] actual=[%s]",
-                     format_hex_bytes(expected_write_response.data(), expected_write_response.size()).c_str(),
+                     "E22 config write response differed expected=[%s] or [%s] actual=[%s]",
+                     format_hex_bytes(write_echo_response.data(), write_echo_response.size()).c_str(),
+                     format_hex_bytes(read_style_write_response.data(), read_style_write_response.size()).c_str(),
                      format_hex_bytes(write_response.data(), write_response.size()).c_str());
         }
 
@@ -1767,10 +1923,10 @@ struct LoRaMeshApp::Impl {
                 ESP_LOGW(kTag,
                          "E22 config readback header differed actual=[%s]",
                          format_hex_bytes(read_response.data(), read_response.size()).c_str());
-            } else if (read_response != expected_write_response) {
+            } else if (read_response != read_style_write_response) {
                 ESP_LOGW(kTag,
                          "E22 config readback differed desired=[%s] actual=[%s]",
-                         format_hex_bytes(expected_write_response.data(), expected_write_response.size()).c_str(),
+                         format_hex_bytes(read_style_write_response.data(), read_style_write_response.size()).c_str(),
                          format_hex_bytes(read_response.data(), read_response.size()).c_str());
             }
         } else {
@@ -1785,6 +1941,103 @@ struct LoRaMeshApp::Impl {
                  kE22Reg1Default,
                  kE22OptionTransparentDefault);
         return ESP_OK;
+    }
+
+    bool probe_e22_config_link_locked(std::string &detail)
+    {
+        if (stored_state.settings.radio_module != RadioModule::E22_400T22S) {
+            return true;
+        }
+
+        const uint8_t channel = e22_channel_for_frequency(stored_state.settings.frequency_hz);
+        const std::array<uint8_t, 12> write_command = {
+            kE22CommandWritePersistent,
+            kE22RegisterStart,
+            kE22RegisterCount,
+            0x00,
+            0x00,
+            0x00,
+            kE22Reg0Default,
+            kE22Reg1Default,
+            channel,
+            kE22OptionTransparentDefault,
+            0x00,
+            0x00,
+        };
+
+        set_uart_module_mode(false);
+        if (!wait_for_uart_aux_ready(kUartCommandTimeoutMs)) {
+            detail = "config_aux_timeout";
+            set_uart_module_mode(true);
+            return false;
+        }
+
+        uart_flush_input(kLoRaUartPort);
+        const int written = uart_write_bytes(kLoRaUartPort,
+                                             reinterpret_cast<const char *>(write_command.data()),
+                                             write_command.size());
+        if (written != static_cast<int>(write_command.size())) {
+            detail = std::string("config_write_short written=") + std::to_string(written) +
+                     " expected=" + std::to_string(write_command.size());
+            set_uart_module_mode(true);
+            return false;
+        }
+        if (uart_wait_tx_done(kLoRaUartPort, pdMS_TO_TICKS(kUartCommandTimeoutMs)) != ESP_OK) {
+            detail = "config_tx_wait_failed";
+            set_uart_module_mode(true);
+            return false;
+        }
+        // Positive link test: the module must echo back at least one byte within
+        // a tight window. If nothing arrives the link is broken in either direction
+        // (TX not reaching module, or RX not coming back from module). The full
+        // response is validated below with uart_read_exact.
+        bool rx_started = false;
+        const int64_t rx_deadline_us =
+            esp_timer_get_time() + static_cast<int64_t>(kUartCommandTimeoutMs) * 1000;
+        size_t buffered = 0;
+        while (esp_timer_get_time() < rx_deadline_us) {
+            if (uart_get_buffered_data_len(kLoRaUartPort, &buffered) == ESP_OK && buffered > 0) {
+                rx_started = true;
+                break;
+            }
+            esp_rom_delay_us(500);
+        }
+        if (!rx_started) {
+            detail = std::string("config_no_response timeout_ms=") +
+                     std::to_string(kUartCommandTimeoutMs);
+            set_uart_module_mode(true);
+            return false;
+        }
+        if (!wait_for_uart_aux_ready(kUartCommandTimeoutMs)) {
+            detail = "config_aux_timeout_after_write";
+            set_uart_module_mode(true);
+            return false;
+        }
+
+        std::array<uint8_t, 12> response = {};
+        const esp_err_t read_err = uart_read_exact(response.data(), response.size(), kUartCommandTimeoutMs);
+
+        set_uart_module_mode(true);
+        const bool normal_mode_ready = wait_for_uart_aux_ready(kUartCommandTimeoutMs);
+        uart_flush_input(kLoRaUartPort);
+
+        if (read_err != ESP_OK) {
+            detail = std::string("config_response_") + esp_err_to_name(read_err);
+            return false;
+        }
+        std::array<uint8_t, 12> read_style_response = write_command;
+        read_style_response[0] = kE22CommandReadRegisters;
+        if ((response != write_command) && (response != read_style_response)) {
+            detail = std::string("config_response_mismatch actual=") +
+                     format_hex_bytes(response.data(), response.size());
+            return false;
+        }
+        if (!normal_mode_ready) {
+            detail = "normal_mode_aux_timeout";
+            return false;
+        }
+
+        return true;
     }
 
     esp_err_t spi_transfer(const uint8_t *tx_data, uint8_t *rx_data, size_t length)
@@ -2317,53 +2570,6 @@ struct LoRaMeshApp::Impl {
         return false;
     }
 
-    static std::array<int8_t, 5> e22_uart_pin_profile(const jc4880::lora_mesh::MeshSettings &settings)
-    {
-        return {
-            settings.uart_tx_gpio,
-            settings.uart_rx_gpio,
-            settings.mode0_gpio,
-            settings.mode1_gpio,
-            settings.aux_gpio,
-        };
-    }
-
-    static void apply_e22_uart_pin_profile(jc4880::lora_mesh::MeshSettings &settings, const std::array<int8_t, 5> &profile)
-    {
-        settings.uart_tx_gpio = profile[0];
-        settings.uart_rx_gpio = profile[1];
-        settings.mode0_gpio = profile[2];
-        settings.mode1_gpio = profile[3];
-        settings.aux_gpio = profile[4];
-    }
-
-    static std::string describe_e22_uart_pin_profile(const std::array<int8_t, 5> &profile)
-    {
-        std::ostringstream detail;
-        detail << "tx=" << static_cast<int>(profile[0])
-               << " rx=" << static_cast<int>(profile[1])
-               << " m0=" << static_cast<int>(profile[2])
-               << " m1=" << static_cast<int>(profile[3])
-               << " aux=" << static_cast<int>(profile[4]);
-        return detail.str();
-    }
-
-    static void add_unique_e22_uart_pin_candidates(std::vector<std::array<int8_t, 5>> &candidates,
-                                                   const std::array<int8_t, 5> &seed_profile)
-    {
-        std::array<int8_t, 5> permutation = seed_profile;
-        std::sort(permutation.begin(), permutation.end());
-        do {
-            if (permutation[0] == permutation[1]) {
-                continue;
-            }
-
-            if (std::find(candidates.begin(), candidates.end(), permutation) == candidates.end()) {
-                candidates.push_back(permutation);
-            }
-        } while (std::next_permutation(permutation.begin(), permutation.end()));
-    }
-
     static void sync_settings_ui_async(void *context)
     {
         auto *impl = static_cast<Impl *>(context);
@@ -2373,91 +2579,16 @@ struct LoRaMeshApp::Impl {
         }
     }
 
-    bool try_self_test_recover_e22_uart_pins_locked(std::string &detail)
-    {
-        if (stored_state.settings.radio_module != RadioModule::E22_400T22S) {
-            return false;
-        }
-
-        const jc4880::lora_mesh::MeshSettings original_settings = stored_state.settings;
-        const std::array<int8_t, 5> original_profile = e22_uart_pin_profile(original_settings);
-
-        jc4880::lora_mesh::MeshSettings defaults = original_settings;
-        apply_module_defaults(defaults);
-        jc4880::lora_mesh::MeshSettings legacy = defaults;
-        legacy.uart_tx_gpio = 31;
-        legacy.uart_rx_gpio = 33;
-        legacy.mode0_gpio = 29;
-        legacy.mode1_gpio = 30;
-        legacy.aux_gpio = 50;
-
-        std::vector<std::array<int8_t, 5>> candidates;
-        add_unique_e22_uart_pin_candidates(candidates, original_profile);
-        add_unique_e22_uart_pin_candidates(candidates, e22_uart_pin_profile(defaults));
-        add_unique_e22_uart_pin_candidates(candidates, e22_uart_pin_profile(legacy));
-
-        std::string last_failure_detail;
-        for (const auto &candidate : candidates) {
-            deinit_radio_locked();
-            stored_state.settings = original_settings;
-            apply_e22_uart_pin_profile(stored_state.settings, candidate);
-
-            std::string candidate_detail;
-            const esp_err_t init_err = init_radio_locked();
-            if ((init_err == ESP_OK) && send_uart_self_test_probe_locked(candidate_detail)) {
-                const bool mapping_changed = candidate != original_profile;
-                if (mapping_changed) {
-                    state_dirty = true;
-                    trace_event_locked(std::string("Self-test auto-corrected E22 UART/control pin map ") +
-                                       describe_e22_uart_pin_profile(candidate));
-                    save_state_if_needed_locked();
-                } else {
-                    trace_event_locked("Self-test reconfigured E22 module and verified UART link");
-                }
-                detail = std::string(mapping_changed ? "recovered_by_pin_reorder " : "reconfigured_module ") +
-                         describe_e22_uart_pin_profile(candidate);
-                (void)lv_async_call(&Impl::sync_settings_ui_async, this);
-                return true;
-            }
-
-            if (!candidate_detail.empty()) {
-                last_failure_detail = std::string("candidate ") + describe_e22_uart_pin_profile(candidate) +
-                                      " " + candidate_detail;
-            } else {
-                last_failure_detail = std::string("candidate ") + describe_e22_uart_pin_profile(candidate) +
-                                      " init_err=" + esp_err_to_name(init_err);
-            }
-        }
-
-        deinit_radio_locked();
-        stored_state.settings = original_settings;
-        const esp_err_t restore_err = init_radio_locked();
-        if (restore_err != ESP_OK) {
-            detail = (last_failure_detail.empty() ? std::string("no_recovery_candidate_succeeded") : last_failure_detail) +
-                     " restore_err=" + esp_err_to_name(restore_err);
-        } else {
-            detail = last_failure_detail.empty() ? "no_recovery_candidate_succeeded" : last_failure_detail;
-        }
-        return false;
-    }
-
     bool validate_uart_link_locked(std::string &detail)
     {
         const bool aux_ready = wait_for_uart_aux_ready(kUartAuxTimeoutMs);
         const bool uart_ok = uart_ready;
         bool passed = aux_ready && uart_ok;
         if (passed) {
-            passed = send_uart_self_test_probe_locked(detail);
+            passed = probe_e22_config_link_locked(detail);
         }
-        if (!passed && uart_ok && (stored_state.settings.radio_module == RadioModule::E22_400T22S)) {
-            std::string recovery_detail;
-            if (try_self_test_recover_e22_uart_pins_locked(recovery_detail)) {
-                detail = recovery_detail;
-                return true;
-            }
-            if (!recovery_detail.empty()) {
-                detail += detail.empty() ? recovery_detail : std::string(" ") + recovery_detail;
-            }
+        if (passed) {
+            passed = send_uart_self_test_probe_locked(detail);
         }
         return passed;
     }
@@ -3016,38 +3147,6 @@ struct LoRaMeshApp::Impl {
         };
 
         esp_err_t uart_sync_err = try_uart_pin_pair(configured_tx_gpio, configured_rx_gpio);
-        if ((uart_sync_err != ESP_OK) &&
-            (stored_state.settings.radio_module == RadioModule::E22_400T22S) &&
-            (configured_tx_gpio != configured_rx_gpio)) {
-            ESP_LOGW(kTag,
-                     "E22 config sync failed on configured UART pair TX=%d RX=%d err=%s; retrying swapped pair",
-                     configured_tx_gpio,
-                     configured_rx_gpio,
-                     esp_err_to_name(uart_sync_err));
-            const esp_err_t swapped_err = try_uart_pin_pair(configured_rx_gpio, configured_tx_gpio);
-            if (swapped_err == ESP_OK) {
-                stored_state.settings.uart_tx_gpio = configured_rx_gpio;
-                stored_state.settings.uart_rx_gpio = configured_tx_gpio;
-                state_dirty = true;
-                trace_event("Auto-corrected E22 UART pin map by swapping TX/RX");
-                uart_sync_err = ESP_OK;
-            } else {
-                ESP_LOGW(kTag,
-                         "E22 swapped UART pair TX=%d RX=%d also failed err=%s",
-                         configured_rx_gpio,
-                         configured_tx_gpio,
-                         esp_err_to_name(swapped_err));
-            }
-        }
-        if ((uart_sync_err == ESP_ERR_TIMEOUT) &&
-            (stored_state.settings.radio_module == RadioModule::E22_400T22S)) {
-            ESP_LOGW(kTag,
-                     "E22 config sync unavailable on UART; continuing with existing pin map TX=%d RX=%d",
-                     stored_state.settings.uart_tx_gpio,
-                     stored_state.settings.uart_rx_gpio);
-            trace_event("E22 config sync unavailable; using existing UART settings");
-            uart_sync_err = ESP_OK;
-        }
         ESP_RETURN_ON_ERROR(uart_sync_err, kTag, "e22 config sync failed");
         set_uart_module_mode(true);
         ESP_RETURN_ON_FALSE(wait_for_uart_aux_ready(kUartCommandTimeoutMs), ESP_ERR_TIMEOUT, kTag, "uart normal mode wait failed");
@@ -3300,12 +3399,24 @@ struct LoRaMeshApp::Impl {
                 last_tx_diagnostic = std::string("uart_aux_busy_before_tx len=") + std::to_string(bytes.size());
                 return false;
             }
+            uart_flush_input(kLoRaUartPort);
             const int written = uart_write_bytes(kLoRaUartPort,
                                                  reinterpret_cast<const char *>(bytes.data()),
                                                  static_cast<uint32_t>(bytes.size()));
             if (written != static_cast<int>(bytes.size())) {
                 last_tx_diagnostic = std::string("uart_write_short written=") + std::to_string(written) +
                                      " expected=" + std::to_string(bytes.size());
+                return false;
+            }
+            if (uart_wait_tx_done(kLoRaUartPort, pdMS_TO_TICKS(kUartTxCompleteTimeoutMs)) != ESP_OK) {
+                last_tx_diagnostic = std::string("uart_tx_done_timeout len=") + std::to_string(bytes.size());
+                return false;
+            }
+            // Positive ack: AUX must drop LOW once the module starts buffering/transmitting
+            // our payload. If it never drops, our TX line is not reaching the module's RXD.
+            if (!wait_for_uart_aux_busy(kUartAuxBusyTimeoutMs)) {
+                last_tx_diagnostic = std::string("uart_aux_never_busy len=") + std::to_string(bytes.size()) +
+                                     " timeout_ms=" + std::to_string(kUartAuxBusyTimeoutMs);
                 return false;
             }
             esp_rom_delay_us(kUartFrameGapMs * 1000U);
@@ -4129,7 +4240,7 @@ struct LoRaMeshApp::Impl {
     {
         auto *impl = static_cast<Impl *>(timer->user_data);
         if (impl != nullptr) {
-            if (!impl->startup_started) {
+            if (!impl->startup_started && !impl->self_test_running && (impl->settings_apply_task == nullptr)) {
                 impl->start_startup_task();
             }
             impl->lock();
@@ -4768,25 +4879,38 @@ void LoRaMeshApp::requestSelfTestOnNextOpen()
     _impl->unlock();
 }
 
-bool LoRaMeshApp::startSelfTestFromSettings()
+bool LoRaMeshApp::applyStoredSettingsFromSettings(bool run_self_test)
 {
     if (_impl == nullptr) {
         return false;
     }
 
+    jc4880::lora_mesh::StoredState state = {};
+    if (!jc4880::lora_mesh::load_stored_state(state)) {
+        return false;
+    }
+    for (PeerInfo &peer : state.peers) {
+        peer.presence = jc4880::lora_mesh::PeerPresence::Unknown;
+    }
+
     _impl->lock();
-    if (_impl->self_test_running) {
+    const bool runtime_active = (_impl->root != nullptr) && (_impl->ui_timer != nullptr) && !_impl->ui_paused;
+    _impl->stored_state = state;
+    _impl->pending_self_test_on_next_open = false;
+    _impl->trace_event_locked(run_self_test ? "Settings applied; restarting runtime for self-test"
+                                            : "Settings applied; refreshing runtime");
+    if (!runtime_active && !run_self_test) {
         _impl->unlock();
         return true;
     }
-
-    _impl->pending_self_test_on_next_open = false;
-    _impl->status_text = "LoRa self-test: starting";
-    _impl->trace_event_locked("Settings requested background self-test");
-    _impl->start_self_test_task();
-    const bool started = _impl->self_test_running;
+    const bool started = _impl->start_settings_apply_task_locked(run_self_test);
     _impl->unlock();
     return started;
+}
+
+bool LoRaMeshApp::startSelfTestFromSettings()
+{
+    return applyStoredSettingsFromSettings(true);
 }
 
 std::string LoRaMeshApp::getSelfTestStatus(bool *is_running, bool *has_result) const
@@ -4823,6 +4947,7 @@ bool LoRaMeshApp::pause()
 {
     if (_impl != nullptr) {
         _impl->lock();
+        _impl->ui_paused = true;
         _impl->trace_event_locked("App pause requested");
         _impl->request_self_test_stop_locked("app paused");
         _impl->unlock();
@@ -4839,6 +4964,9 @@ bool LoRaMeshApp::pause()
 bool LoRaMeshApp::resume()
 {
     if ((_impl != nullptr) && (_impl->ui_timer != nullptr)) {
+        _impl->lock();
+        _impl->ui_paused = false;
+        _impl->unlock();
         _impl->trace_event("App resume requested");
         lv_timer_resume(_impl->ui_timer);
         _impl->refresh_ui();
@@ -4883,6 +5011,9 @@ bool LoRaMeshApp::close()
     while (_impl->self_test_task != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+    while (_impl->settings_apply_task != nullptr) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 
     if (_impl->ui_timer != nullptr) {
         lv_timer_del(_impl->ui_timer);
@@ -4904,6 +5035,7 @@ bool LoRaMeshApp::close()
     _impl->startup_complete = false;
     _impl->startup_ok = false;
     _impl->self_test_task = nullptr;
+    _impl->ui_paused = false;
     _impl->view_mode = ViewMode::Targets;
     _impl->selected_conversation_id = jc4880::lora_mesh::kCommonConversationId;
     _impl->selected_peer_id.clear();

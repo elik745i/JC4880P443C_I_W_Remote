@@ -43,6 +43,7 @@
 #include "esp_brookesia.hpp"
 #include "app_examples/phone/squareline/src/phone_app_squareline.hpp"
 #include "apps.h"
+#include "lora_mesh/LoRaMeshStorage.hpp"
 #include "LoRaPinProfile.hpp"
 #include "storage_access.h"
 #include "system_ui_service.h"
@@ -1405,12 +1406,17 @@ static void print_serial_command_help(void)
 
 #if CONFIG_JC4880_APP_LORA_MESH
     printf("[serial]   lora.status\r\n");
+    printf("[serial]   lora.pinmap.show\r\n");
+    printf("[serial]   lora.pinmap.set tx=<gpio> rx=<gpio> m0=<gpio> m1=<gpio> aux=<gpio>\r\n");
+    printf("[serial]   lora.module.set m22s|t22s|t22d\r\n");
+    printf("[serial]   lora.apply\r\n");
     printf("[serial]   lora.open\r\n");
     printf("[serial]   lora.targets\r\n");
     printf("[serial]   lora.chat.common\r\n");
     printf("[serial]   lora.chat.peer <device_id>\r\n");
     printf("[serial]   lora.peers\r\n");
     printf("[serial]   lora.settings\r\n");
+    printf("[serial]   lora.selftest.settings\r\n");
     printf("[serial]   lora.selftest.start\r\n");
     printf("[serial]   lora.selftest.stop\r\n");
     printf("[serial]   lora.send.common <text>\r\n");
@@ -1847,12 +1853,157 @@ static void handle_serial_command(const std::string &raw_command)
 #endif
 
 #if CONFIG_JC4880_APP_LORA_MESH
+    if (command == "lora.pinmap.show") {
+        jc4880::lora_mesh::StoredState state = {};
+        if (!jc4880::lora_mesh::load_stored_state(state)) {
+            printf("[lora] failed to load stored state\r\n");
+            return;
+        }
+
+        printf("[lora] pinmap module=%d tx=%d rx=%d m0=%d m1=%d aux=%d txen=%d rxen=%d reset=%d radio=%s\r\n",
+               static_cast<int>(state.settings.radio_module),
+               static_cast<int>(state.settings.uart_tx_gpio),
+               static_cast<int>(state.settings.uart_rx_gpio),
+               static_cast<int>(state.settings.mode0_gpio),
+               static_cast<int>(state.settings.mode1_gpio),
+               static_cast<int>(state.settings.aux_gpio),
+               static_cast<int>(state.settings.txen_gpio),
+               static_cast<int>(state.settings.rxen_gpio),
+               static_cast<int>(state.settings.nrst_gpio),
+               state.settings.radio_enabled ? "on" : "off");
+        return;
+    }
+
+    static constexpr const char *kLoraPinmapSetPrefix = "lora.pinmap.set ";
+    if (command.rfind(kLoraPinmapSetPrefix, 0) == 0) {
+        jc4880::lora_mesh::StoredState state = {};
+        if (!jc4880::lora_mesh::load_stored_state(state)) {
+            printf("[lora] failed to load stored state\r\n");
+            return;
+        }
+
+        int tx = state.settings.uart_tx_gpio;
+        int rx = state.settings.uart_rx_gpio;
+        int mode0 = state.settings.mode0_gpio;
+        int mode1 = state.settings.mode1_gpio;
+        int aux = state.settings.aux_gpio;
+        bool saw_assignment = false;
+
+        std::istringstream stream(command.substr(std::strlen(kLoraPinmapSetPrefix)));
+        std::string token;
+        auto parse_assignment = [](const std::string &text, const char *key, int *target) -> bool {
+            if ((target == nullptr) || (text.rfind(key, 0) != 0)) {
+                return false;
+            }
+            const std::string value_text = text.substr(std::strlen(key));
+            if (value_text.empty()) {
+                return false;
+            }
+            char *end = nullptr;
+            const long parsed = std::strtol(value_text.c_str(), &end, 10);
+            if ((end == value_text.c_str()) || (*end != '\0')) {
+                return false;
+            }
+            *target = static_cast<int>(parsed);
+            return true;
+        };
+
+        while (stream >> token) {
+            if (parse_assignment(token, "tx=", &tx) || parse_assignment(token, "rx=", &rx) ||
+                parse_assignment(token, "m0=", &mode0) || parse_assignment(token, "m1=", &mode1) ||
+                parse_assignment(token, "aux=", &aux)) {
+                saw_assignment = true;
+                continue;
+            }
+            printf("[lora] usage: lora.pinmap.set tx=<gpio> rx=<gpio> m0=<gpio> m1=<gpio> aux=<gpio>\r\n");
+            return;
+        }
+
+        if (!saw_assignment) {
+            printf("[lora] usage: lora.pinmap.set tx=<gpio> rx=<gpio> m0=<gpio> m1=<gpio> aux=<gpio>\r\n");
+            return;
+        }
+
+        state.settings.uart_tx_gpio = static_cast<int8_t>(tx);
+        state.settings.uart_rx_gpio = static_cast<int8_t>(rx);
+        state.settings.mode0_gpio = static_cast<int8_t>(mode0);
+        state.settings.mode1_gpio = static_cast<int8_t>(mode1);
+        state.settings.aux_gpio = static_cast<int8_t>(aux);
+
+        if (!jc4880::lora_mesh::save_stored_state(state)) {
+            printf("[lora] failed to save pin map\r\n");
+            return;
+        }
+
+        printf("[lora] pinmap saved tx=%d rx=%d m0=%d m1=%d aux=%d\r\n",
+               tx,
+               rx,
+               mode0,
+               mode1,
+               aux);
+        return;
+    }
+
+    static constexpr const char *kLoraModuleSetPrefix = "lora.module.set ";
+    if (command.rfind(kLoraModuleSetPrefix, 0) == 0) {
+        std::string arg = command.substr(std::strlen(kLoraModuleSetPrefix));
+        while (!arg.empty() && (arg.front() == ' ' || arg.front() == '\t')) {
+            arg.erase(arg.begin());
+        }
+        while (!arg.empty() && (arg.back() == ' ' || arg.back() == '\t' || arg.back() == '\r' || arg.back() == '\n')) {
+            arg.pop_back();
+        }
+        for (auto &c : arg) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+
+        jc4880::lora_mesh::RadioModule module = jc4880::lora_mesh::RadioModule::E22_400M22S;
+        if (arg == "m22s" || arg == "e22-400m22s" || arg == "spi") {
+            module = jc4880::lora_mesh::RadioModule::E22_400M22S;
+        } else if (arg == "t22s" || arg == "e22-400t22s" || arg == "uart") {
+            module = jc4880::lora_mesh::RadioModule::E22_400T22S;
+        } else if (arg == "t22d" || arg == "e220-400t22d") {
+            module = jc4880::lora_mesh::RadioModule::E220_400T22D;
+        } else {
+            printf("[lora] usage: lora.module.set m22s|t22s|t22d\r\n");
+            return;
+        }
+
+        jc4880::lora_mesh::StoredState state = {};
+        if (!jc4880::lora_mesh::load_stored_state(state)) {
+            printf("[lora] failed to load stored state\r\n");
+            return;
+        }
+        state.settings.radio_module = module;
+        // Reset per-module pin defaults to the canonical layout for the chosen
+        // variant so a stale UART pinmap does not bleed into an SPI run (and
+        // vice-versa). The user can still override with lora.pinmap.set after.
+        jc4880::lora_mesh::reset_module_pin_defaults(state.settings);
+        if (!jc4880::lora_mesh::save_stored_state(state)) {
+            printf("[lora] failed to save module selection\r\n");
+            return;
+        }
+        printf("[lora] module saved -> %d (run lora.apply then lora.open)\r\n", static_cast<int>(module));
+        return;
+    }
+
     if (command == "lora.status") {
         if (s_loraMeshApp == nullptr) {
             printf("[lora] app unavailable\r\n");
             return;
         }
 
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "lora.apply") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] apply %s\r\n", s_loraMeshApp->applyStoredSettingsFromSettings(false) ? "queued" : "failed");
         printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
         return;
     }
@@ -1936,6 +2087,17 @@ static void handle_serial_command(const std::string &raw_command)
         }
 
         printf("[lora] selftest.start %s\r\n", s_loraMeshApp->debugRunSelfTestVisible() ? "queued" : "failed");
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "lora.selftest.settings") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] selftest.settings %s\r\n", s_loraMeshApp->startSelfTestFromSettings() ? "queued" : "failed");
         printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
         return;
     }

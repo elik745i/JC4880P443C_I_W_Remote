@@ -118,6 +118,7 @@ extern "C" bool __attribute__((weak)) jc_security_handle_app_launch_request(int 
 #define HOME_REFRESH_TASK_PERIOD_MS     (2000)
 #define JOYPAD_BLE_LIVE_REFRESH_MS      (33)
 #define IMU_LIVE_REFRESH_MS             (150)
+static constexpr uint32_t kLoRaApplyDebounceMs = 2000;
 
 #define FIRMWARE_UPDATE_TASK_STACK_SIZE  (1024 * 10)
 #define FIRMWARE_UPDATE_TASK_PRIORITY    (4)
@@ -2258,6 +2259,7 @@ AppSettings::AppSettings():
     _displayOrientationPreviewCountdownLabel(nullptr),
     _displayOrientationPreviewTimer(nullptr),
     _imuLiveTimer(nullptr),
+    _loraApplyTimer(nullptr),
     _loraSelfCheckStatusTimer(nullptr),
     _displayOrientationPreviewPrevious(0),
     _displayOrientationPreviewPending(0),
@@ -2510,6 +2512,7 @@ AppSettings::AppSettings():
 
 AppSettings::~AppSettings()
 {
+    cancelLoRaConfigApply();
     stopLoRaSelfCheckStatusPolling();
     shutdown_peripheral_summary_runtime();
     if (_hardwareFastHistoryScratch != nullptr) {
@@ -2656,6 +2659,9 @@ bool AppSettings::close(void)
     } 
 #endif
 
+    if (!flushPendingLoRaConfigApply()) {
+        cancelLoRaConfigApply();
+    }
     stopLoRaSelfCheckStatusPolling();
     stopImuLivePolling();
     
@@ -5633,9 +5639,11 @@ void AppSettings::ensureLoRaScreen(void)
     lv_obj_t *forwardRow = create_settings_toggle_row(meshSection, "Enable Forwarding");
     _loraForwardingSwitch = lv_switch_create(forwardRow);
     lv_obj_align(_loraForwardingSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_loraForwardingSwitch, onLoRaConfigChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
     lv_obj_t *encryptRow = create_settings_toggle_row(meshSection, "Encrypt Public Chat");
     _loraEncryptionSwitch = lv_switch_create(encryptRow);
     lv_obj_align(_loraEncryptionSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_add_event_cb(_loraEncryptionSwitch, onLoRaConfigChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
 
     lv_obj_t *pinsSection = createSection(panel,
                                           "Pin Mapping",
@@ -5649,7 +5657,7 @@ void AppSettings::ensureLoRaScreen(void)
 
     lv_obj_t *applySection = createSection(panel,
                                            "Diagnostics",
-                                           "Run Self Check to open LoRa Mesh and start the built-in radio self-test. Save writes directly to shared LoRa storage.");
+                                           "Settings changes apply immediately to shared LoRa storage and the LoRa Mesh runtime. Run Self Check to validate the current mapping and radio settings.");
     _loraSelfCheckButton = lv_btn_create(applySection);
     lv_obj_set_size(_loraSelfCheckButton, lv_pct(100), 54);
     lv_obj_set_style_radius(_loraSelfCheckButton, 16, 0);
@@ -5664,15 +5672,6 @@ void AppSettings::ensureLoRaScreen(void)
     lv_label_set_long_mode(_loraSelfCheckStatusLabel, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(_loraSelfCheckStatusLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_loraSelfCheckStatusLabel, lv_color_hex(0x64748B), 0);
-
-    lv_obj_t *saveButton = lv_btn_create(applySection);
-    lv_obj_set_size(saveButton, lv_pct(100), 54);
-    lv_obj_set_style_radius(saveButton, 16, 0);
-    lv_obj_set_style_border_width(saveButton, 0, 0);
-    lv_obj_add_event_cb(saveButton, onLoRaSaveClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *saveLabel = lv_label_create(saveButton);
-    lv_label_set_text(saveLabel, "Save LoRa Settings");
-    lv_obj_center(saveLabel);
 
     _loraInfoLabel = lv_label_create(applySection);
     lv_obj_set_width(_loraInfoLabel, lv_pct(100));
@@ -5899,12 +5898,20 @@ bool AppSettings::persistLoRaConfigFromUi(void)
         return false;
     }
 
+    LoRaMeshApp *lora_app = find_installed_lora_mesh_app(getCore());
+    if ((lora_app != nullptr) && !lora_app->applyStoredSettingsFromSettings(false)) {
+        if ((_loraInfoLabel != nullptr) && lv_obj_ready(_loraInfoLabel)) {
+            lv_label_set_text(_loraInfoLabel, "Failed to apply LoRa settings to the LoRa Mesh app.");
+        }
+        return false;
+    }
+
     refreshLoRaUi();
     if ((_loraInfoLabel != nullptr) && lv_obj_ready(_loraInfoLabel)) {
         lv_label_set_text(_loraInfoLabel,
                           local_controller_active
-                              ? "Saved. Local Controller is active, so the LoRa radio remains forced off."
-                              : "Saved. Reopen the LoRa Mesh app if it is already open so the radio picks up these settings.");
+                              ? "Applied. Local Controller is active, so the LoRa radio remains forced off."
+                              : "Applied. LoRa Mesh now uses the current settings immediately.");
     }
     return true;
 #endif
@@ -5958,17 +5965,63 @@ bool AppSettings::persistLoRaRadioEnabledFromUi(void)
     }
     refreshLoRaSelfCheckStatus();
 
+    LoRaMeshApp *lora_app = find_installed_lora_mesh_app(getCore());
+    if ((lora_app != nullptr) && !lora_app->applyStoredSettingsFromSettings(false)) {
+        if ((_loraInfoLabel != nullptr) && lv_obj_ready(_loraInfoLabel)) {
+            lv_label_set_text(_loraInfoLabel, "Failed to apply the LoRa radio state to the LoRa Mesh app.");
+        }
+        return false;
+    }
+
     if ((_loraInfoLabel != nullptr) && lv_obj_ready(_loraInfoLabel)) {
         if (state.settings.radio_enabled) {
             lv_label_set_text(_loraInfoLabel,
-                              "LoRa radio enabled. IMU and Local Controller are forced off while LoRa owns its JP1 pins. Other LoRa settings still require Save if you change them.");
+                              "LoRa radio enabled. IMU and Local Controller are forced off while LoRa owns its JP1 pins. Changes now apply immediately.");
         } else {
             lv_label_set_text(_loraInfoLabel,
-                              "LoRa radio disabled. Other LoRa settings stay saved until you change them and press Save.");
+                              "LoRa radio disabled. Changes now apply immediately.");
         }
     }
 
     return true;
+#endif
+}
+
+void AppSettings::scheduleLoRaConfigApply(uint32_t delay_ms)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    (void)delay_ms;
+    return;
+#else
+    cancelLoRaConfigApply();
+    _loraApplyTimer = lv_timer_create(onLoRaApplyTimerCallback,
+                                      delay_ms > 0 ? delay_ms : kLoRaApplyDebounceMs,
+                                      this);
+    if ((_loraInfoLabel != nullptr) && lv_obj_ready(_loraInfoLabel)) {
+        lv_label_set_text(_loraInfoLabel, "LoRa changes pending. Applying after 2 seconds of no edits.");
+    }
+#endif
+}
+
+void AppSettings::cancelLoRaConfigApply(void)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    return;
+#else
+    if (_loraApplyTimer != nullptr) {
+        lv_timer_del(_loraApplyTimer);
+        _loraApplyTimer = nullptr;
+    }
+#endif
+}
+
+bool AppSettings::flushPendingLoRaConfigApply(void)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    return false;
+#else
+    cancelLoRaConfigApply();
+    return persistLoRaConfigFromUi();
 #endif
 }
 
@@ -5987,6 +6040,27 @@ void AppSettings::disableLoRaRadioForLocalController(void)
     }
     refreshLoRaUi();
 #endif
+}
+
+void AppSettings::onLoRaApplyTimerCallback(lv_timer_t *timer)
+{
+    AppSettings *app = (timer != nullptr) ? static_cast<AppSettings *>(timer->user_data) : nullptr;
+    if (app == nullptr) {
+        return;
+    }
+
+    if (app->_loraApplyTimer == timer) {
+        app->_loraApplyTimer = nullptr;
+    }
+    if (timer != nullptr) {
+        lv_timer_del(timer);
+    }
+
+    if (!app->isUiActive() || (app->_screen_index != UI_LORA_SETTING_INDEX)) {
+        return;
+    }
+
+    (void)app->persistLoRaConfigFromUi();
 }
 
 bool AppSettings::disableLocalControllerForLoRa(void)
@@ -10377,9 +10451,7 @@ void AppSettings::onLoRaConfigChangedEventCallback(lv_event_t *e)
 
 #if CONFIG_JC4880_APP_LORA_MESH
     if (lv_event_get_target(e) == app->_loraEnabledSwitch) {
-        if (!app->persistLoRaRadioEnabledFromUi()) {
-            app->refreshLoRaUi();
-        }
+        app->scheduleLoRaConfigApply(kLoRaApplyDebounceMs);
         return;
     }
 
@@ -10399,17 +10471,9 @@ void AppSettings::onLoRaConfigChangedEventCallback(lv_event_t *e)
         lv_label_set_text(app->_loraInfoLabel,
                           "Local Controller is active. LoRa radio is forced off to avoid conflicts with haptics and Neopixel on shared GPIOs.");
     }
-#endif
-}
 
-void AppSettings::onLoRaSaveClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-    app->persistLoRaConfigFromUi();
-    app->setLoRaKeyboardVisible(false);
-end:
-    return;
+    app->scheduleLoRaConfigApply(kLoRaApplyDebounceMs);
+#endif
 }
 
 void AppSettings::onLoRaSelfCheckClickedEventCallback(lv_event_t *e)
@@ -10424,7 +10488,7 @@ void AppSettings::onLoRaSelfCheckClickedEventCallback(lv_event_t *e)
         return;
     }
 
-    if (!app->persistLoRaConfigFromUi()) {
+    if (!app->flushPendingLoRaConfigApply()) {
         if ((app->_loraSelfCheckStatusLabel != nullptr) && lv_obj_ready(app->_loraSelfCheckStatusLabel)) {
             lv_label_set_text(app->_loraSelfCheckStatusLabel,
                               "Self check unavailable because the current LoRa settings could not be saved.");
@@ -11028,8 +11092,13 @@ void AppSettings::onLoRaTextAreaEventCallback(lv_event_t *e)
 
     if ((code == LV_EVENT_FOCUSED) || (code == LV_EVENT_CLICKED)) {
         app->setLoRaKeyboardVisible(true, lv_event_get_target(e));
+    } else if (code == LV_EVENT_VALUE_CHANGED) {
+        app->scheduleLoRaConfigApply(kLoRaApplyDebounceMs);
     } else if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
         app->setLoRaKeyboardVisible(false);
+        if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY)) {
+            app->scheduleLoRaConfigApply(kLoRaApplyDebounceMs);
+        }
     }
 
 end:
@@ -11047,6 +11116,9 @@ void AppSettings::onLoRaKeyboardEventCallback(lv_event_t *e)
     target = app->_loraKeyboardTarget;
     if ((code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
         app->setLoRaKeyboardVisible(false);
+        if (code == LV_EVENT_READY) {
+            app->scheduleLoRaConfigApply(kLoRaApplyDebounceMs);
+        }
         if ((target != nullptr) && lv_obj_ready(target)) {
             lv_obj_clear_state(target, LV_STATE_FOCUSED);
         }

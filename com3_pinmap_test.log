@@ -1,0 +1,309 @@
+﻿==========================================
+ TEST A: default map tx=31 rx=30
+==========================================
+
+===> lora.close
+[serial] cmd=lora.close
+
+[ERROR][esp_brookesia_core_manager.cpp:468](getRunningAppById): App not found in running app list
+[ERROR][esp_brookesia_core_manager.cpp:551](onAppEventCallback): Invalid app
+[app] stop name="lora mesh" id=12 queued
+
+[lora] close queued
+
+> 
+I (6666) JoypadTransport: Observed hosted transport state: up
+I (6667) JoypadTransport: Sending joypad config: backend=0 ble=0 discovery=0 addr=unsaved
+W (6672) rpc_rsp: Hosted RPC_Resp [0x226], uid [14], resp code [12303]
+
+
+===> lora.pinmap.show
+I (6959) JoypadTransport: BLE report: connected=0 scanning=0 raw=0x00000000 axes=(0,0,0,0) pedals=(0,0) device=unnamed addr=unsaved
+
+[serial] cmd=lora.pinmap.show
+
+[lora] pinmap module=1 tx=30 rx=31 m0=51 m1=29 aux=33 txen=35 rxen=34 reset=52 radio=on
+
+> 
+W (7138) rpc_rsp: Hosted RPC_Resp [0x226], uid [16], resp code [12303]
+
+W (7696) rpc_rsp: Hosted RPC_Resp [0x226], uid [17], resp code [12303]
+
+
+===> lora.pinmap.set tx=31 rx=30 m0=51 m1=29 aux=33
+[serial] cmd=lora.pinmap.set tx=31 rx=30 m0=51 m1=29 aux=33
+
+[lora] pinmap saved tx=31 rx=30 m0=51 m1=29 aux=33
+
+> 
+
+===> lora.apply
+[serial] cmd=lora.apply
+
+I (8624) LoRaMesh: Settings applied; refreshing runtime
+[lora] apply queued
+
+[lora] view=targets root=no startup_started=no startup_complete=no startup_ok=no radio_ready=no rx_task=null self_test_running=no self_test_ran=no self_test_ok=no peers=1 pending_pairs=0 conversation=0 selected_chat="common" selected_peer="" status="LoRa radio idle" self_test="Mode: idle"
+
+> 
+W (8718) rpc_rsp: Hosted RPC_Resp [0x226], uid [18], resp code [12303]
+
+W (9160) rpc_rsp: Hosted RPC_Resp [0x226], uid [19], resp code [12303]
+
+W (9740) rpc_rsp: Hosted RPC_Resp [0x226], uid [20], resp code [12303]
+
+I (10471) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (10472) EUI_Setting: Disconnected from AP SSID:Beowolf1
+W (10505) rpc_rsp: Hosted RPC_Resp [0x226], uid [21], resp code [12303]
+I (10506) H_API: esp_wifi_remote_connect
+
+I (10531) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+
+W (10762) rpc_rsp: Hosted RPC_Resp [0x226], uid [23], resp code [12303]
+
+W (11182) rpc_rsp: Hosted RPC_Resp [0x226], uid [24], resp code [12303]
+
+W (11784) rpc_rsp: Hosted RPC_Resp [0x226], uid [25], resp code [12303]
+
+
+===> lora.open
+[
+serial] cmd=lora.
+open
+
+[lor
+a] opening app 
+on screen
+
+
+
+
+I (12179) LoRaMesh: App run requested
+I (12196) LoRaMesh: Startup task requested
+I (12197) LoRaMesh: LoRa UART pin map TX=31 RX=30 AUX=33 M0=51 M1=29 NRST=52 module=Ebyte E22-400T22S
+[app] start name="lora mesh" id=12 queued
+
+[lora] open queued
+
+> 
+W (12778) LoRaMesh: E22 config readback unavailable err=ESP_ERR_TIMEOUT
+I (12778) LoRaMesh: Synchronized E22-400T22S config freq=433125000Hz channel=23 reg0=0x62 reg1=0x00 option=0x03
+
+W (12806) rpc_rsp: Hosted RPC_Resp [0x226], uid [26], resp code [12303]
+
+W (13204) rpc_rsp: Hosted RPC_Resp [0x226], uid [27], resp code [12303]
+
+W (13828) rpc_rsp: Hosted RPC_Resp [0x226], uid [28], resp code [12303]
+
+W (14851) rpc_rsp: Hosted RPC_Resp [0x226], uid [29], resp code [12303]
+
+I (15163) LoRaMesh: Startup task completed successfully
+
+I (15345) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (15346) EUI_Setting: Disconnected from AP SSID:Beowolf1
+
+W (15379) rpc_rsp: Hosted RPC_Resp [0x226], uid [30], resp code [12303]
+I (15380) H_API: esp_wifi_remote_connect
+I (15408) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+
+W (15873) rpc_rsp: Hosted RPC_Resp [0x226], uid [32], resp code [12303]
+
+W (16098) rpc_rsp: Hosted RPC_Resp [0x226], uid [33], resp code [12303]
+
+
+===> lora.selftest.start
+[serial] cmd=lora.selftest.start
+
+[lora] selftest.start queued
+
+[lora] view=targets root=yes startup_started=yes startup_complete=yes startup_ok=yes radio_ready=yes rx_task=set self_test_runniI (16679) LoRaMesh: Serial debug requested self-test start
+ng=no self_test_ran=yes self_test_ok=yes peers=1 pending_pairs=0 conversation=0 selected_chat="common" selected_peer="" status="I (16684) LoRaMesh: Self-test mode: starting
+I (16698) LoRaMesh: Self-test task start requested
+I (16703) LoRaMesh: Self-test mode: waiting for receive task to stop
+LoRa mesh ready" self_test="Mode: idle"
+
+> 
+I (16749) LoRaMesh: Self-test mode: preparing radio
+I (16749) LoRaMesh: Self-test mode: ensuring radio is ready
+
+W (16895) rpc_rsp: Hosted RPC_Resp [0x226], uid [34], resp code [12303]
+
+W (17916) rpc_rsp: Hosted RPC_Resp [0x226], uid [35], resp code [12303]
+
+I (17968) ESP32_P4_EV: Setting LCD backlight: 50%
+
+W (18120) rpc_rsp: Hosted RPC_Resp [0x226], uid [36], resp code [12303]
+
+W (18939) rpc_rsp: Hosted RPC_Resp [0x226], uid [37], resp code [12303]
+
+W (19960) rpc_rsp: Hosted RPC_Resp [0x226], uid [38], resp code [12303]
+
+W (20142) rpc_rsp: Hosted RPC_Resp [0x226], uid [39], resp code [12303]
+
+I (20222) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (20223) EUI_Setting: Disconnected from AP SSID:Beowolf1
+W (20257) rpc_rsp: Hosted RPC_Resp [0x226], uid [40], resp code [12303]
+I (20257) H_API: esp_wifi_remote_connect
+
+I (20283) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+
+W (20983) rpc_rsp: Hosted RPC_Resp [0x226], uid [42], resp code [12303]
+
+
+===> lora.status
+[serial] cmd=lora.status
+
+[lora] view=targets root=yes startup_started=yes startup_complete=yes startup_ok=yes radio_ready=yes rx_task=set self_test_running=no self_test_ran=yes self_test_ok=yes peers=1 pending_pairs=0 conversation=0 selected_chat="common" selected_peer="" status="LoRa self-test passed" self_test="PASS module=Ebyte E22-400T22S uart=ready aux=1 tx=31 rx=30"
+
+> 
+W (22005) rpc_rsp: Hosted RPC_Resp [0x226], uid [43], resp code [12303]
+
+W (22164) rpc_rsp: Hosted RPC_Resp [0x226], uid [44], resp code [12303]
+
+
+==========================================
+ TEST B: swapped map tx=30 rx=31
+==========================================
+
+===> lora.close
+[serial] cmd=lora.close
+
+I (23003) LoRaMesh: App close requested
+[app] stop name="lora mesh" id=12 queued
+
+W (23027) rpc_rsp: Hosted RPC_Resp [0x226], uid [45], resp code [12303]
+
+[lora] close queued
+
+> 
+
+===> lora.pinmap.set tx=30 rx=31 m0=51 m1=29 aux=33
+[serial] cmd=lora.pinmap.set tx=30 rx=31 m0=51 m1=29 aux=33
+
+
+[lora] pinmap saved tx=30 rx=31 m0=51 m1=29 aux=33
+
+> 
+W (24050) rpc_rsp: Hosted RPC_Resp [0x226], uid [46], resp code [12303]
+
+W (24186) rpc_rsp: Hosted RPC_Resp [0x226],
+ uid [47], resp code [12303]
+
+
+===> lora.apply
+[serial] cmd=lora.apply
+
+I (24641) LoRaMesh: Settings applied; refreshing runtime
+[lora] apply queued
+
+[lora] view=targets root=no startup_started=no startup_complete=no startup_ok=no radio_ready=no rx_task=null self_test_running=no self_test_ran=no self_test_ok=no peers=1 pending_pairs=0 conversation=0 selected_chat="common" selected_peer="" status="LoRa self-test passed" self_test="Mode: idle"
+
+> 
+W (24873) rpc_rsp: Hosted RPC_Resp [0x226], uid [48], resp code [12303]
+
+W (25072) rpc_rsp: Hosted RPC_Resp [0x226], uid [49], resp code [12303]
+I (25096) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (25097) EUI_Setting: Disconnected from AP SSID:Beowolf1
+
+W (25131) rpc_rsp: Hosted RPC_Resp [0x226], uid [50], resp code [12303]
+I (25131) H_API: esp_wifi_remote_connect
+I (25159) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+
+W (26093) rpc_rsp: Hosted RPC_Resp [0x226], uid [52], resp code [12303]
+
+W (26208) rpc_rsp: Hosted RPC_Resp [0x226], uid [53], resp code [12303]
+
+W (27115) rpc_rsp: Hosted RPC_Resp [0x226], uid [54], resp code [12303]
+
+
+===> lora.open
+W (28137) rpc_rsp: Hosted RPC_Resp [0x226], uid [55], resp code [12303]
+
+[serial] cmd=lora.open
+
+
+[lora] ope
+ning app on sc
+reen
+
+
+I (28162) LoRaMesh: App run requested
+I (28179) LoRaMesh: Startup task requested
+I (28180) LoRaMesh: LoRa UART pin map TX=30 RX=31 AUX=33 M0=51 M1=29 NRST=52 module=Ebyte E22-400T22S
+[app] start name="lora mesh" id=12 queued
+
+[lora] open queued
+
+> 
+W (28230) rpc_rsp: Hosted RPC_Resp [0x226], uid [56], resp code [12303]
+
+W (28759) LoRaMesh: E22 config readback unavailable err=ESP_ERR_TIMEOUT
+I (28759) LoRaMesh: Synchronized E22-400T22S config freq=433125000Hz channel=23 reg0=0x62 reg1=0x00 option=0x03
+
+W (29159) rpc_rsp: Hosted RPC_Resp [0x226], uid [57], resp code [12303]
+
+I (29973) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (29974) EUI_Setting: Disconnected from AP SSID:Beowolf1
+W (30007) rpc_rsp: Hosted RPC_Resp [0x226], uid [58], resp code [12303]
+I (30021)
+ LoRaMesh: Startup task completed successfully
+I (30035) H_API: esp_wifi_remote_connect
+I (30056) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+
+W (30181) rpc_rsp: Hosted RPC_Resp [0x226], uid [60], resp code [12303]
+
+W (30252) rpc_rsp: Hosted RPC_Resp [0x226], uid [61], resp code [12303]
+
+W (31204) rpc_rsp: Hosted RPC_Resp [0x226], uid [62], resp code [12303]
+
+W (32227) rpc_rsp: Hosted RPC_Resp [0x226], uid [63], resp code [12303]
+
+W (32273) rpc_rsp: Hosted RPC_Resp [0x226], uid [64], resp code [12303]
+
+
+===> lora.selftest.start
+[serial] cmd=lora.selftest.start
+
+[lora] selftest.start queued
+
+[lora] view=targets root=yes startup_started=yes startup_complete=yes startup_ok=yes radio_ready=yes rx_task=set self_test_running=no self_test_ran=yes self_test_ok=yes peers=1 pending_pairs=0 conversation=0 selected_chat="common" selected_peer="" status="I (32679) LoRaMesh: Serial debug requested self-test start
+I (32687) LoRaMesh: Self-test mode: starting
+I (32691) LoRaMesh: Self-test task start requested
+I (32696) LoRaMesh: Self-test mode: waiting for receive task to stop
+LoRa mesh ready" self_test="Mode: idle"
+
+> 
+I (32742) LoRaMesh: Self-test mode: preparing radio
+I (32742) LoRaMesh: Self-test mode: ensuring radio is ready
+
+W (33249) rpc_rsp: Hosted RPC_Resp [0x226], uid [65], resp code [12303]
+
+W (34271) rpc_rsp: Hosted RPC_Resp [0x226], uid [66], resp code [12303]
+
+W (34303) rpc_rsp: Hosted RPC_Resp [0x226], uid [67], resp code [12303]
+
+I (34870) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (34871) EUI_Setting: Disconnected from AP SSID:Beowolf1
+W (34904) rpc_rsp: Hosted RPC_Resp [0x226], uid [68], resp code [12303]
+I (34905) H_API: esp_wifi_remote_connect
+
+I (34930) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+
+W (35292) rpc_rsp: Hosted RPC_Resp [0x226], uid [70], resp code [12303]
+
+W (36315) rpc_rsp: Hosted RPC_Resp [0x226], uid [71], resp code [12303]
+W (36346) rpc_rsp: Hosted RPC_Resp [0x226], uid [72], resp code [12303]
+
+W (37337) rpc_rsp: Hosted RPC_Resp [0x226], uid [73], resp code [12303]
+
+
+===> lora.status
+[serial] cmd=lora.status
+
+[lora] view=targets root=yes startup_started=yes startup_complete=yes startup_ok=yes radio_ready=yes rx_task=set self_test_running=no self_test_ran=yes self_test_ok=yes peers=1 pending_pairs=0 conversation=0 selected_chat="common" selected_peer="" status="LoRa self-test passed" self_test="PASS module=Ebyte E22-400T22S uart=ready aux=1 tx=30 rx=31"
+
+> 
+W (38359) rpc_rsp: Hosted RPC_Resp [0x226], uid [74], resp code [12303]
+
+W (38389) rpc_rsp: Hosted RPC_Resp [0x226], uid [75], resp code [12303]
+

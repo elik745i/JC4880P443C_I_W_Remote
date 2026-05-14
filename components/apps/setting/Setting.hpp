@@ -201,6 +201,9 @@ private:
     bool persistImuConfigFromUi(bool autosave_enabled_only = false);
     bool persistLoRaConfigFromUi(void);
     bool persistLoRaRadioEnabledFromUi(void);
+    void scheduleLoRaConfigApply(uint32_t delay_ms = 2000U);
+    void cancelLoRaConfigApply(void);
+    bool flushPendingLoRaConfigApply(void);
     void disableImuForLocalController(void);
     bool disableImuForLoRa(void);
     void startImuLivePolling(void);
@@ -336,9 +339,9 @@ private:
     static void onImuZeroClickedEventCallback(lv_event_t *e);
     static void onImuLiveTimerCallback(lv_timer_t *timer);
     static void onLoRaConfigChangedEventCallback(lv_event_t *e);
+    static void onLoRaApplyTimerCallback(lv_timer_t *timer);
     static void onLoRaTextAreaEventCallback(lv_event_t *e);
     static void onLoRaKeyboardEventCallback(lv_event_t *e);
-    static void onLoRaSaveClickedEventCallback(lv_event_t *e);
     static void onLoRaSelfCheckClickedEventCallback(lv_event_t *e);
     static void onLoRaSelfCheckStatusTimerCallback(lv_timer_t *timer);
     // ZigBee
@@ -443,6 +446,7 @@ private:
     lv_obj_t *_displayOrientationPreviewCountdownLabel;
     lv_timer_t *_displayOrientationPreviewTimer;
     lv_timer_t *_imuLiveTimer;
+    lv_timer_t *_loraApplyTimer;
     lv_timer_t *_loraSelfCheckStatusTimer;
     int32_t _displayOrientationPreviewPrevious;
     int32_t _displayOrientationPreviewPending;

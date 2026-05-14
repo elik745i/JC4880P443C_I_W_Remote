@@ -121,100 +121,11 @@ void apply_module_defaults(MeshSettings &settings)
     }
 }
 
-bool heal_known_e22_swapped_spi_pins(MeshSettings &settings, const MeshSettings &defaults)
-{
-    if (settings.radio_module != RadioModule::E22_400M22S) {
-        return false;
-    }
-
-    const bool swapped_spi_pair = (settings.spi_miso_gpio == defaults.spi_sck_gpio) &&
-                                  (settings.spi_sck_gpio == defaults.spi_miso_gpio);
-    const bool other_pins_match_defaults = (settings.spi_mosi_gpio == defaults.spi_mosi_gpio) &&
-                                           (settings.spi_nss_gpio == defaults.spi_nss_gpio) &&
-                                           (settings.busy_gpio == defaults.busy_gpio) &&
-                                           (settings.dio1_gpio == defaults.dio1_gpio) &&
-                                           (settings.nrst_gpio == defaults.nrst_gpio) &&
-                                           (settings.txen_gpio == defaults.txen_gpio) &&
-                                           (settings.rxen_gpio == defaults.rxen_gpio);
-    if (!swapped_spi_pair || !other_pins_match_defaults) {
-        return false;
-    }
-
-    ESP_LOGW(kTag,
-             "Correcting stored E22 SPI pin override MISO=%d/SCK=%d to defaults MISO=%d/SCK=%d",
-             settings.spi_miso_gpio,
-             settings.spi_sck_gpio,
-             defaults.spi_miso_gpio,
-             defaults.spi_sck_gpio);
-    settings.spi_miso_gpio = defaults.spi_miso_gpio;
-    settings.spi_sck_gpio = defaults.spi_sck_gpio;
-    return true;
-}
-
-bool heal_legacy_e22_400t22s_pin_map(MeshSettings &settings)
-{
-    if (settings.radio_module != RadioModule::E22_400T22S) {
-        return false;
-    }
-
-    const bool legacy_reset_pin = (settings.nrst_gpio == 51) || (settings.nrst_gpio == 52) || (settings.nrst_gpio < 0);
-    const bool matches_legacy_uart_map = (settings.uart_tx_gpio == 31) && (settings.uart_rx_gpio == 33) &&
-                                         (settings.mode0_gpio == 29) && (settings.mode1_gpio == 30) &&
-                                         (settings.aux_gpio == 50) && legacy_reset_pin;
-    if (!matches_legacy_uart_map) {
-        return false;
-    }
-
-    ESP_LOGW(kTag,
-             "Migrating stored E22-400T22S pins from legacy defaults TX=%d RX=%d AUX=%d M0=%d M1=%d NRST=%d",
-             settings.uart_tx_gpio,
-             settings.uart_rx_gpio,
-             settings.aux_gpio,
-             settings.mode0_gpio,
-             settings.mode1_gpio,
-             settings.nrst_gpio);
-    settings.uart_rx_gpio = 30;
-    settings.mode0_gpio = 51;
-    settings.mode1_gpio = 29;
-    settings.aux_gpio = 33;
-    settings.nrst_gpio = -1;
-    return true;
-}
-
-bool heal_swapped_e22_400t22s_uart_pins(MeshSettings &settings, const MeshSettings &defaults)
-{
-    if (settings.radio_module != RadioModule::E22_400T22S) {
-        return false;
-    }
-
-    const bool swapped_uart_pair = (settings.uart_tx_gpio == defaults.uart_rx_gpio) &&
-                                   (settings.uart_rx_gpio == defaults.uart_tx_gpio);
-    const bool other_pins_match_defaults = (settings.mode0_gpio == defaults.mode0_gpio) &&
-                                           (settings.mode1_gpio == defaults.mode1_gpio) &&
-                                           (settings.aux_gpio == defaults.aux_gpio) &&
-                                           (settings.nrst_gpio == defaults.nrst_gpio);
-    if (!swapped_uart_pair || !other_pins_match_defaults) {
-        return false;
-    }
-
-    ESP_LOGW(kTag,
-             "Correcting stored E22-400T22S UART pin override TX=%d/RX=%d to defaults TX=%d/RX=%d",
-             settings.uart_tx_gpio,
-             settings.uart_rx_gpio,
-             defaults.uart_tx_gpio,
-             defaults.uart_rx_gpio);
-    settings.uart_tx_gpio = defaults.uart_tx_gpio;
-    settings.uart_rx_gpio = defaults.uart_rx_gpio;
-    return true;
-}
-
 bool sanitize_module_pins(MeshSettings &settings)
 {
     MeshSettings defaults = settings;
     apply_module_defaults(defaults);
-    bool changed = heal_known_e22_swapped_spi_pins(settings, defaults);
-    changed = heal_legacy_e22_400t22s_pin_map(settings) || changed;
-    changed = heal_swapped_e22_400t22s_uart_pins(settings, defaults) || changed;
+    bool changed = false;
 
     auto sanitize_pin = [&changed](int8_t &pin, int8_t fallback) {
         if (!is_allowed_gpio(pin)) {
@@ -327,6 +238,11 @@ bool sanitize_state(StoredState &state)
 }
 
 } // namespace
+
+void reset_module_pin_defaults(MeshSettings &settings)
+{
+    apply_module_defaults(settings);
+}
 
 bool load_stored_state(StoredState &state)
 {

@@ -74,6 +74,9 @@ struct MeshSettings {
     uint8_t bandwidth = 4;
     uint8_t coding_rate = 1;
     bool radio_enabled = true;
+    // Shipping default is the UART transparent variant (per release notes
+    // v1.3.7). Other variants are runtime-selectable via the `lora.module.set`
+    // serial command or the LoRa settings UI.
     RadioModule radio_module = RadioModule::E22_400T22S;
     int8_t spi_miso_gpio = pin_profile::kSpiMisoGpio;
     int8_t spi_mosi_gpio = pin_profile::kSpiMosiGpio;

@@ -18,6 +18,7 @@ public:
     bool back() override;
     bool close() override;
     void requestSelfTestOnNextOpen();
+    bool applyStoredSettingsFromSettings(bool run_self_test);
     bool startSelfTestFromSettings();
     std::string getSelfTestStatus(bool *is_running = nullptr, bool *has_result = nullptr) const;
 

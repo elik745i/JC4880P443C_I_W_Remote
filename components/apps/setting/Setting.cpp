@@ -37,6 +37,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_vfs_fat.h"
+#include "driver/ledc.h"
 #include "esp_hosted.h"
 #include "esp_hosted_misc.h"
 #include "nvs_flash.h"
@@ -175,6 +176,10 @@ static constexpr const char *kCrashReportPendingPath = BSP_SPIFFS_MOUNT_POINT "/
 #define NVS_KEY_OTA_PENDING_VERSION     "ota_ver"
 #define NVS_KEY_OTA_PENDING_NOTES       "ota_notes"
 #define NVS_KEY_OTA_PENDING_SHOW        "ota_show"
+#define NVS_KEY_GPIO_TIMER_SOUND        "gpio_tm_snd"
+#define NVS_KEY_GPIO_ALARM_SOUND        "gpio_al_snd"
+#define NVS_KEY_GPIO_TIMER_STATE        "gpio_tm_st"
+#define NVS_KEY_GPIO_ALARM_STATE        "gpio_al_st"
 
 #define UI_MAIN_ITEM_LEFT_OFFSET        (20)
 #define UI_WIFI_LIST_UP_PAD             (20)
@@ -657,6 +662,14 @@ constexpr const char *kBleDefaultDeviceName = "JC4880P443C Remote";
 constexpr const char *kZigbeeDefaultDeviceName = "JC4880P443C ZigBee";
 constexpr const char *kLoraModuleOptionsText = "E22-400M22S (SPI)\nE22-400T22S (UART)\nE220-400T22D (UART)";
 constexpr const char *kLoraGpioOptionsText = "Disabled\nGPIO 29\nGPIO 30\nGPIO 31\nGPIO 33\nGPIO 34\nGPIO 35\nGPIO 50\nGPIO 51\nGPIO 52";
+constexpr const char *kLoraE22UartBaudOptionsText = "1200\n2400\n4800\n9600\n19200\n38400\n57600\n115200";
+constexpr const char *kLoraE22AirRateOptionsText = "0.3 kbps\n1.2 kbps\n2.4 kbps\n4.8 kbps\n9.6 kbps\n19.2 kbps";
+constexpr const char *kLoraE22SubPacketOptionsText = "200 bytes\n128 bytes\n64 bytes\n32 bytes";
+constexpr const char *kLoraE22PowerOptionsText = "30 dBm\n27 dBm\n24 dBm\n21 dBm";
+constexpr const char *kLoraE22TransmissionOptionsText = "Transparent\nFixed";
+constexpr const char *kLoraE22RssiOptionsText = "Disabled\nEnabled";
+constexpr const char *kLoraE22DiagnosticPresetOptionsText = "Choose preset...\nRead registers\nWrite saved settings";
+constexpr const char *kLoraE22WriteSavedSettingsCommand = "@write_saved_e22_settings";
 constexpr int32_t kLoraGpioOptions[] = {-1, 29, 30, 31, 33, 34, 35, 50, 51, 52};
 
 enum class LoraPinRole : uint8_t {
@@ -714,6 +727,25 @@ static bool lora_module_uses_role(jc4880::lora_mesh::RadioModule module, LoraPin
         return static_cast<size_t>(role) >= static_cast<size_t>(LoraPinRole::UartTx);
     default:
         return false;
+    }
+}
+
+static bool lora_module_uses_e22_uart_settings(jc4880::lora_mesh::RadioModule module)
+{
+    return (module == jc4880::lora_mesh::RadioModule::E22_400T22S) ||
+           (module == jc4880::lora_mesh::RadioModule::E220_400T22D);
+}
+
+static void set_hidden_if_ready(lv_obj_t *object, bool hidden)
+{
+    if ((object == nullptr) || !lv_obj_ready(object)) {
+        return;
+    }
+
+    if (hidden) {
+        lv_obj_add_flag(object, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(object, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -807,6 +839,152 @@ static bool is_local_controller_backend_active()
         return false;
     }
     return config.backend == JC4880_JOYPAD_BACKEND_MANUAL;
+}
+
+static constexpr size_t kHardwareGpioTestPinCountSupport = 12;
+static constexpr int32_t kHardwareGpioTestPins[kHardwareGpioTestPinCountSupport] =
+    {28, 29, 30, 31, 32, 33, 34, 35, 49, 50, 51, 52};
+static constexpr char kHardwareGpioTestModeOptions[] = "Output\nInput\nPWM\nWave\nTimer\nAlarmClock";
+static constexpr char kHardwareGpioTestWaveOptions[] = "Sine\nSharp\nStep";
+static constexpr char kHardwareGpioTestTimerLevelOptions[] = "Low\nHigh";
+static constexpr char kHardwareGpioTestAlarmLevelOptions[] = "Low\nHigh";
+static constexpr uint32_t kHardwareGpioTestWaveTickMs = 40;
+static constexpr uint16_t kHardwareGpioTestWaveMinTenths = 1;
+static constexpr uint16_t kHardwareGpioTestWaveMaxTenths = 100;
+static constexpr uint16_t kHardwareGpioTestTimerMinSeconds = 1;
+static constexpr uint32_t kHardwareGpioTestTimerMaxSeconds = 86400;
+static constexpr size_t kHardwareGpioTestPersistBufferSize = 512;
+static constexpr ledc_mode_t kHardwareGpioTestPwmSpeedMode = LEDC_LOW_SPEED_MODE;
+static constexpr ledc_timer_bit_t kHardwareGpioTestPwmResolution = LEDC_TIMER_10_BIT;
+static constexpr ledc_timer_t kHardwareGpioTestPwmTimer = LEDC_TIMER_0;
+static constexpr uint32_t kHardwareGpioTestPwmFrequencyHz = 5000;
+static constexpr ledc_channel_t kHardwareGpioTestPwmChannel = LEDC_CHANNEL_0;
+static constexpr uint32_t kHardwareGpioTestPwmMaxDuty = (1U << 10U) - 1U;
+
+static const char *hardware_gpio_test_wave_name(uint8_t waveform)
+{
+    switch (waveform) {
+    case 0:
+        return "Sine";
+    case 1:
+        return "Sharp";
+    case 2:
+        return "Step";
+    }
+    return "Wave";
+}
+
+static void format_hardware_gpio_test_wave_tenths(uint16_t tenths, char *buffer, size_t buffer_size)
+{
+    if ((buffer == nullptr) || (buffer_size == 0)) {
+        return;
+    }
+    std::snprintf(buffer, buffer_size, "%u.%us", tenths / 10U, tenths % 10U);
+}
+
+static void format_hardware_gpio_test_timer_seconds(uint16_t seconds, char *buffer, size_t buffer_size)
+{
+    if ((buffer == nullptr) || (buffer_size == 0)) {
+        return;
+    }
+    std::snprintf(buffer, buffer_size, "%us", static_cast<unsigned>(seconds));
+}
+
+static uint16_t clamp_hardware_gpio_test_timer_seconds(uint32_t seconds)
+{
+    return static_cast<uint16_t>(std::max<uint32_t>(kHardwareGpioTestTimerMinSeconds,
+                                                    std::min<uint32_t>(kHardwareGpioTestTimerMaxSeconds, seconds)));
+}
+
+static bool parse_hardware_gpio_test_wave_tenths(const char *text, uint16_t *value_out)
+{
+    if ((text == nullptr) || (value_out == nullptr)) {
+        return false;
+    }
+
+    std::string normalized = trim_copy(text);
+    if (normalized.empty()) {
+        return false;
+    }
+    if ((normalized.back() == 's') || (normalized.back() == 'S')) {
+        normalized.pop_back();
+    }
+
+    char *end = nullptr;
+    const double seconds = std::strtod(normalized.c_str(), &end);
+    if ((end == normalized.c_str()) || (*end != '\0') || !std::isfinite(seconds) || (seconds <= 0.0)) {
+        return false;
+    }
+
+    const uint32_t tenths = static_cast<uint32_t>(std::lround(seconds * 10.0));
+    *value_out = static_cast<uint16_t>(std::max<uint32_t>(kHardwareGpioTestWaveMinTenths,
+                                                          std::min<uint32_t>(kHardwareGpioTestWaveMaxTenths, tenths)));
+    return true;
+}
+
+static bool parse_hardware_gpio_test_timer_seconds(const char *text, uint16_t *value_out)
+{
+    if ((text == nullptr) || (value_out == nullptr)) {
+        return false;
+    }
+
+    std::string normalized = trim_copy(text);
+    if (normalized.empty()) {
+        return false;
+    }
+    if ((normalized.back() == 's') || (normalized.back() == 'S')) {
+        normalized.pop_back();
+    }
+
+    char *end = nullptr;
+    const unsigned long parsed = std::strtoul(normalized.c_str(), &end, 10);
+    if ((end == normalized.c_str()) || (*end != '\0')) {
+        return false;
+    }
+
+    *value_out = clamp_hardware_gpio_test_timer_seconds(static_cast<uint32_t>(parsed));
+    return true;
+}
+
+static int64_t hardware_gpio_test_current_epoch_seconds()
+{
+    const time_t now = time(nullptr);
+    return (now > 0) ? static_cast<int64_t>(now) : 0;
+}
+
+static int32_t hardware_gpio_test_alarm_date_key(const tm &local_time)
+{
+    return (local_time.tm_year + 1900) * 10000 + (local_time.tm_mon + 1) * 100 + local_time.tm_mday;
+}
+
+static void format_hardware_gpio_test_alarm_minutes(uint16_t minutes_of_day, char *buffer, size_t buffer_size)
+{
+    if ((buffer == nullptr) || (buffer_size == 0)) {
+        return;
+    }
+
+    const unsigned hours = static_cast<unsigned>((minutes_of_day / 60U) % 24U);
+    const unsigned minutes = static_cast<unsigned>(minutes_of_day % 60U);
+    std::snprintf(buffer, buffer_size, "%02u:%02u", hours, minutes);
+}
+
+static bool parse_hardware_gpio_test_alarm_minutes(const char *text, uint16_t *value_out)
+{
+    if ((text == nullptr) || (value_out == nullptr)) {
+        return false;
+    }
+
+    int hours = 0;
+    int minutes = 0;
+    if (std::sscanf(text, "%d:%d", &hours, &minutes) != 2) {
+        return false;
+    }
+    if ((hours < 0) || (hours > 23) || (minutes < 0) || (minutes > 59)) {
+        return false;
+    }
+
+    *value_out = static_cast<uint16_t>((hours * 60) + minutes);
+    return true;
 }
 
 static bool is_imu_enabled()
@@ -2241,184 +2419,90 @@ AppSettings::AppSettings():
     _suppressDisconnectRecovery(false),
     _aboutWifiValueLabel(nullptr),
     _aboutPeripheralValueLabel(nullptr),
-    _displayAdaptiveBrightnessSwitch(nullptr),
-    _displayNeopixelPowerSwitch(nullptr),
-    _displayNeopixelGpioDropdown(nullptr),
-    _displayNeopixelPaletteDropdown(nullptr),
-    _displayNeopixelEffectDropdown(nullptr),
-    _displayNeopixelBrightnessSlider(nullptr),
-    _displayNeopixelInfoLabel(nullptr),
-    _displayScreensaverSwitch(nullptr),
-    _displayTimeoffInGameSwitch(nullptr),
-    _displayTimeoffDropdown(nullptr),
-    _displaySleepDropdown(nullptr),
-    _displayOrientationDropdown(nullptr),
-    _displayOrientationPreviewMsgbox(nullptr),
-    _displayOrientationPreviewLabel(nullptr),
-    _displayOrientationPreviewSpinner(nullptr),
-    _displayOrientationPreviewCountdownLabel(nullptr),
-    _displayOrientationPreviewTimer(nullptr),
-    _imuLiveTimer(nullptr),
-    _loraApplyTimer(nullptr),
-    _loraSelfCheckStatusTimer(nullptr),
-    _displayOrientationPreviewPrevious(0),
-    _displayOrientationPreviewPending(0),
-    _displayOrientationPreviewSecondsRemaining(0),
-    _displayOrientationPreviewResolving(false),
-    _displayAutorotateAppliedOrientation(0),
-    _displayAutorotateHasAppliedOrientation(false),
-    _displayAutorotateSwitch(nullptr),
-    _displayAutorotateImuDropdown(nullptr),
-    _displayAutorotateInfoLabel(nullptr),
-    _displayAutoTimezoneSwitch(nullptr),
-    _displayTimezoneDropdown(nullptr),
-    _displayTimezoneInfoLabel(nullptr),
-    _audioMediaVolumeSlider(nullptr),
-    _audioSystemVolumeSlider(nullptr),
-    _audioTapSoundSwitch(nullptr),
-    _audioHapticFeedbackSwitch(nullptr),
-    _bluetoothMenuItem(nullptr),
-    _joypadMenuItem(nullptr),
-    _imuMenuItem(nullptr),
-    _loraMenuItem(nullptr),
-    _zigbeeMenuItem(nullptr),
+#define APP_SETTINGS_DISPLAY_UI_INIT
+#include "display/SettingDisplayPrivate.hpp"
+#undef APP_SETTINGS_DISPLAY_UI_INIT
+#define APP_SETTINGS_DISPLAY_TIMER_INIT
+#include "display/SettingDisplayPrivate.hpp"
+#undef APP_SETTINGS_DISPLAY_TIMER_INIT
+#define APP_SETTINGS_IMU_TIMER_INIT
+#include "imu/SettingImuPrivate.hpp"
+#undef APP_SETTINGS_IMU_TIMER_INIT
+#define APP_SETTINGS_LORA_TIMER_INIT
+#include "lora/SettingLoraPrivate.hpp"
+#undef APP_SETTINGS_LORA_TIMER_INIT
+#define APP_SETTINGS_AUDIO_UI_INIT
+#include "audio/SettingAudioPrivate.hpp"
+#undef APP_SETTINGS_AUDIO_UI_INIT
+#define APP_SETTINGS_BLUETOOTH_MENU_INIT
+#include "bluetooth/SettingBluetoothPrivate.hpp"
+#undef APP_SETTINGS_BLUETOOTH_MENU_INIT
+#define APP_SETTINGS_JOYPAD_MENU_INIT
+#include "joypad/SettingJoypadPrivate.hpp"
+#undef APP_SETTINGS_JOYPAD_MENU_INIT
+#define APP_SETTINGS_IMU_MENU_INIT
+#include "imu/SettingImuPrivate.hpp"
+#undef APP_SETTINGS_IMU_MENU_INIT
+#define APP_SETTINGS_LORA_MENU_INIT
+#include "lora/SettingLoraPrivate.hpp"
+#undef APP_SETTINGS_LORA_MENU_INIT
+#define APP_SETTINGS_ZIGBEE_MENU_INIT
+#include "zigbee/SettingZigbeePrivate.hpp"
+#undef APP_SETTINGS_ZIGBEE_MENU_INIT
     _wifiMenuItem(nullptr),
-    _audioMenuItem(nullptr),
-    _displayMenuItem(nullptr),
+#define APP_SETTINGS_AUDIO_MENU_INIT
+#include "audio/SettingAudioPrivate.hpp"
+#undef APP_SETTINGS_AUDIO_MENU_INIT
+#define APP_SETTINGS_DISPLAY_MENU_INIT
+#include "display/SettingDisplayPrivate.hpp"
+#undef APP_SETTINGS_DISPLAY_MENU_INIT
+#define APP_SETTINGS_GPIO_MENU_INIT
+#include "gpio/SettingGpioControlPrivate.hpp"
+#undef APP_SETTINGS_GPIO_MENU_INIT
     _hardwareMenuItem(nullptr),
-    _securityMenuItem(nullptr),
+#define APP_SETTINGS_SECURITY_MENU_INIT
+#include "security/SettingSecurityPrivate.hpp"
+#undef APP_SETTINGS_SECURITY_MENU_INIT
     _aboutMenuItem(nullptr),
-    _bluetoothInfoLabel(nullptr),
-    _bluetoothNameTextArea(nullptr),
-    _bluetoothNameSaveButton(nullptr),
-    _bluetoothScanButton(nullptr),
-    _bluetoothScanButtonLabel(nullptr),
-    _bluetoothScanStatusLabel(nullptr),
-    _bluetoothScanResultsLabel(nullptr),
-    _bluetoothKeyboard(nullptr),
-    _joypadScreen(nullptr),
-    _joypadBleScreen(nullptr),
-    _joypadLocalScreen(nullptr),
-    _imuScreen(nullptr),
-    _loraScreen(nullptr),
-    _joypadBleMenuItem(nullptr),
-    _joypadLocalMenuItem(nullptr),
-    _joypadBleActiveSwitch(nullptr),
-    _joypadManualActiveSwitch(nullptr),
-    _joypadBleEnableSwitch(nullptr),
-    _joypadBleDiscoverySwitch(nullptr),
-    _joypadBleDeviceDropdown(nullptr),
-    _joypadBleStatusLabel(nullptr),
-    _joypadBleCalibrationInfoLabel(nullptr),
-    _joypadBleCalibrationButton(nullptr),
-    _joypadBleCalibrationButtonLabel(nullptr),
-    _joypadBackendDropdown(nullptr),
-    _joypadManualModeDropdown(nullptr),
-    _joypadInfoLabel(nullptr),
-    _joypadBleTriggerBars{},
-    _joypadBleShoulderIndicators{},
-    _joypadBleStickBases{},
-    _joypadBleStickKnobs{},
-    _joypadBleDpadIndicators{},
-    _joypadBleFaceIndicators{},
-    _joypadLocalTriggerBars{},
-    _joypadLocalShoulderIndicators{},
-    _joypadLocalStickBases{},
-    _joypadLocalStickKnobs{},
-    _joypadLocalDpadIndicators{},
-    _joypadLocalFaceIndicators{},
-    _joypadBlePreviewCenterAxes{},
-    _joypadBlePreviewDeviceAddr{},
-    _joypadBlePreviewCenterValid(false),
-    _joypadBleRemapDropdowns{},
-    _joypadManualSpiDropdowns{},
-    _joypadManualResistiveDropdowns{},
-    _joypadManualResistiveButtonDropdowns{},
-    _joypadManualMcpDropdowns{},
-    _joypadManualMcpButtonDropdowns{},
-    _joypadLocalHapticGpioDropdown(nullptr),
-    _joypadLocalHapticLevelDropdown(nullptr),
-    _joypadLocalNeopixelPowerSwitch(nullptr),
-    _joypadLocalNeopixelGpioDropdown(nullptr),
-    _joypadLocalNeopixelPaletteDropdown(nullptr),
-    _joypadLocalNeopixelEffectDropdown(nullptr),
-    _joypadLocalNeopixelBrightnessSlider(nullptr),
-    _joypadLocalNeopixelInfoLabel(nullptr),
-    _joypadBleDeviceOptions(),
-    _imuEnabledSwitch(nullptr),
-    _imuModelDropdown(nullptr),
-    _imuBusDropdown(nullptr),
-    _imuPowerHintLabel(nullptr),
-    _imuI2cSdaDropdown(nullptr),
-    _imuI2cSclDropdown(nullptr),
-    _imuI2cAddressDropdown(nullptr),
-    _imuI2cAddressTextArea(nullptr),
-    _imuIntDropdown(nullptr),
-    _imuDrdyDropdown(nullptr),
-    _imuLiveScene(nullptr),
-    _imuHeadingArc(nullptr),
-    _imuHeadingValueLabel(nullptr),
-    _imuRollValueLabel(nullptr),
-    _imuPitchValueLabel(nullptr),
-    _imuYawValueLabel(nullptr),
-    _imuMotionShadow(nullptr),
-    _imuMotionDot(nullptr),
-    _imuMotionTempLabel(nullptr),
-    _imuLiveCaptionLabel(nullptr),
-    _imuLiveStatusLabel(nullptr),
-    _imuAccelValueLabel(nullptr),
-    _imuGyroValueLabel(nullptr),
-    _imuMagValueLabel(nullptr),
-    _imuEnvValueLabel(nullptr),
-    _imuBallPosX(21.0f),
-    _imuBallPosY(21.0f),
-    _imuBallPosZ(0.0f),
-    _imuBallVelX(0.0f),
-    _imuBallVelY(0.0f),
-    _imuBallVelZ(0.0f),
-    _imuBallPrevAccelX(0.0f),
-    _imuBallPrevAccelY(0.0f),
-    _imuBallPrevAccelZ(0.0f),
-    _imuBallDynamicsInitialized(false),
-    _imuSensorIndicatorDots{},
-    _imuSensorIndicatorLabels{},
-    _imuScanButton(nullptr),
-    _imuTestButton(nullptr),
-    _imuZeroButton(nullptr),
-    _imuStatusLabel(nullptr),
-    _imuInfoLabel(nullptr),
-    _loraEnabledSwitch(nullptr),
-    _loraModuleDropdown(nullptr),
-    _loraKeyboard(nullptr),
-    _loraKeyboardTarget(nullptr),
-    _loraDisplayNameTextArea(nullptr),
-    _loraCommonChatTitleTextArea(nullptr),
-    _loraFrequencyTextArea(nullptr),
-    _loraSpreadingFactorTextArea(nullptr),
-    _loraBandwidthTextArea(nullptr),
-    _loraCodingRateTextArea(nullptr),
-    _loraHopLimitTextArea(nullptr),
-    _loraForwardingSwitch(nullptr),
-    _loraEncryptionSwitch(nullptr),
-    _loraSelfCheckButton(nullptr),
-    _loraSelfCheckStatusLabel(nullptr),
-    _loraInfoLabel(nullptr),
-    _loraPinRows{},
-    _loraPinDropdowns{},
-    _zigbeeEnableSwitch(nullptr),
-    _zigbeeNameTextArea(nullptr),
-    _zigbeeNameSaveButton(nullptr),
-    _zigbeeChannelDropdown(nullptr),
-    _zigbeePermitJoinDropdown(nullptr),
-    _zigbeeKeyboard(nullptr),
-    _zigbeeInfoLabel(nullptr),
-    _zigbeeRoleValueLabel(nullptr),
-    _zigbeeConfigSummaryLabel(nullptr),
-    _securityDeviceLockSwitch(nullptr),
-    _securitySettingsLockSwitch(nullptr),
-    _securityInfoLabel(nullptr),
-    _firmwareMenuItem(nullptr),
-    _firmwareScreen(nullptr),
+#define APP_SETTINGS_BLUETOOTH_UI_INIT
+#include "bluetooth/SettingBluetoothPrivate.hpp"
+#undef APP_SETTINGS_BLUETOOTH_UI_INIT
+#define APP_SETTINGS_JOYPAD_SCREEN_INIT
+#include "joypad/SettingJoypadPrivate.hpp"
+#undef APP_SETTINGS_JOYPAD_SCREEN_INIT
+#define APP_SETTINGS_IMU_SCREEN_INIT
+#include "imu/SettingImuPrivate.hpp"
+#undef APP_SETTINGS_IMU_SCREEN_INIT
+#define APP_SETTINGS_LORA_SCREEN_INIT
+#include "lora/SettingLoraPrivate.hpp"
+#undef APP_SETTINGS_LORA_SCREEN_INIT
+#define APP_SETTINGS_GPIO_SCREEN_INIT
+#include "gpio/SettingGpioControlPrivate.hpp"
+#undef APP_SETTINGS_GPIO_SCREEN_INIT
+#define APP_SETTINGS_JOYPAD_UI_INIT
+#include "joypad/SettingJoypadPrivate.hpp"
+#undef APP_SETTINGS_JOYPAD_UI_INIT
+#define APP_SETTINGS_IMU_UI_INIT
+#include "imu/SettingImuPrivate.hpp"
+#undef APP_SETTINGS_IMU_UI_INIT
+#define APP_SETTINGS_LORA_UI_INIT
+#include "lora/SettingLoraPrivate.hpp"
+#undef APP_SETTINGS_LORA_UI_INIT
+#define APP_SETTINGS_GPIO_UI_INIT
+#include "gpio/SettingGpioControlPrivate.hpp"
+#undef APP_SETTINGS_GPIO_UI_INIT
+#define APP_SETTINGS_ZIGBEE_UI_INIT
+#include "zigbee/SettingZigbeePrivate.hpp"
+#undef APP_SETTINGS_ZIGBEE_UI_INIT
+#define APP_SETTINGS_SECURITY_UI_INIT
+#include "security/SettingSecurityPrivate.hpp"
+#undef APP_SETTINGS_SECURITY_UI_INIT
+#define APP_SETTINGS_FIRMWARE_MENU_INIT
+#include "firmware/SettingFirmwarePrivate.hpp"
+#undef APP_SETTINGS_FIRMWARE_MENU_INIT
+#define APP_SETTINGS_FIRMWARE_SCREEN_INIT
+#include "firmware/SettingFirmwarePrivate.hpp"
+#undef APP_SETTINGS_FIRMWARE_SCREEN_INIT
     _hardwareScreen(nullptr),
     _securityScreen(nullptr),
     _zigbeeScreen(nullptr),
@@ -2457,52 +2541,22 @@ AppSettings::AppSettings():
     _hardwareWifiValueLabel(nullptr),
     _hardwareWifiDetailLabel(nullptr),
     _hardwareWifiBar(nullptr),
-    _firmwareSdDropdown(nullptr),
-    _firmwareSdFlashButton(nullptr),
-    _firmwareOtaCheckButton(nullptr),
-    _firmwareOtaFlashButton(nullptr),
-    _firmwareAutoUpdateSwitch(nullptr),
-    _firmwareCurrentVersionLabel(nullptr),
-    _firmwareOtaSummaryLabel(nullptr),
-    _firmwareOtaListContainer(nullptr),
-    _firmwareOtaCheckOverlay(nullptr),
-    _firmwareOtaCheckSpinner(nullptr),
-    _firmwareOtaCheckStatusLabel(nullptr),
-    _firmwareStatusLabel(nullptr),
-    _firmwareProgressBar(nullptr),
-    _firmwareProgressLabel(nullptr),
-    _otaUpdateAvailableMsgbox(nullptr),
-    _otaUpdateProgressOverlay(nullptr),
-    _otaUpdateProgressStatusLabel(nullptr),
-    _otaUpdateProgressBar(nullptr),
-    _otaUpdateProgressLabel(nullptr),
-    _otaUpdateProgressActionRow(nullptr),
-    _otaUpdateProgressInstallButton(nullptr),
-    _otaUpdateProgressRescheduleButton(nullptr),
-    _otaUpdateProgressCancelButton(nullptr),
-    _otaUpdateProgressCornerCloseButton(nullptr),
-    _otaUpdateReschedulePanel(nullptr),
-    _otaUpdateRescheduleHourDropdown(nullptr),
-    _otaUpdateRescheduleMinuteDropdown(nullptr),
-    _otaUpdateRescheduleApplyButton(nullptr),
-    _otaUpdateProgressCloseButton(nullptr),
-    _firmwareUpdateInProgress(false),
-    _firmwareCancelRequested(false),
-    _firmwareOtaCheckInProgress(false),
-    _otaStatusIconInstalled(false),
-    _otaUpdateAvailableThisBoot(false),
-    _otaUpdatePromptDismissedThisBoot(false),
-    _otaAutoUpdateAwaitingDecision(false),
-    _otaAvailabilityCheckInProgress(false),
-    _pendingOpenFirmwareScreen(false),
-    _otaDeferredAutoUpdateUntilUs(0),
-    _nextOtaAvailabilityCheckUs(0),
-    _bluetoothStatusIconInstalled(false),
-    _zigbeeStatusIconInstalled(false),
-    _deviceLockToggleContext{this, device_security::LockType::Device},
-    _settingsLockToggleContext{this, device_security::LockType::Settings},
+#define APP_SETTINGS_FIRMWARE_UI_INIT
+#include "firmware/SettingFirmwarePrivate.hpp"
+#undef APP_SETTINGS_FIRMWARE_UI_INIT
+#define APP_SETTINGS_FIRMWARE_RUNTIME_INIT
+#include "firmware/SettingFirmwarePrivate.hpp"
+#undef APP_SETTINGS_FIRMWARE_RUNTIME_INIT
+#define APP_SETTINGS_BLUETOOTH_RUNTIME_INIT
+#include "bluetooth/SettingBluetoothPrivate.hpp"
+#undef APP_SETTINGS_BLUETOOTH_RUNTIME_INIT
+#define APP_SETTINGS_ZIGBEE_RUNTIME_INIT
+#include "zigbee/SettingZigbeePrivate.hpp"
+#undef APP_SETTINGS_ZIGBEE_RUNTIME_INIT
+#define APP_SETTINGS_SECURITY_RUNTIME_INIT
+#include "security/SettingSecurityPrivate.hpp"
+#undef APP_SETTINGS_SECURITY_RUNTIME_INIT
     _screen_list({nullptr}),
-    _selectedOtaFirmwareIndex(-1),
     _autoTimezoneRefreshPending(false),
     _hasAutoDetectedTimezone(false),
     _autoDetectedTimezoneOffsetMinutes(480),
@@ -2974,13 +3028,19 @@ void AppSettings::extraUiInit(void)
     _wifiMenuItem = createMainMenuItem("Wi-Fi", &ui_img_wifi_png, nullptr, nullptr);
     #endif
     #if CONFIG_JC4880_FEATURE_AUDIO
-    _audioMenuItem = createMainMenuItem("Audio", &ui_img_sound_png, nullptr, nullptr);
+    #define APP_SETTINGS_AUDIO_MENU_CREATE
+    #include "audio/SettingAudioPrivate.hpp"
+    #undef APP_SETTINGS_AUDIO_MENU_CREATE
     #endif
     #if APP_SETTINGS_FEATURE_DISPLAY_MENU
-    _displayMenuItem = createMainMenuItem("Display", &ui_img_light_png, nullptr, nullptr);
+    #define APP_SETTINGS_DISPLAY_MENU_CREATE
+    #include "display/SettingDisplayPrivate.hpp"
+    #undef APP_SETTINGS_DISPLAY_MENU_CREATE
     #endif
     #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
-    _bluetoothMenuItem = createMainMenuItem("Bluetooth", &ui_img_bluetooth_png, nullptr, nullptr);
+    #define APP_SETTINGS_BLUETOOTH_MENU_CREATE
+    #include "bluetooth/SettingBluetoothPrivate.hpp"
+    #undef APP_SETTINGS_BLUETOOTH_MENU_CREATE
     #endif
     _joypadMenuItem = createMainBadgeMenuItem("Joypad", "JP", lv_color_hex(0x0F766E), nullptr);
     #if APP_SETTINGS_FEATURE_IMU
@@ -2990,16 +3050,25 @@ void AppSettings::extraUiInit(void)
     _loraMenuItem = createMainBadgeMenuItem("LoRa", "LR", lv_color_hex(0xB45309), nullptr);
     #endif
     #if CONFIG_JC4880_FEATURE_ZIGBEE
-    _zigbeeMenuItem = createMainBadgeMenuItem("ZigBee", "ZB", lv_color_hex(0xD97706), nullptr);
+    #define APP_SETTINGS_ZIGBEE_MENU_CREATE
+    #include "zigbee/SettingZigbeePrivate.hpp"
+    #undef APP_SETTINGS_ZIGBEE_MENU_CREATE
+    #endif
+    #if APP_SETTINGS_FEATURE_HARDWARE_MENU
+    _gpioTestMenuItem = createMainBadgeMenuItem("GPIO Control", "IO", lv_color_hex(0x1D4ED8), nullptr);
     #endif
     #if APP_SETTINGS_FEATURE_HARDWARE_MENU
     _hardwareMenuItem = createMainMenuItem("Hardware", nullptr, LV_SYMBOL_SETTINGS, nullptr);
     #endif
     #if CONFIG_JC4880_FEATURE_SECURITY
-    _securityMenuItem = createMainMenuItem("Security", nullptr, LV_SYMBOL_WARNING, nullptr);
+    #define APP_SETTINGS_SECURITY_MENU_CREATE
+    #include "security/SettingSecurityPrivate.hpp"
+    #undef APP_SETTINGS_SECURITY_MENU_CREATE
     #endif
     #if CONFIG_JC4880_FEATURE_OTA
-    _firmwareMenuItem = createMainMenuItem("Firmware OTA", nullptr, LV_SYMBOL_DOWNLOAD, nullptr);
+    #define APP_SETTINGS_FIRMWARE_MENU_CREATE
+    #include "firmware/SettingFirmwarePrivate.hpp"
+    #undef APP_SETTINGS_FIRMWARE_MENU_CREATE
     #endif
     #if CONFIG_JC4880_FEATURE_ABOUT_DEVICE
     _aboutMenuItem = createMainMenuItem("About Device", &ui_img_about_png, nullptr, nullptr);
@@ -3644,121 +3713,7 @@ void AppSettings::extraUiInit(void)
     lv_obj_add_event_cb(ui_ScreenSettingLight, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
 
     /* Audio */
-    _audioMediaVolumeSlider = ui_SliderPanelScreenSettingVolumeSwitch;
-    lv_obj_clear_flag(ui_PanelScreenSettingVolumeList, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_pad_left(ui_PanelScreenSettingVolumeList, 0, 0);
-    lv_obj_set_style_pad_right(ui_PanelScreenSettingVolumeList, 0, 0);
-    lv_obj_set_style_pad_top(ui_PanelScreenSettingVolumeList, 0, 0);
-    lv_obj_set_style_pad_bottom(ui_PanelScreenSettingVolumeList, 0, 0);
-    lv_obj_set_style_pad_row(ui_PanelScreenSettingVolumeList, 12, 0);
-    lv_obj_set_style_bg_opa(ui_PanelScreenSettingVolumeList, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ui_PanelScreenSettingVolumeList, 0, 0);
-    lv_obj_set_scroll_dir(ui_PanelScreenSettingVolumeList, LV_DIR_VER);
-
-    auto styleAudioSliderRow = [](lv_obj_t *row, lv_obj_t *label, lv_obj_t *slider, lv_obj_t *icon) {
-        lv_obj_set_parent(row, ui_PanelScreenSettingVolumeList);
-        lv_obj_set_size(row, lv_pct(100), 72);
-        lv_obj_set_x(row, 0);
-        lv_obj_set_y(row, 0);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(row, 18, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_pad_left(row, 18, 0);
-        lv_obj_set_style_pad_right(row, 18, 0);
-        lv_obj_set_style_pad_top(row, 10, 0);
-        lv_obj_set_style_pad_bottom(row, 10, 0);
-
-        if (icon != nullptr) {
-            lv_obj_clear_flag(icon, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_align(icon, LV_ALIGN_LEFT_MID, 0, 0);
-        }
-
-        if (label != nullptr) {
-            lv_obj_set_width(label, 110);
-            lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-            lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
-            lv_obj_set_style_text_color(label, lv_color_hex(0x111827), 0);
-            if (icon != nullptr) {
-                lv_obj_align_to(label, icon, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
-            } else {
-                lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
-            }
-        }
-
-        if (slider != nullptr) {
-            lv_obj_set_size(slider, 220, 14);
-            lv_obj_align(slider, LV_ALIGN_RIGHT_MID, 0, 0);
-        }
-    };
-
-    auto createAudioSwitchRow = [](const char *title) {
-        lv_obj_t *row = lv_obj_create(ui_PanelScreenSettingVolumeList);
-        lv_obj_set_size(row, lv_pct(100), 72);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_radius(row, 18, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_bg_color(row, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_pad_left(row, 18, 0);
-        lv_obj_set_style_pad_right(row, 18, 0);
-        lv_obj_set_style_pad_top(row, 10, 0);
-        lv_obj_set_style_pad_bottom(row, 10, 0);
-
-        lv_obj_t *label = lv_label_create(row);
-        lv_obj_set_width(label, 180);
-        lv_label_set_text(label, title);
-        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_font(label, &lv_font_montserrat_18, 0);
-        lv_obj_set_style_text_color(label, lv_color_hex(0x111827), 0);
-        lv_obj_align(label, LV_ALIGN_LEFT_MID, 0, 0);
-
-        return row;
-    };
-
-    lv_label_set_text(ui_LabelPanelScreenSettingVolumeSwitch, "Media");
-    lv_slider_set_range(ui_SliderPanelScreenSettingVolumeSwitch, SPEAKER_VOLUME_MIN, SPEAKER_VOLUME_MAX);
-    lv_obj_add_event_cb(ui_SliderPanelScreenSettingVolumeSwitch, onSliderPanelVolumeSwitchValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-    styleAudioSliderRow(ui_PanelScreenSettingVolumeSwitch, ui_LabelPanelScreenSettingVolumeSwitch,
-                        ui_SliderPanelScreenSettingVolumeSwitch, ui_ImagePanelScreenSettingVolumeSwitch);
-
-    {
-        lv_obj_t *row = lv_obj_create(ui_PanelScreenSettingVolumeList);
-        lv_obj_t *label = lv_label_create(row);
-        lv_label_set_text(label, "System Sounds");
-
-        _audioSystemVolumeSlider = lv_slider_create(row);
-        lv_slider_set_range(_audioSystemVolumeSlider, SPEAKER_VOLUME_MIN, SPEAKER_VOLUME_MAX);
-        lv_obj_add_event_cb(_audioSystemVolumeSlider, onSliderPanelSystemVolumeValueChangeEventCallback,
-                            LV_EVENT_VALUE_CHANGED, this);
-        lv_obj_add_event_cb(_audioSystemVolumeSlider, onSliderPanelSystemVolumeValueChangeEventCallback,
-                            LV_EVENT_RELEASED, this);
-
-        styleAudioSliderRow(row, label, _audioSystemVolumeSlider, nullptr);
-    }
-
-    {
-        lv_obj_t *row = createAudioSwitchRow("Tap Sound");
-        _audioTapSoundSwitch = lv_switch_create(row);
-        lv_obj_align(_audioTapSoundSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_event_cb(_audioTapSoundSwitch, onSwitchPanelScreenSettingTapSoundValueChangeEventCallback,
-                            LV_EVENT_VALUE_CHANGED, this);
-    }
-
-    {
-        lv_obj_t *row = createAudioSwitchRow("Haptic Feedback");
-        _audioHapticFeedbackSwitch = lv_switch_create(row);
-        lv_obj_align(_audioHapticFeedbackSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-        lv_obj_add_event_cb(_audioHapticFeedbackSwitch,
-                            onSwitchPanelScreenSettingHapticFeedbackValueChangeEventCallback,
-                            LV_EVENT_VALUE_CHANGED, this);
-    }
-    lv_obj_add_flag(ui_ButtonScreenSettingVolumeReturn, LV_OBJ_FLAG_HIDDEN);
-    // Record the screen index and install the screen loaded event callback
-    _screen_list[UI_VOLUME_SETTING_INDEX] = ui_ScreenSettingVolume;
-    lv_obj_add_event_cb(ui_ScreenSettingVolume, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
+    initializeAudioUi();
 
     /* About */
     lv_label_set_text(ui_LabelPanelPanelScreenSettingAbout4, "ESP_Brookesia");
@@ -4471,6 +4426,11 @@ void AppSettings::ensureSecurityScreen(void)
 #endif
 }
 
+#include "imu/SettingImuSection.inc"
+#include "lora/SettingLoraMethods.inc"
+#include "gpio/SettingGpioControlSection.inc"
+
+#if 0
 void AppSettings::ensureImuScreen(void)
 {
 #if !APP_SETTINGS_FEATURE_IMU
@@ -6150,247 +6110,9 @@ void AppSettings::stopLoRaSelfCheckStatusPolling(void)
     }
 }
 
-void AppSettings::ensureFirmwareScreen(void)
-{
-#if !CONFIG_JC4880_FEATURE_OTA
-    return;
-#else
-    if ((_firmwareScreen != nullptr) && lv_obj_ready(_firmwareScreen)) {
-        return;
-    }
+ #endif
 
-    _firmwareScreen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(_firmwareScreen, lv_color_hex(0xE5F3FF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_opa(_firmwareScreen, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_clear_flag(_firmwareScreen, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *firmwareTitle = lv_label_create(_firmwareScreen);
-    lv_label_set_text(firmwareTitle, "Firmware");
-    lv_obj_set_style_text_font(firmwareTitle, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_text_color(firmwareTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(firmwareTitle, LV_ALIGN_TOP_MID, 0, 30);
-
-    lv_obj_t *firmwarePanel = lv_obj_create(_firmwareScreen);
-    lv_obj_set_size(firmwarePanel, lv_pct(92), 650);
-    lv_obj_align(firmwarePanel, LV_ALIGN_TOP_MID, 0, 92);
-    lv_obj_set_style_radius(firmwarePanel, 20, 0);
-    lv_obj_set_style_border_width(firmwarePanel, 0, 0);
-    lv_obj_set_style_bg_color(firmwarePanel, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_pad_all(firmwarePanel, 14, 0);
-    lv_obj_set_style_pad_row(firmwarePanel, 12, 0);
-    lv_obj_set_flex_flow(firmwarePanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(firmwarePanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_scroll_dir(firmwarePanel, LV_DIR_VER);
-
-    auto createFirmwareSection = [](lv_obj_t *parent, const char *title) {
-        lv_obj_t *section = lv_obj_create(parent);
-        lv_obj_set_width(section, lv_pct(100));
-        lv_obj_set_height(section, LV_SIZE_CONTENT);
-        lv_obj_set_style_radius(section, 18, 0);
-        lv_obj_set_style_border_width(section, 0, 0);
-        lv_obj_set_style_bg_color(section, lv_color_hex(0xFFFFFF), 0);
-        lv_obj_set_style_pad_all(section, 14, 0);
-        lv_obj_set_style_pad_row(section, 10, 0);
-        lv_obj_set_flex_flow(section, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(section, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-        lv_obj_t *sectionTitle = lv_label_create(section);
-        lv_label_set_text(sectionTitle, title);
-        lv_obj_set_style_text_font(sectionTitle, &lv_font_montserrat_20, 0);
-        lv_obj_set_style_text_color(sectionTitle, lv_color_hex(0x0F172A), 0);
-        return section;
-    };
-
-    auto createFirmwareControlsRow = [](lv_obj_t *parent) {
-        lv_obj_t *row = lv_obj_create(parent);
-        lv_obj_set_width(row, lv_pct(100));
-        lv_obj_set_height(row, LV_SIZE_CONTENT);
-        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_pad_all(row, 0, 0);
-        lv_obj_set_style_pad_row(row, 8, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-        return row;
-    };
-
-    lv_obj_t *currentSection = createFirmwareSection(firmwarePanel, "Installed Firmware");
-    _firmwareCurrentVersionLabel = lv_label_create(currentSection);
-    lv_obj_set_width(_firmwareCurrentVersionLabel, lv_pct(100));
-    lv_label_set_long_mode(_firmwareCurrentVersionLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_firmwareCurrentVersionLabel, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(_firmwareCurrentVersionLabel, lv_color_hex(0x0F172A), 0);
-
-    lv_obj_t *otaAutoUpdateRow = lv_obj_create(currentSection);
-    lv_obj_set_width(otaAutoUpdateRow, lv_pct(100));
-    lv_obj_set_height(otaAutoUpdateRow, LV_SIZE_CONTENT);
-    lv_obj_clear_flag(otaAutoUpdateRow, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(otaAutoUpdateRow, 16, 0);
-    lv_obj_set_style_border_width(otaAutoUpdateRow, 0, 0);
-    lv_obj_set_style_bg_color(otaAutoUpdateRow, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_bg_opa(otaAutoUpdateRow, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(otaAutoUpdateRow, 14, 0);
-    lv_obj_set_style_pad_right(otaAutoUpdateRow, 14, 0);
-    lv_obj_set_style_pad_top(otaAutoUpdateRow, 12, 0);
-    lv_obj_set_style_pad_bottom(otaAutoUpdateRow, 12, 0);
-
-    lv_obj_t *otaAutoUpdateTitle = lv_label_create(otaAutoUpdateRow);
-    lv_label_set_text(otaAutoUpdateTitle, "Auto Update");
-    lv_obj_set_style_text_font(otaAutoUpdateTitle, &lv_font_montserrat_18, 0);
-    lv_obj_set_style_text_color(otaAutoUpdateTitle, lv_color_hex(0x0F172A), 0);
-    lv_obj_align(otaAutoUpdateTitle, LV_ALIGN_TOP_LEFT, 0, 0);
-
-    lv_obj_t *otaAutoUpdateDetail = lv_label_create(otaAutoUpdateRow);
-    lv_obj_set_width(otaAutoUpdateDetail, 240);
-    lv_label_set_long_mode(otaAutoUpdateDetail, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(otaAutoUpdateDetail, "Automatically start the preferred OTA release when a new update is detected.");
-    lv_obj_set_style_text_font(otaAutoUpdateDetail, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(otaAutoUpdateDetail, lv_color_hex(0x475569), 0);
-    lv_obj_align_to(otaAutoUpdateDetail, otaAutoUpdateTitle, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 6);
-
-    _firmwareAutoUpdateSwitch = lv_switch_create(otaAutoUpdateRow);
-    lv_obj_align(_firmwareAutoUpdateSwitch, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_add_event_cb(_firmwareAutoUpdateSwitch, onFirmwareAutoUpdateSwitchValueChangeEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-    if (_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] != 0) {
-        lv_obj_add_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
-    } else {
-        lv_obj_clear_state(_firmwareAutoUpdateSwitch, LV_STATE_CHECKED);
-    }
-
-    lv_obj_t *sdSection = createFirmwareSection(firmwarePanel, "Flash from SD Card");
-    lv_obj_t *sdHint = lv_label_create(sdSection);
-    lv_obj_set_width(sdHint, lv_pct(100));
-    lv_label_set_long_mode(sdHint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(sdHint, "Select a validated .bin firmware image from /sdcard or /sdcard/firmware.");
-    lv_obj_set_style_text_font(sdHint, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(sdHint, lv_color_hex(0x475569), 0);
-
-    lv_obj_t *sdControlsRow = createFirmwareControlsRow(sdSection);
-
-    _firmwareSdDropdown = lv_dropdown_create(sdControlsRow);
-    lv_obj_set_size(_firmwareSdDropdown, 220, 48);
-    lv_obj_set_flex_grow(_firmwareSdDropdown, 1);
-    lv_obj_add_event_cb(_firmwareSdDropdown, onFirmwareSelectionChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
-
-    lv_obj_t *sdRefreshButton = lv_btn_create(sdControlsRow);
-    lv_obj_set_size(sdRefreshButton, 92, 48);
-    lv_obj_set_style_radius(sdRefreshButton, 16, 0);
-    lv_obj_set_style_border_width(sdRefreshButton, 0, 0);
-    lv_obj_set_style_bg_color(sdRefreshButton, lv_color_hex(0xCBD5E1), 0);
-    lv_obj_add_event_cb(sdRefreshButton, onFirmwareSdRefreshClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *sdRefreshLabel = lv_label_create(sdRefreshButton);
-    lv_label_set_text(sdRefreshLabel, "Scan");
-    lv_obj_center(sdRefreshLabel);
-
-    _firmwareSdFlashButton = lv_btn_create(sdControlsRow);
-    lv_obj_set_size(_firmwareSdFlashButton, 92, 48);
-    lv_obj_set_style_radius(_firmwareSdFlashButton, 16, 0);
-    lv_obj_set_style_border_width(_firmwareSdFlashButton, 0, 0);
-    lv_obj_add_event_cb(_firmwareSdFlashButton, onFirmwareSdFlashClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *sdFlashLabel = lv_label_create(_firmwareSdFlashButton);
-    lv_label_set_text(sdFlashLabel, "Flash");
-    lv_obj_center(sdFlashLabel);
-
-    lv_obj_t *otaSection = createFirmwareSection(firmwarePanel, "Check GitHub Releases");
-    lv_obj_t *otaHint = lv_label_create(otaSection);
-    lv_obj_set_width(otaHint, lv_pct(100));
-    lv_label_set_long_mode(otaHint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(otaHint, "Check GitHub releases, review installed and latest versions below, then tick one firmware to flash.");
-    lv_obj_set_style_text_font(otaHint, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(otaHint, lv_color_hex(0x475569), 0);
-
-    lv_obj_t *otaControlsRow = createFirmwareControlsRow(otaSection);
-
-    _firmwareOtaCheckButton = lv_btn_create(otaControlsRow);
-    lv_obj_set_size(_firmwareOtaCheckButton, 96, 48);
-    lv_obj_set_style_radius(_firmwareOtaCheckButton, 16, 0);
-    lv_obj_set_style_border_width(_firmwareOtaCheckButton, 0, 0);
-    lv_obj_add_event_cb(_firmwareOtaCheckButton, onFirmwareOtaCheckClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *otaCheckLabel = lv_label_create(_firmwareOtaCheckButton);
-    lv_label_set_text(otaCheckLabel, "Check");
-    lv_obj_center(otaCheckLabel);
-
-    _firmwareOtaFlashButton = lv_btn_create(otaControlsRow);
-    lv_obj_set_size(_firmwareOtaFlashButton, 92, 48);
-    lv_obj_set_style_radius(_firmwareOtaFlashButton, 16, 0);
-    lv_obj_set_style_border_width(_firmwareOtaFlashButton, 0, 0);
-    lv_obj_add_event_cb(_firmwareOtaFlashButton, onFirmwareOtaFlashClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *otaFlashLabel = lv_label_create(_firmwareOtaFlashButton);
-    lv_label_set_text(otaFlashLabel, "Flash");
-    lv_obj_center(otaFlashLabel);
-
-    _firmwareOtaSummaryLabel = lv_label_create(otaSection);
-    lv_obj_set_width(_firmwareOtaSummaryLabel, lv_pct(100));
-    lv_label_set_long_mode(_firmwareOtaSummaryLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_firmwareOtaSummaryLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_firmwareOtaSummaryLabel, lv_color_hex(0x334155), 0);
-
-    _firmwareOtaListContainer = lv_obj_create(otaSection);
-    lv_obj_set_width(_firmwareOtaListContainer, lv_pct(100));
-    lv_obj_set_height(_firmwareOtaListContainer, 210);
-    lv_obj_set_style_radius(_firmwareOtaListContainer, 16, 0);
-    lv_obj_set_style_bg_color(_firmwareOtaListContainer, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_border_color(_firmwareOtaListContainer, lv_color_hex(0xCBD5E1), 0);
-    lv_obj_set_style_border_width(_firmwareOtaListContainer, 1, 0);
-    lv_obj_set_style_pad_all(_firmwareOtaListContainer, 12, 0);
-    lv_obj_set_style_pad_row(_firmwareOtaListContainer, 8, 0);
-    lv_obj_set_scroll_dir(_firmwareOtaListContainer, LV_DIR_VER);
-    lv_obj_set_flex_flow(_firmwareOtaListContainer, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(_firmwareOtaListContainer, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-    _firmwareProgressBar = lv_bar_create(firmwarePanel);
-    lv_obj_set_width(_firmwareProgressBar, lv_pct(100));
-    lv_obj_set_height(_firmwareProgressBar, 18);
-    lv_bar_set_range(_firmwareProgressBar, 0, 100);
-    lv_bar_set_value(_firmwareProgressBar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_radius(_firmwareProgressBar, 9, 0);
-    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0xCBD5E1), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(_firmwareProgressBar, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(_firmwareProgressBar, LV_OPA_COVER, LV_PART_INDICATOR);
-
-    _firmwareProgressLabel = lv_label_create(firmwarePanel);
-    lv_obj_set_width(_firmwareProgressLabel, lv_pct(100));
-    lv_label_set_long_mode(_firmwareProgressLabel, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(_firmwareProgressLabel, "Idle");
-    lv_obj_set_style_text_font(_firmwareProgressLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(_firmwareProgressLabel, lv_color_hex(0x64748B), 0);
-
-    _firmwareStatusLabel = lv_label_create(firmwarePanel);
-    lv_obj_set_width(_firmwareStatusLabel, lv_pct(100));
-    lv_label_set_long_mode(_firmwareStatusLabel, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(_firmwareStatusLabel, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(_firmwareStatusLabel, lv_color_hex(0x334155), 0);
-
-    lv_obj_t *dangerSection = createFirmwareSection(firmwarePanel, "Danger Zone");
-    lv_obj_t *dangerHint = lv_label_create(dangerSection);
-    lv_obj_set_width(dangerHint, lv_pct(100));
-    lv_label_set_long_mode(dangerHint, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(dangerHint, "Factory reset clears saved Settings preferences including Wi-Fi credentials, display, audio, and timezone options.");
-    lv_obj_set_style_text_font(dangerHint, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(dangerHint, lv_color_hex(0x7F1D1D), 0);
-
-    lv_obj_t *dangerControlsRow = createFirmwareControlsRow(dangerSection);
-    lv_obj_t *factoryResetButton = lv_btn_create(dangerControlsRow);
-    lv_obj_set_size(factoryResetButton, 170, 50);
-    lv_obj_set_style_radius(factoryResetButton, 16, 0);
-    lv_obj_set_style_border_width(factoryResetButton, 0, 0);
-    lv_obj_set_style_bg_color(factoryResetButton, lv_color_hex(0xDC2626), 0);
-    lv_obj_set_style_bg_opa(factoryResetButton, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(factoryResetButton, lv_color_hex(0xB91C1C), LV_PART_MAIN | LV_STATE_PRESSED);
-    lv_obj_add_event_cb(factoryResetButton, onFirmwareFactoryResetClickedEventCallback, LV_EVENT_CLICKED, this);
-    lv_obj_t *factoryResetLabel = lv_label_create(factoryResetButton);
-    lv_label_set_text(factoryResetLabel, "Factory Reset");
-    lv_obj_set_style_text_color(factoryResetLabel, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_center(factoryResetLabel);
-
-    _screen_list[UI_FIRMWARE_SETTING_INDEX] = _firmwareScreen;
-    lv_obj_add_event_cb(_firmwareScreen, onScreenLoadEventCallback, LV_EVENT_SCREEN_LOADED, this);
-#endif
-}
+#include "firmware/SettingFirmwareSection.inc"
 
 bool AppSettings::loadNvsParam(void)
 {
@@ -6587,66 +6309,7 @@ bool AppSettings::factoryResetPreferences(void)
 }
 
 
-void AppSettings::refreshDisplayIdleUi(void)
-{
-#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
-    return;
-#endif
-    if (!isUiActive()) {
-        return;
-    }
-
-    if (lv_obj_ready(_displayAdaptiveBrightnessSwitch)) {
-        if (_nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE]) {
-            lv_obj_add_state(_displayAdaptiveBrightnessSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_displayAdaptiveBrightnessSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_displayScreensaverSwitch)) {
-        if (_nvs_param_map[NVS_KEY_DISPLAY_SCREENSAVER]) {
-            lv_obj_add_state(_displayScreensaverSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_displayScreensaverSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_displayTimeoffInGameSwitch)) {
-        if (_nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF_IN_GAME]) {
-            lv_obj_add_state(_displayTimeoffInGameSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_displayTimeoffInGameSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_displayTimeoffDropdown)) {
-        lv_dropdown_set_selected(_displayTimeoffDropdown,
-                                 findDropdownIndexForValue(kDisplayTimeoffOptionsSec,
-                                                           sizeof(kDisplayTimeoffOptionsSec) / sizeof(kDisplayTimeoffOptionsSec[0]),
-                                                           _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF]));
-    }
-
-    if (lv_obj_ready(_displaySleepDropdown)) {
-        lv_dropdown_set_selected(_displaySleepDropdown,
-                                 findDropdownIndexForValue(kDisplaySleepOptionsSec,
-                                                           sizeof(kDisplaySleepOptionsSec) / sizeof(kDisplaySleepOptionsSec[0]),
-                                                           _nvs_param_map[NVS_KEY_DISPLAY_SLEEP]));
-    }
-
-    if (lv_obj_ready(_displayOrientationDropdown)) {
-        lv_dropdown_set_selected(_displayOrientationDropdown,
-                                 findDropdownIndexForValue(kDisplayOrientationOptionsDeg,
-                                                           sizeof(kDisplayOrientationOptionsDeg) / sizeof(kDisplayOrientationOptionsDeg[0]),
-                                                           sanitizeDisplayOrientationDegrees(_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION])));
-    }
-
-    refreshDisplayAutorotateUi();
-
-    #if CONFIG_JC4880_FEATURE_TIME_SYNC
-    refreshTimezoneUi();
-    #endif
-}
+#include "display/SettingDisplaySection.inc"
 
 void AppSettings::refreshAboutPeripheralUi(void)
 {
@@ -6689,442 +6352,7 @@ void AppSettings::refreshPeripheralMenuVisibility(void)
 #endif
 }
 
-void AppSettings::refreshDisplayAutorotateUi(void)
-{
-#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
-    return;
-#endif
-    if (!isUiActive()) {
-        return;
-    }
-
-    const bool enabled = _nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] != 0;
-    const int32_t rotation_axis = sanitizeDisplayAutorotateAxis(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU]);
-
-    if (lv_obj_ready(_displayAutorotateSwitch)) {
-        if (enabled) {
-            lv_obj_add_state(_displayAutorotateSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_displayAutorotateSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_displayAutorotateImuDropdown)) {
-        lv_dropdown_set_selected(_displayAutorotateImuDropdown,
-                                 findDropdownIndexForValue(kDisplayAutorotateAxisOptions,
-                                                           sizeof(kDisplayAutorotateAxisOptions) / sizeof(kDisplayAutorotateAxisOptions[0]),
-                                                           rotation_axis));
-        if (enabled) {
-            lv_obj_clear_state(_displayAutorotateImuDropdown, LV_STATE_DISABLED);
-        } else {
-            lv_obj_add_state(_displayAutorotateImuDropdown, LV_STATE_DISABLED);
-        }
-    }
-
-    if (lv_obj_ready(_displayAutorotateInfoLabel)) {
-        const char *axis_name = "X";
-        std::string info_text;
-        switch (rotation_axis) {
-        case 1:
-            axis_name = "Y";
-            break;
-        case 2:
-            axis_name = "Z";
-            break;
-        default:
-            break;
-        }
-        if (enabled) {
-            info_text = std::string("Autorotate is live. The display flips from the selected ") + axis_name +
-                        " axis between the saved orientation and its 180 degree opposite.";
-        } else {
-            info_text = std::string("Autorotate is off. When enabled, the ") + axis_name +
-                        " axis drives a 180 degree UI flip.";
-        }
-        lv_label_set_text(_displayAutorotateInfoLabel, info_text.c_str());
-    }
-}
-
-void AppSettings::updateDisplayAutorotateFromSample(const jc4880::imu::ImuSample *sample, bool sample_ok)
-{
-#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
-    (void)sample;
-    (void)sample_ok;
-    return;
-#else
-    const int32_t base_orientation = sanitizeDisplayOrientationDegrees(_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION]);
-    if (_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] == 0) {
-        if (!_displayAutorotateHasAppliedOrientation || (_displayAutorotateAppliedOrientation != base_orientation)) {
-            if (applyDisplayOrientationLive(base_orientation)) {
-                _displayAutorotateAppliedOrientation = base_orientation;
-                _displayAutorotateHasAppliedOrientation = true;
-            }
-        }
-        return;
-    }
-
-    if ((sample == nullptr) || !sample_ok || !sample->hasAccel) {
-        return;
-    }
-
-    const int32_t rotation_axis = sanitizeDisplayAutorotateAxis(_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU]);
-    float selected_angle = sample->roll;
-    switch (rotation_axis) {
-    case 1:
-        selected_angle = sample->pitch;
-        break;
-    case 2:
-        selected_angle = sample->yaw;
-        break;
-    default:
-        selected_angle = sample->roll;
-        break;
-    }
-    const int32_t inverted_orientation = oppositeDisplayOrientationDegrees(base_orientation);
-    const bool currently_inverted = _displayAutorotateHasAppliedOrientation && (_displayAutorotateAppliedOrientation == inverted_orientation);
-    int32_t target_orientation = currently_inverted ? inverted_orientation : base_orientation;
-
-    if (currently_inverted) {
-        if (std::fabs(selected_angle) <= 70.0f) {
-            target_orientation = base_orientation;
-        }
-    } else if (std::fabs(selected_angle) >= 110.0f) {
-        target_orientation = inverted_orientation;
-    }
-
-    if (!_displayAutorotateHasAppliedOrientation || (target_orientation != _displayAutorotateAppliedOrientation)) {
-        if (applyDisplayOrientationLive(target_orientation)) {
-            _displayAutorotateAppliedOrientation = target_orientation;
-            _displayAutorotateHasAppliedOrientation = true;
-        }
-    }
-#endif
-}
-
-void AppSettings::requestDisplayOrientationPreview(int32_t orientation_degrees)
-{
-#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
-    (void)orientation_degrees;
-    return;
-#else
-    const int32_t sanitized_orientation = sanitizeDisplayOrientationDegrees(orientation_degrees);
-    const int32_t previous_orientation = sanitizeDisplayOrientationDegrees(_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION]);
-    if (sanitized_orientation == previous_orientation) {
-        return;
-    }
-
-    if (_displayOrientationPreviewMsgbox != nullptr) {
-        finishDisplayOrientationPreview(false);
-    }
-
-    if ((sanitized_orientation != orientation_degrees) || !applyDisplayOrientationLive(sanitized_orientation)) {
-        ESP_LOGW(TAG, "Failed to apply live display orientation %ld", static_cast<long>(orientation_degrees));
-        return;
-    }
-
-    _displayOrientationPreviewPrevious = previous_orientation;
-    _displayOrientationPreviewPending = sanitized_orientation;
-    _displayOrientationPreviewSecondsRemaining = kDisplayOrientationPreviewSeconds;
-    _displayOrientationPreviewResolving = false;
-    _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = sanitized_orientation;
-
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PENDING, sanitized_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, previous_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_STATE, 1);
-
-    static const char *buttons[] = {"Cancel", "OK", ""};
-    _displayOrientationPreviewMsgbox = lv_msgbox_create(lv_layer_top(), "Display Orientation",
-                                                        kDisplayOrientationPreviewInitialText, buttons, false);
-    if ((_displayOrientationPreviewMsgbox == nullptr) || !lv_obj_is_valid(_displayOrientationPreviewMsgbox)) {
-        _displayOrientationPreviewMsgbox = nullptr;
-        finishDisplayOrientationPreview(false);
-        return;
-    }
-
-    _displayOrientationPreviewLabel = lv_msgbox_get_text(_displayOrientationPreviewMsgbox);
-    const lv_coord_t display_width = lv_disp_get_hor_res(nullptr);
-    const lv_coord_t preview_msgbox_width = std::min<lv_coord_t>(340, std::max<lv_coord_t>(260, display_width - 96));
-    lv_obj_set_width(_displayOrientationPreviewMsgbox, preview_msgbox_width);
-    lv_obj_set_style_pad_all(_displayOrientationPreviewMsgbox, 16, 0);
-    lv_obj_set_style_pad_row(_displayOrientationPreviewMsgbox, 12, 0);
-    if (lv_obj_ready(_displayOrientationPreviewLabel)) {
-        lv_obj_set_width(_displayOrientationPreviewLabel, lv_pct(100));
-        lv_label_set_long_mode(_displayOrientationPreviewLabel, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_align(_displayOrientationPreviewLabel, LV_TEXT_ALIGN_CENTER, 0);
-    }
-    lv_obj_t *preview_content = lv_msgbox_get_content(_displayOrientationPreviewMsgbox);
-    if (lv_obj_ready(preview_content)) {
-        lv_obj_set_flex_flow(preview_content, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_align(preview_content, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_row(preview_content, 12, 0);
-
-        _displayOrientationPreviewSpinner = lv_spinner_create(preview_content, 1000, 80);
-        if (lv_obj_ready(_displayOrientationPreviewSpinner)) {
-            lv_obj_set_size(_displayOrientationPreviewSpinner, 86, 86);
-            lv_obj_clear_flag(_displayOrientationPreviewSpinner, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_arc_width(_displayOrientationPreviewSpinner, 8, LV_PART_MAIN);
-            lv_obj_set_style_arc_width(_displayOrientationPreviewSpinner, 8, LV_PART_INDICATOR);
-            lv_obj_set_style_arc_color(_displayOrientationPreviewSpinner, lv_color_hex(0xD7DCE6), LV_PART_MAIN);
-            lv_obj_set_style_arc_color(_displayOrientationPreviewSpinner, lv_color_hex(0x2563EB), LV_PART_INDICATOR);
-
-            _displayOrientationPreviewCountdownLabel = lv_label_create(_displayOrientationPreviewSpinner);
-            if (lv_obj_ready(_displayOrientationPreviewCountdownLabel)) {
-                lv_obj_set_style_text_align(_displayOrientationPreviewCountdownLabel, LV_TEXT_ALIGN_CENTER, 0);
-                lv_obj_set_style_text_font(_displayOrientationPreviewCountdownLabel, &lv_font_montserrat_28, 0);
-                lv_obj_center(_displayOrientationPreviewCountdownLabel);
-            }
-        }
-    }
-    lv_obj_t *preview_buttons = lv_msgbox_get_btns(_displayOrientationPreviewMsgbox);
-    if (lv_obj_ready(preview_buttons)) {
-        lv_obj_set_size(preview_buttons, lv_pct(100), 54);
-        lv_btnmatrix_set_btn_width(preview_buttons, 0, 2);
-        lv_btnmatrix_set_btn_width(preview_buttons, 1, 3);
-        lv_obj_set_style_pad_all(preview_buttons, 4, 0);
-        lv_obj_set_style_pad_column(preview_buttons, 10, 0);
-        lv_obj_set_style_radius(preview_buttons, 6, LV_PART_ITEMS);
-    }
-    lv_obj_center(_displayOrientationPreviewMsgbox);
-    lv_obj_add_event_cb(_displayOrientationPreviewMsgbox, onDisplayOrientationPreviewPopupEventCallback,
-                        LV_EVENT_VALUE_CHANGED, this);
-    lv_obj_add_event_cb(_displayOrientationPreviewMsgbox, onDisplayOrientationPreviewPopupEventCallback,
-                        LV_EVENT_DELETE, this);
-    updateDisplayOrientationPreviewPopup();
-
-    _displayOrientationPreviewTimer = lv_timer_create(onDisplayOrientationPreviewTimerCallback, 1000, this);
-    if (_displayOrientationPreviewTimer == nullptr) {
-        finishDisplayOrientationPreview(false);
-    }
-#endif
-}
-
-void AppSettings::updateDisplayOrientationPreviewPopup(void)
-{
-#if APP_SETTINGS_FEATURE_DISPLAY_MENU
-    if (lv_obj_ready(_displayOrientationPreviewLabel)) {
-        lv_label_set_text(_displayOrientationPreviewLabel, kDisplayOrientationPreviewInitialText);
-    }
-
-    if (lv_obj_ready(_displayOrientationPreviewCountdownLabel)) {
-        char countdown[8] = {0};
-        snprintf(countdown, sizeof(countdown), "%ld", static_cast<long>(_displayOrientationPreviewSecondsRemaining));
-        lv_label_set_text(_displayOrientationPreviewCountdownLabel, countdown);
-        lv_obj_center(_displayOrientationPreviewCountdownLabel);
-    }
-#endif
-}
-
-void AppSettings::finishDisplayOrientationPreview(bool keep_orientation)
-{
-#if APP_SETTINGS_FEATURE_DISPLAY_MENU
-    if (_displayOrientationPreviewTimer != nullptr) {
-        lv_timer_del(_displayOrientationPreviewTimer);
-        _displayOrientationPreviewTimer = nullptr;
-    }
-
-    const int32_t final_orientation = keep_orientation
-                                          ? sanitizeDisplayOrientationDegrees(_displayOrientationPreviewPending)
-                                          : sanitizeDisplayOrientationDegrees(_displayOrientationPreviewPrevious);
-    applyDisplayOrientationLive(final_orientation);
-    _nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION] = final_orientation;
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION, final_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PENDING, final_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_PREVIOUS, final_orientation);
-    setNvsParam(NVS_KEY_DISPLAY_ORIENTATION_STATE, 0);
-
-    if (lv_obj_ready(_displayOrientationDropdown)) {
-        lv_dropdown_set_selected(_displayOrientationDropdown,
-                                 findDropdownIndexForValue(kDisplayOrientationOptionsDeg,
-                                                           sizeof(kDisplayOrientationOptionsDeg) / sizeof(kDisplayOrientationOptionsDeg[0]),
-                                                           final_orientation));
-    }
-
-    _displayOrientationPreviewResolving = true;
-    if (lv_obj_ready(_displayOrientationPreviewMsgbox)) {
-        lv_msgbox_close_async(_displayOrientationPreviewMsgbox);
-    } else {
-        _displayOrientationPreviewMsgbox = nullptr;
-        _displayOrientationPreviewLabel = nullptr;
-        _displayOrientationPreviewSpinner = nullptr;
-        _displayOrientationPreviewCountdownLabel = nullptr;
-        _displayOrientationPreviewSecondsRemaining = 0;
-        _displayOrientationPreviewResolving = false;
-    }
-#else
-    (void)keep_orientation;
-#endif
-}
-
-void AppSettings::applyNeopixelConfig(void)
-{
-#if !APP_SETTINGS_FEATURE_DISPLAY_MENU
-    return;
-#else
-    jc4880_joypad_config_t joypad_config = {};
-    const bool local_controller_active = jc4880_joypad_get_config(&joypad_config) &&
-                                         (joypad_config.backend == JC4880_JOYPAD_BACKEND_MANUAL);
-    const int32_t neopixel_gpio = sanitizeNeopixelGpio(_nvs_param_map[NVS_KEY_NEOPIXEL_GPIO]);
-    jc4880_neopixel_apply_config((_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] != 0) && local_controller_active,
-                                 neopixel_gpio,
-                                 std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS]), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MIN), static_cast<int32_t>(NEOPIXEL_BRIGHTNESS_MAX)),
-                                 std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE]), static_cast<int32_t>(0), static_cast<int32_t>(11)),
-                                 std::clamp(static_cast<int32_t>(_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT]), static_cast<int32_t>(0), static_cast<int32_t>(20)));
-#endif
-}
-
-void AppSettings::refreshTimezoneUi(void)
-{
-#if !CONFIG_JC4880_FEATURE_TIME_SYNC
-    return;
-#endif
-    if (!isUiActive()) {
-        return;
-    }
-
-    if (lv_obj_ready(_displayTimezoneDropdown)) {
-        lv_dropdown_set_selected(_displayTimezoneDropdown,
-                                 findTimezoneDropdownIndexForOffset(_nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE]));
-    }
-
-    if (lv_obj_ready(_displayAutoTimezoneSwitch)) {
-        if (_nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO]) {
-            lv_obj_add_state(_displayAutoTimezoneSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_displayAutoTimezoneSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_displayTimezoneInfoLabel)) {
-        const bool auto_enabled = _nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO] != 0;
-        const TimezoneOption &manual_option = getTimezoneOptionForOffset(_nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE]);
-
-        std::string label = std::string("Manual: ") + manual_option.label;
-        if (auto_enabled) {
-            if (_hasAutoDetectedTimezone) {
-                const TimezoneOption &detected_option = getTimezoneOptionForOffset(_autoDetectedTimezoneOffsetMinutes);
-                label = std::string("Auto: ") + detected_option.label;
-                if (!_autoTimezoneStatus.empty()) {
-                    label += " С‚РђРІ " + _autoTimezoneStatus;
-                }
-            } else if (!_autoTimezoneStatus.empty()) {
-                label = _autoTimezoneStatus + " С‚РђРІ fallback " + manual_option.label;
-            } else {
-                label = std::string("Auto timezone enabled С‚РђРІ fallback ") + manual_option.label;
-            }
-        }
-
-        lv_label_set_text(_displayTimezoneInfoLabel, label.c_str());
-    }
-}
-
-void AppSettings::refreshBluetoothUi(void)
-{
-#if !APP_SETTINGS_FEATURE_BLUETOOTH_MENU
-    return;
-#endif
-    if (!isUiActive()) {
-        return;
-    }
-
-    const bool bluetooth_enabled = _nvs_param_map[NVS_KEY_BLE_ENABLE] != 0;
-    const bool delegated_to_joypad = bluetoothMenuDelegatesToJoypadBle();
-
-    if (lv_obj_ready(ui_SwitchPanelScreenSettingBLESwitch)) {
-        if (delegated_to_joypad) {
-            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
-            lv_obj_add_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_DISABLED);
-        } else if (bluetooth_enabled) {
-            lv_obj_add_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
-            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_DISABLED);
-        } else {
-            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
-            lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_DISABLED);
-        }
-    }
-
-    if (lv_obj_ready(ui_SpinnerScreenSettingBLE)) {
-        if (s_bleRuntimeState == BleRuntimeState::Starting) {
-            lv_obj_clear_flag(ui_SpinnerScreenSettingBLE, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(ui_SpinnerScreenSettingBLE, LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
-    if (lv_obj_ready(_bluetoothInfoLabel)) {
-        const std::string status = bleStatusText(bluetooth_enabled);
-        lv_label_set_text(_bluetoothInfoLabel, status.c_str());
-    }
-
-    if (lv_obj_ready(_bluetoothNameTextArea)) {
-        char ble_name[32] = {0};
-        if (!loadNvsStringParam(NVS_KEY_BLE_DEVICE_NAME, ble_name, sizeof(ble_name)) || (ble_name[0] == '\0')) {
-            strlcpy(ble_name, kBleDefaultDeviceName, sizeof(ble_name));
-        }
-
-        if (!lv_obj_has_state(_bluetoothNameTextArea, LV_STATE_FOCUSED)) {
-            lv_textarea_set_text(_bluetoothNameTextArea, ble_name);
-        }
-
-        if (delegated_to_joypad) {
-            lv_obj_add_state(_bluetoothNameTextArea, LV_STATE_DISABLED);
-        } else {
-            lv_obj_clear_state(_bluetoothNameTextArea, LV_STATE_DISABLED);
-        }
-    }
-
-    if (lv_obj_ready(_bluetoothNameSaveButton)) {
-        if (delegated_to_joypad) {
-            lv_obj_add_state(_bluetoothNameSaveButton, LV_STATE_DISABLED);
-        } else {
-            lv_obj_clear_state(_bluetoothNameSaveButton, LV_STATE_DISABLED);
-        }
-    }
-
-    if (lv_obj_ready(_bluetoothScanButtonLabel)) {
-        lv_label_set_text(_bluetoothScanButtonLabel,
-                          delegated_to_joypad ? "Use Joypad Menu" : (s_bleScanInProgress ? "Stop Scan" : "Scan Nearby"));
-    }
-
-    if (lv_obj_ready(_bluetoothScanButton)) {
-        if (delegated_to_joypad) {
-            lv_obj_add_state(_bluetoothScanButton, LV_STATE_DISABLED);
-        } else {
-            lv_obj_clear_state(_bluetoothScanButton, LV_STATE_DISABLED);
-        }
-    }
-
-    if (lv_obj_ready(_bluetoothScanStatusLabel)) {
-        if (delegated_to_joypad) {
-            lv_label_set_text(_bluetoothScanStatusLabel,
-                              "Open Settings > Joypad to enable Bluepad32, pair a controller, or manage discovery on the ESP32-C6.");
-        } else if (!bluetooth_enabled) {
-            lv_label_set_text(_bluetoothScanStatusLabel, "Enable BLE first to scan nearby devices.");
-        } else {
-            lv_label_set_text(_bluetoothScanStatusLabel, s_bleScanStatus.c_str());
-        }
-    }
-
-    if (lv_obj_ready(_bluetoothScanResultsLabel)) {
-        std::string results;
-        if (delegated_to_joypad) {
-            results = "The Joypad screen owns controller pairing and stored-controller selection when Joypad BLE is active.";
-        } else if (s_bleScanResults.empty()) {
-            results = bluetooth_enabled ? "No discovery results yet." : "Discovery is unavailable while BLE is off.";
-        } else {
-            for (size_t index = 0; index < s_bleScanResults.size(); ++index) {
-                const auto &entry = s_bleScanResults[index];
-                results += std::to_string(index + 1) + ". ";
-                results += entry.name.empty() ? std::string("Unnamed device") : entry.name;
-                results += "\n";
-                results += entry.address + "  RSSI " + std::to_string(entry.rssi) + " dBm";
-                if ((index + 1) < s_bleScanResults.size()) {
-                    results += "\n\n";
-                }
-            }
-        }
-        lv_label_set_text(_bluetoothScanResultsLabel, results.c_str());
-    }
-}
+#include "bluetooth/SettingBluetoothSection.inc"
 
 void AppSettings::refreshRadioStatusBar(void)
 {
@@ -7221,105 +6449,11 @@ void AppSettings::refreshRadioStatusBar(void)
 #endif
 }
 
-void AppSettings::refreshZigbeeUi(void)
-{
-#if !CONFIG_JC4880_FEATURE_ZIGBEE
-    return;
-#endif
-    if (!isUiActive()) {
-        return;
-    }
+#include "zigbee/SettingZigbeeSection.inc"
 
-    const bool zigbee_enabled = _nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] != 0;
-    const int32_t preferred_channel = _nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL];
-    const int32_t permit_join_seconds = _nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN];
+#include "security/SettingSecuritySection.inc"
 
-    if (lv_obj_ready(_zigbeeEnableSwitch)) {
-        if (zigbee_enabled) {
-            lv_obj_add_state(_zigbeeEnableSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_zigbeeEnableSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_zigbeeChannelDropdown)) {
-        lv_dropdown_set_selected(_zigbeeChannelDropdown,
-                                 findDropdownIndexForValue(kZigbeeChannelOptions,
-                                                           sizeof(kZigbeeChannelOptions) / sizeof(kZigbeeChannelOptions[0]),
-                                                           preferred_channel));
-    }
-
-    if (lv_obj_ready(_zigbeePermitJoinDropdown)) {
-        lv_dropdown_set_selected(_zigbeePermitJoinDropdown,
-                                 findDropdownIndexForValue(kZigbeePermitJoinOptionsSec,
-                                                           sizeof(kZigbeePermitJoinOptionsSec) / sizeof(kZigbeePermitJoinOptionsSec[0]),
-                                                           permit_join_seconds));
-    }
-
-    if (lv_obj_ready(_zigbeeNameTextArea)) {
-        char zigbee_name[32] = {0};
-        if (!loadNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, zigbee_name, sizeof(zigbee_name)) || (zigbee_name[0] == '\0')) {
-            strlcpy(zigbee_name, kZigbeeDefaultDeviceName, sizeof(zigbee_name));
-        }
-
-        if (lv_obj_has_state(_zigbeeNameTextArea, LV_STATE_FOCUSED) == false) {
-            lv_textarea_set_text(_zigbeeNameTextArea, zigbee_name);
-        }
-    }
-
-    if (lv_obj_ready(_zigbeeRoleValueLabel)) {
-        lv_label_set_text(_zigbeeRoleValueLabel,
-                          "Coordinator on the ESP32-C6 coprocessor. The current firmware starts ZigBee natively on boot and keeps Wi-Fi/BLE coexistence enabled there.");
-    }
-
-    if (lv_obj_ready(_zigbeeConfigSummaryLabel)) {
-        char zigbee_name[32] = {0};
-        if (!loadNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, zigbee_name, sizeof(zigbee_name)) || (zigbee_name[0] == '\0')) {
-            strlcpy(zigbee_name, kZigbeeDefaultDeviceName, sizeof(zigbee_name));
-        }
-
-        std::string summary = std::string("Device name: ") + zigbee_name +
-                              "\nPreferred channel: " + zigbeeChannelPreferenceLabel(preferred_channel) +
-                              "\nPermit joining: " + zigbeePermitJoinLabel(permit_join_seconds);
-        lv_label_set_text(_zigbeeConfigSummaryLabel, summary.c_str());
-    }
-
-    if (lv_obj_ready(_zigbeeInfoLabel)) {
-        const std::string status = zigbee_enabled ?
-            "ZigBee preferences are enabled on the P4. Current controls are host-side preferences only: the existing ESP32-C6 firmware does not expose live ZigBee RPC control, joined-device lists, PAN ID, or permit-join commands back to the P4 yet." :
-            "ZigBee preference is disabled on the P4 UI. Note that the current ESP32-C6 release still starts ZigBee natively at boot when compiled with CONFIG_ZB_ENABLED, so this setting currently acts as a host-side preference gate for future integration.";
-        lv_label_set_text(_zigbeeInfoLabel, status.c_str());
-    }
-}
-
-void AppSettings::refreshSecurityUi(void)
-{
-#if !CONFIG_JC4880_FEATURE_SECURITY
-    return;
-#endif
-    if (!isUiActive()) {
-        return;
-    }
-
-    const bool device_lock_enabled = device_security::isLockEnabled(device_security::LockType::Device);
-    const bool settings_lock_enabled = device_security::isLockEnabled(device_security::LockType::Settings);
-
-    if (lv_obj_ready(_securityDeviceLockSwitch)) {
-        if (device_lock_enabled) {
-            lv_obj_add_state(_securityDeviceLockSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_securityDeviceLockSwitch, LV_STATE_CHECKED);
-        }
-    }
-
-    if (lv_obj_ready(_securitySettingsLockSwitch)) {
-        if (settings_lock_enabled) {
-            lv_obj_add_state(_securitySettingsLockSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_securitySettingsLockSwitch, LV_STATE_CHECKED);
-        }
-    }
-}
+#include "audio/SettingAudioSection.inc"
 
 void AppSettings::setFirmwareStatus(const std::string &status, bool is_error)
 {
@@ -9236,96 +8370,6 @@ void AppSettings::firmwareUpdateTask(void *arg)
     esp_restart();
 }
 
-void AppSettings::applyDisplayIdleSettings(void)
-{
-    bsp_extra_display_idle_set_base_brightness(_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]);
-    bsp_extra_display_idle_configure(_nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE],
-                                     _nvs_param_map[NVS_KEY_DISPLAY_SCREENSAVER],
-                                     _nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF],
-                                     _nvs_param_map[NVS_KEY_DISPLAY_SLEEP]);
-}
-
-void AppSettings::applyManualTimezonePreference(void)
-{
-    const TimezoneOption &option = getTimezoneOptionForOffset(_nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE]);
-    app_sntp_set_timezone(option.tz);
-}
-
-bool AppSettings::syncAutoTimezoneFromInternet(void)
-{
-    std::string response;
-
-    esp_http_client_config_t config = {};
-    config.url = kTimezoneLookupUrl;
-    config.method = HTTP_METHOD_GET;
-    config.timeout_ms = 12000;
-    config.user_data = &response;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
-    config.event_handler = [](esp_http_client_event_t *event) {
-        if ((event == nullptr) || (event->user_data == nullptr) || (event->event_id != HTTP_EVENT_ON_DATA) ||
-            (event->data == nullptr) || (event->data_len <= 0)) {
-            return ESP_OK;
-        }
-
-        auto *body = static_cast<std::string *>(event->user_data);
-        body->append(static_cast<const char *>(event->data), static_cast<size_t>(event->data_len));
-        return ESP_OK;
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == nullptr) {
-        _autoTimezoneStatus = "Auto timezone lookup unavailable";
-        refreshTimezoneUi();
-        return false;
-    }
-
-    bool ok = false;
-    if ((esp_http_client_set_header(client, "Accept", "application/json") == ESP_OK) &&
-        (esp_http_client_set_header(client, "User-Agent", "JC4880P443C-IW-Remote") == ESP_OK) &&
-        (esp_http_client_perform(client) == ESP_OK) &&
-        (esp_http_client_get_status_code(client) == 200)) {
-        cJSON *root = cJSON_Parse(response.c_str());
-        if (cJSON_IsObject(root)) {
-            const std::string offset_text = trim_copy(safe_json_string(root, "utc_offset"));
-            const std::string city = trim_copy(safe_json_string(root, "city"));
-            const std::string region = trim_copy(safe_json_string(root, "region"));
-            const std::string country = trim_copy(safe_json_string(root, "country_name"));
-            int32_t detected_minutes = 0;
-
-            if (parseUtcOffsetMinutes(offset_text, detected_minutes)) {
-                _autoDetectedTimezoneOffsetMinutes = detected_minutes;
-                _hasAutoDetectedTimezone = true;
-
-                const TimezoneOption &option = getTimezoneOptionForOffset(detected_minutes);
-                app_sntp_set_timezone(option.tz);
-
-                std::string location = city;
-                if (!region.empty()) {
-                    location = location.empty() ? region : (location + ", " + region);
-                }
-                if (!country.empty()) {
-                    location = location.empty() ? country : (location + ", " + country);
-                }
-
-                _autoTimezoneStatus = location.empty() ? std::string("Detected from internet") : location;
-                ok = true;
-            }
-        }
-        cJSON_Delete(root);
-    }
-
-    esp_http_client_cleanup(client);
-
-    if (!ok) {
-        _hasAutoDetectedTimezone = false;
-        _autoTimezoneStatus = "Auto timezone lookup failed";
-        applyManualTimezonePreference();
-    }
-
-    refreshTimezoneUi();
-    return ok;
-}
-
 void AppSettings::updateUiByNvsParam(void)
 {
     if (!isUiActive()) {
@@ -9353,24 +8397,7 @@ void AppSettings::updateUiByNvsParam(void)
 #endif
 
 #if CONFIG_JC4880_FEATURE_AUDIO
-    lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, _nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
-    if (_audioSystemVolumeSlider != nullptr) {
-        lv_slider_set_value(_audioSystemVolumeSlider, _nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], LV_ANIM_OFF);
-    }
-    if (lv_obj_ready(_audioTapSoundSwitch)) {
-        if (_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] != 0) {
-            lv_obj_add_state(_audioTapSoundSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_audioTapSoundSwitch, LV_STATE_CHECKED);
-        }
-    }
-    if (lv_obj_ready(_audioHapticFeedbackSwitch)) {
-        if (_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] != 0) {
-            lv_obj_add_state(_audioHapticFeedbackSwitch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(_audioHapticFeedbackSwitch, LV_STATE_CHECKED);
-        }
-    }
+    refreshAudioUi();
 #endif
 
 #if APP_SETTINGS_FEATURE_WIFI
@@ -9404,21 +8431,7 @@ void AppSettings::updateUiByNvsParam(void)
     }
 }
 
-void AppSettings::setZigbeeKeyboardVisible(bool visible)
-{
-    if (!isUiActive() || !lv_obj_ready(_zigbeeKeyboard) || !lv_obj_ready(_zigbeeNameTextArea)) {
-        return;
-    }
-
-    if (visible) {
-        lv_keyboard_set_textarea(_zigbeeKeyboard, _zigbeeNameTextArea);
-        lv_obj_clear_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_keyboard_set_textarea(_zigbeeKeyboard, nullptr);
-        lv_obj_add_flag(_zigbeeKeyboard, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
+#if 0
 void AppSettings::setLoRaKeyboardVisible(bool visible, lv_obj_t *textarea)
 {
     if (!isUiActive() || !lv_obj_ready(_loraKeyboard)) {
@@ -9446,64 +8459,7 @@ void AppSettings::setLoRaKeyboardVisible(bool visible, lv_obj_t *textarea)
         _loraKeyboardTarget = nullptr;
     }
 }
-
-bool AppSettings::persistZigbeeNameFromUi(void)
-{
-    if (_zigbeeNameTextArea == nullptr) {
-        return false;
-    }
-
-    std::string name = trim_copy(lv_textarea_get_text(_zigbeeNameTextArea));
-    if (name.empty()) {
-        name = kZigbeeDefaultDeviceName;
-    }
-
-    if (name.size() > 31) {
-        name.resize(31);
-    }
-
-    lv_textarea_set_text(_zigbeeNameTextArea, name.c_str());
-    return setNvsStringParam(NVS_KEY_ZIGBEE_DEVICE_NAME, name.c_str());
-}
-
-void AppSettings::setBluetoothKeyboardVisible(bool visible)
-{
-    if (!isUiActive() || !lv_obj_ready(_bluetoothKeyboard) || !lv_obj_ready(_bluetoothNameTextArea)) {
-        return;
-    }
-
-    if (visible) {
-        lv_keyboard_set_textarea(_bluetoothKeyboard, _bluetoothNameTextArea);
-        lv_obj_clear_flag(_bluetoothKeyboard, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_keyboard_set_textarea(_bluetoothKeyboard, nullptr);
-        lv_obj_add_flag(_bluetoothKeyboard, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-bool AppSettings::persistBluetoothNameFromUi(void)
-{
-    if (_bluetoothNameTextArea == nullptr) {
-        return false;
-    }
-
-    std::string name = trim_copy(lv_textarea_get_text(_bluetoothNameTextArea));
-    if (name.empty()) {
-        name = kBleDefaultDeviceName;
-    }
-
-    if (name.size() > 31) {
-        name.resize(31);
-    }
-
-    lv_textarea_set_text(_bluetoothNameTextArea, name.c_str());
-    if (!setNvsStringParam(NVS_KEY_BLE_DEVICE_NAME, name.c_str())) {
-        return false;
-    }
-
-    return bleUpdateConfiguredName(name) == ESP_OK;
-}
-
+#endif
 
 void AppSettings::refreshHardwareMonitorUi(void)
 {
@@ -9875,6 +8831,8 @@ void AppSettings::refreshHardwareMonitorUi(void)
                      "Stored in PSRAM every 10 seconds, keeping the latest 360 points (1 hour).",
                      has_cpu_temp ? getMonitorBarColor(temp_percent) : lv_color_hex(0x94A3B8),
                      lv_color_hex(0xDBEAFE));
+
+    refreshHardwareGpioTestUi();
 }
 
 void AppSettings::setBatteryHistoryExpanded(bool expanded, bool animate)
@@ -10000,6 +8958,8 @@ void AppSettings::euiRefresTask(void *arg)
             } else if (app->_screen_index == UI_ABOUT_SETTING_INDEX) {
                 app->refreshAboutWifiUi();
                 app->refreshAboutPeripheralUi();
+            } else if (app->_screen_index == UI_GPIO_TEST_SETTING_INDEX) {
+                app->refreshHardwareGpioTestUi();
             }
             bsp_display_unlock();
         }
@@ -10161,6 +9121,15 @@ void AppSettings::onScreenLoadEventCallback( lv_event_t * e)
     }
     #endif
 
+    #if APP_SETTINGS_FEATURE_HARDWARE_MENU
+    if (app->_screen_index == UI_GPIO_TEST_SETTING_INDEX) {
+        app->loadHardwareGpioTestAudioSelections();
+        app->scanHardwareGpioTestAudioFiles(true);
+        app->refreshHardwareGpioTestAudioDropdowns();
+        app->refreshHardwareGpioTestUi();
+    }
+    #endif
+
     #if APP_SETTINGS_FEATURE_DISPLAY_MENU
     if (app->_screen_index == UI_BRIGHTNESS_SETTING_INDEX) {
         app->refreshDisplayIdleUi();
@@ -10256,6 +9225,13 @@ void AppSettings::onMainMenuItemClickedEventCallback(lv_event_t *e)
         lv_scr_load_anim(app->_loraScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
     } else
     #endif
+    #if APP_SETTINGS_FEATURE_HARDWARE_MENU
+    if (target == app->_gpioTestMenuItem) {
+        app->ensureGpioTestScreen();
+        app->refreshHardwareGpioTestUi();
+        lv_scr_load_anim(app->_gpioTestScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+    } else
+    #endif
     #if CONFIG_JC4880_FEATURE_ZIGBEE
     if (target == app->_zigbeeMenuItem) {
         app->ensureZigbeeScreen();
@@ -10290,6 +9266,9 @@ end:
     return;
 }
 
+#include "lora/SettingLoraSection.inc"
+
+#if 0
 void AppSettings::onImuConfigChangedEventCallback(lv_event_t *e)
 {
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
@@ -10560,529 +9539,13 @@ void AppSettings::onLoRaSelfCheckStatusTimerCallback(lv_timer_t *timer)
     app->refreshLoRaSelfCheckStatus();
 }
 
-void AppSettings::onFirmwareMenuClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+#endif
 
-    app->ensureFirmwareScreen();
-    lv_scr_load_anim(app->_firmwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+#include "firmware/SettingFirmwareCallbacks.inc"
 
-end:
-    return;
-}
+#include "bluetooth/SettingBluetoothCallbacks.inc"
 
-void AppSettings::onFirmwareSdRefreshClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    app->scanSdFirmwareEntries();
-    app->refreshFirmwareUi();
-    if (app->_sdFirmwareEntries.empty()) {
-        app->setFirmwareStatus("No valid .bin firmware images found on /sdcard or /sdcard/firmware.", true);
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onFirmwareOtaCheckClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if (app->_firmwareUpdateInProgress) {
-        app->setFirmwareStatus("A firmware update is already running.", true);
-        goto end;
-    }
-
-    if (app->_firmwareOtaCheckInProgress) {
-        goto end;
-    }
-
-    app->_firmwareOtaCheckInProgress = true;
-    app->refreshFirmwareUi();
-    app->setFirmwareOtaCheckOverlayVisible(true, "Checking GitHub for firmware releases...\nPlease wait.");
-    lv_refr_now(nullptr);
-    app->setFirmwareStatus("Checking GitHub releases...");
-    app->setFirmwareProgress(0, "Querying GitHub releases...");
-    if (!app->fetchGithubFirmwareEntries()) {
-        app->setSelectedOtaFirmwareIndex(-1);
-        app->_firmwareOtaCheckInProgress = false;
-        app->setFirmwareOtaCheckOverlayVisible(false);
-        app->refreshFirmwareUi();
-        app->setFirmwareStatus("No OTA .bin assets were found in GitHub releases, or the request failed.", true);
-        goto end;
-    }
-
-    app->setSelectedOtaFirmwareIndex(-1);
-    app->_firmwareOtaCheckInProgress = false;
-    app->setFirmwareOtaCheckOverlayVisible(false);
-    app->refreshFirmwareUi();
-
-end:
-    return;
-}
-
-void AppSettings::onFirmwareSdFlashClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        ESP_LOGE(TAG, "Invalid app pointer");
-        return;
-    }
-
-    if (app->_firmwareUpdateInProgress) {
-        app->setFirmwareStatus("A firmware update is already running.", true);
-        return;
-    }
-
-    if (!app->hasOtaFlashSupport()) {
-        app->setFirmwareStatus("In-app flashing is blocked because the current partition table has no OTA slot.", true);
-        return;
-    }
-
-    const uint16_t selected = (app->_firmwareSdDropdown != nullptr) ? lv_dropdown_get_selected(app->_firmwareSdDropdown) : 0;
-    if ((selected >= app->_sdFirmwareEntries.size()) || !app->_sdFirmwareEntries[selected].is_valid) {
-        app->setFirmwareStatus("Select a valid SD firmware image first.", true);
-        return;
-    }
-
-    app->flashFirmwareEntry(app->_sdFirmwareEntries[selected], FIRMWARE_UPDATE_SOURCE_SD);
-}
-
-void AppSettings::onFirmwareOtaFlashClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        ESP_LOGE(TAG, "Invalid app pointer");
-        return;
-    }
-
-    if (app->_firmwareUpdateInProgress) {
-        app->setFirmwareStatus("A firmware update is already running.", true);
-        return;
-    }
-
-    if (!app->hasOtaFlashSupport()) {
-        app->setFirmwareStatus("OTA flashing is blocked because the current partition table has no OTA slot.", true);
-        return;
-    }
-
-    const int selected = app->getSelectedOtaFirmwareIndex();
-    if ((selected < 0) || (static_cast<size_t>(selected) >= app->_otaFirmwareEntries.size()) || !app->_otaFirmwareEntries[selected].is_valid) {
-        app->setFirmwareStatus("Select a valid GitHub release asset first.", true);
-        return;
-    }
-
-    app->flashFirmwareEntry(app->_otaFirmwareEntries[selected], FIRMWARE_UPDATE_SOURCE_OTA);
-}
-
-void AppSettings::onFirmwareOtaEntryCheckedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        ESP_LOGE(TAG, "Invalid app pointer");
-        return;
-    }
-
-    lv_obj_t *target = lv_event_get_target(e);
-    if (target == nullptr) {
-        return;
-    }
-
-    const uintptr_t index_value = reinterpret_cast<uintptr_t>(lv_obj_get_user_data(target));
-    if (index_value == 0) {
-        return;
-    }
-
-    const int index = static_cast<int>(index_value - 1);
-    if (lv_obj_has_state(target, LV_STATE_CHECKED)) {
-        app->setSelectedOtaFirmwareIndex(index);
-    } else if (app->getSelectedOtaFirmwareIndex() == index) {
-        app->setSelectedOtaFirmwareIndex(-1);
-    }
-    app->refreshFirmwareUi();
-}
-
-void AppSettings::onFirmwareSelectionChangedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    app->refreshFirmwareUi();
-
-end:
-    return;
-}
-
-void AppSettings::onFirmwareFactoryResetClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *msgbox = nullptr;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    static const char *buttons[] = {"Reset", "Cancel", ""};
-    msgbox = lv_msgbox_create(NULL,
-                              "Factory Reset",
-                              "Erase saved preferences and restore default settings? This clears Wi-Fi, display, audio, and timezone preferences.",
-                              buttons,
-                              false);
-    lv_obj_center(msgbox);
-    lv_obj_set_width(msgbox, 360);
-    lv_obj_add_event_cb(msgbox, onFirmwareFactoryResetConfirmEventCallback, LV_EVENT_VALUE_CHANGED, app);
-
-end:
-    return;
-}
-
-void AppSettings::onFirmwareFactoryResetConfirmEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *msgbox = lv_event_get_current_target(e);
-    const char *button_text = nullptr;
-    const lv_event_code_t code = lv_event_get_code(e);
-
-    if ((app == nullptr) || (msgbox == nullptr) || (code != LV_EVENT_VALUE_CHANGED)) {
-        return;
-    }
-
-    button_text = lv_msgbox_get_active_btn_text(msgbox);
-    if ((button_text != nullptr) && (strcmp(button_text, "Reset") == 0)) {
-        if (!app->factoryResetPreferences()) {
-            app->setFirmwareStatus("Factory reset failed. Preferences were not fully cleared.", true);
-        }
-    }
-
-    lv_msgbox_close(msgbox);
-}
-
-void AppSettings::onOtaUpdateAvailablePopupEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *msgbox = lv_event_get_current_target(e);
-    const lv_event_code_t code = lv_event_get_code(e);
-
-    if (app == nullptr) {
-        return;
-    }
-
-    if ((code == LV_EVENT_DELETE) && (app->_otaUpdateAvailableMsgbox == msgbox)) {
-        app->_otaUpdateAvailableMsgbox = nullptr;
-        return;
-    }
-
-    if ((code != LV_EVENT_VALUE_CHANGED) || (msgbox == nullptr)) {
-        return;
-    }
-
-    const char *button_text = lv_msgbox_get_active_btn_text(msgbox);
-    app->_otaUpdatePromptDismissedThisBoot = true;
-    lv_msgbox_close_async(msgbox);
-
-    if ((button_text != nullptr) && (strcmp(button_text, "Update") == 0)) {
-        app->startPreferredOtaUpdate();
-    }
-}
-
-void AppSettings::onFirmwareAutoUpdateSwitchValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *target = nullptr;
-    bool enabled = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid OTA auto update switch");
-
-    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_OTA_AUTO_UPDATE] = enabled ? 1 : 0;
-    app->setNvsParam(NVS_KEY_OTA_AUTO_UPDATE, enabled ? 1 : 0);
-    if (!enabled) {
-        app->clearDeferredOtaSchedule(true);
-        app->updateOtaUpdateOverlayActions(false, false);
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onOtaUpdateInstallNowEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        return;
-    }
-
-    app->updateOtaUpdateOverlayActions(false, false);
-    app->_otaUpdatePromptDismissedThisBoot = true;
-    app->startPreferredOtaUpdate();
-}
-
-void AppSettings::onOtaUpdateCancelEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        return;
-    }
-
-    app->_otaUpdatePromptDismissedThisBoot = true;
-    if (app->_firmwareUpdateInProgress) {
-        app->_firmwareCancelRequested = true;
-        app->setFirmwareStatus("Canceling firmware update...", false);
-        app->setFirmwareProgress(0, "Canceling firmware update...", false);
-        return;
-    }
-
-    app->updateOtaUpdateOverlayActions(false, false);
-    app->setOtaUpdateProgressOverlayVisible(false);
-    app->setFirmwareStatus("Automatic OTA start canceled.", false);
-    app->setFirmwareProgress(0, "Automatic update canceled for now.", false);
-}
-
-void AppSettings::onOtaUpdateRescheduleEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        return;
-    }
-
-    app->updateOtaUpdateOverlayActions(true, true);
-    app->updateOtaRescheduleMinuteOptions();
-    app->setFirmwareProgress(0, "Choose how long to delay automatic installation.", false);
-}
-
-void AppSettings::onOtaUpdateRescheduleHourChangedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        return;
-    }
-
-    app->updateOtaRescheduleMinuteOptions();
-}
-
-void AppSettings::onOtaUpdateRescheduleApplyEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        return;
-    }
-
-    const uint32_t delay_seconds = app->getSelectedOtaRescheduleDelaySeconds();
-    if (delay_seconds == 0) {
-        app->setFirmwareStatus("Select a delay longer than zero to reschedule.", true);
-        app->setFirmwareProgress(0, "Reschedule requires a future time.", true);
-        return;
-    }
-
-    const int selected = app->findPreferredOtaEntryIndex(true);
-    if ((selected < 0) || (static_cast<size_t>(selected) >= app->_otaFirmwareEntries.size())) {
-        app->setFirmwareStatus("No OTA release is available to reschedule.", true);
-        app->setFirmwareProgress(0, "Reschedule unavailable.", true);
-        return;
-    }
-
-    const FirmwareEntry_t &entry = app->_otaFirmwareEntries[selected];
-    app->deferOtaUpdateForEntry(entry, delay_seconds);
-    if (app->_firmwareUpdateInProgress) {
-        app->_otaUpdatePromptDismissedThisBoot = true;
-        app->_firmwareCancelRequested = true;
-        app->updateOtaUpdateOverlayActions(false, false);
-        app->setFirmwareStatus(std::string("Automatic OTA update deferred for ") +
-                                   formatDelayMinutes(static_cast<int32_t>(delay_seconds / 60)) + ".",
-                               false);
-        app->setFirmwareProgress(0, "Canceling current update and applying the new schedule...", false);
-        return;
-    }
-
-    app->updateOtaUpdateOverlayActions(false, false);
-    app->setOtaUpdateProgressOverlayVisible(false);
-    app->setFirmwareStatus(std::string("Automatic OTA update deferred for ") + formatDelayMinutes(static_cast<int32_t>(delay_seconds / 60)) + ".",
-                           false);
-    app->setFirmwareProgress(0, "Automatic update rescheduled.", false);
-}
-
-void AppSettings::onOtaUpdateProgressCloseEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    if (app == nullptr) {
-        return;
-    }
-
-    if (app->_firmwareUpdateInProgress) {
-        return;
-    }
-
-    if (!app->_otaAutoUpdateAwaitingDecision) {
-        return;
-    }
-
-    lv_obj_t *current_target = lv_event_get_current_target(e);
-    if (current_target == app->_otaUpdateProgressOverlay) {
-        lv_obj_t *target = lv_event_get_target(e);
-        if (target != app->_otaUpdateProgressOverlay) {
-            return;
-        }
-    }
-
-    app->setOtaUpdateProgressOverlayVisible(false);
-}
-
-
-void AppSettings::onSwitchPanelScreenSettingBluetoothValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool enabled = false;
-
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if (bluetoothMenuDelegatesToJoypadBle()) {
-        lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
-        app->refreshBluetoothUi();
-        goto end;
-    }
-
-    enabled = (lv_obj_get_state(ui_SwitchPanelScreenSettingBLESwitch) & LV_STATE_CHECKED) != 0;
-    if (!enabled) {
-        bleCancelScan();
-    }
-    if (bleSetEnabled(enabled) != ESP_OK) {
-        enabled = false;
-        lv_obj_clear_state(ui_SwitchPanelScreenSettingBLESwitch, LV_STATE_CHECKED);
-    }
-
-    app->_nvs_param_map[NVS_KEY_BLE_ENABLE] = enabled;
-    app->setNvsParam(NVS_KEY_BLE_ENABLE, enabled ? 1 : 0);
-    app->refreshBluetoothUi();
-    app->refreshRadioStatusBar();
-
-end:
-    return;
-}
-
-void AppSettings::onBluetoothNameTextAreaEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    const lv_event_code_t code = lv_event_get_code(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if (code == LV_EVENT_FOCUSED) {
-        app->setBluetoothKeyboardVisible(true);
-    } else if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
-        app->setBluetoothKeyboardVisible(false);
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onBluetoothNameSaveClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    app->persistBluetoothNameFromUi();
-    app->setBluetoothKeyboardVisible(false);
-    app->refreshBluetoothUi();
-
-end:
-    return;
-}
-
-void AppSettings::onBluetoothKeyboardEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    const lv_event_code_t code = lv_event_get_code(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if ((code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
-        app->setBluetoothKeyboardVisible(false);
-        if (code == LV_EVENT_READY) {
-            app->persistBluetoothNameFromUi();
-            app->refreshBluetoothUi();
-        }
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onBluetoothScanClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if (bluetoothMenuDelegatesToJoypadBle()) {
-        app->refreshBluetoothUi();
-        goto end;
-    }
-
-    if (s_bleScanInProgress) {
-        bleCancelScan();
-    } else {
-        bleStartScan();
-    }
-
-    app->refreshBluetoothUi();
-
-end:
-    return;
-}
-
-void AppSettings::onZigbeeEnableSwitchValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool enabled = false;
-
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    enabled = (lv_obj_get_state(app->_zigbeeEnableSwitch) & LV_STATE_CHECKED) != 0;
-
-    app->_nvs_param_map[NVS_KEY_ZIGBEE_ENABLE] = enabled ? 1 : 0;
-    app->setNvsParam(NVS_KEY_ZIGBEE_ENABLE, enabled ? 1 : 0);
-    app->refreshZigbeeUi();
-    app->refreshRadioStatusBar();
-
-end:
-    return;
-}
-
-void AppSettings::onZigbeeChannelChangedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    uint16_t selected = 0;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    selected = lv_dropdown_get_selected(app->_zigbeeChannelDropdown);
-    if (selected < (sizeof(kZigbeeChannelOptions) / sizeof(kZigbeeChannelOptions[0]))) {
-        app->_nvs_param_map[NVS_KEY_ZIGBEE_CHANNEL] = kZigbeeChannelOptions[selected];
-        app->setNvsParam(NVS_KEY_ZIGBEE_CHANNEL, kZigbeeChannelOptions[selected]);
-        app->refreshZigbeeUi();
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onZigbeePermitJoinChangedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    uint16_t selected = 0;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    selected = lv_dropdown_get_selected(app->_zigbeePermitJoinDropdown);
-    if (selected < (sizeof(kZigbeePermitJoinOptionsSec) / sizeof(kZigbeePermitJoinOptionsSec[0]))) {
-        app->_nvs_param_map[NVS_KEY_ZIGBEE_PERMIT_JOIN] = kZigbeePermitJoinOptionsSec[selected];
-        app->setNvsParam(NVS_KEY_ZIGBEE_PERMIT_JOIN, kZigbeePermitJoinOptionsSec[selected]);
-        app->refreshZigbeeUi();
-    }
-
-end:
-    return;
-}
-
+#if 0
 void AppSettings::onLoRaTextAreaEventCallback(lv_event_t *e)
 {
     AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
@@ -11128,347 +9591,14 @@ end:
     return;
 }
 
-void AppSettings::onZigbeeNameTextAreaEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    const lv_event_code_t code = lv_event_get_code(e);
+#endif
 
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
+#include "zigbee/SettingZigbeeCallbacks.inc"
+#include "security/SettingSecurityCallbacks.inc"
 
-    if ((code == LV_EVENT_FOCUSED) || (code == LV_EVENT_CLICKED)) {
-        app->setZigbeeKeyboardVisible(true);
-    } else if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
-        app->setZigbeeKeyboardVisible(false);
-    }
+#include "audio/SettingAudioCallbacks.inc"
 
-end:
-    return;
-}
-
-void AppSettings::onZigbeeNameSaveClickedEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    app->persistZigbeeNameFromUi();
-    app->setZigbeeKeyboardVisible(false);
-    app->refreshZigbeeUi();
-
-end:
-    return;
-}
-
-void AppSettings::onZigbeeKeyboardEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    const lv_event_code_t code = lv_event_get_code(e);
-
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if (code == LV_EVENT_READY) {
-        app->persistZigbeeNameFromUi();
-        app->setZigbeeKeyboardVisible(false);
-        if (app->_zigbeeNameTextArea != nullptr) {
-            lv_obj_clear_state(app->_zigbeeNameTextArea, LV_STATE_FOCUSED);
-        }
-        app->refreshZigbeeUi();
-    } else if (code == LV_EVENT_CANCEL) {
-        app->setZigbeeKeyboardVisible(false);
-        if (app->_zigbeeNameTextArea != nullptr) {
-            lv_obj_clear_state(app->_zigbeeNameTextArea, LV_STATE_FOCUSED);
-        }
-        app->refreshZigbeeUi();
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingBLESwitchValueChangeEventCallback( lv_event_t * e) {
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool requested_state = false;
-    bool current_state = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    requested_state = (lv_obj_get_state(app->_securityDeviceLockSwitch) & LV_STATE_CHECKED) != 0;
-    current_state = device_security::isLockEnabled(device_security::LockType::Device);
-    if (requested_state == current_state) {
-        return;
-    }
-
-    if (requested_state) {
-        device_security::requestEnable(device_security::LockType::Device,
-                                       onSecurityToggleRequestFinished,
-                                       &app->_deviceLockToggleContext);
-    } else {
-        device_security::requestDisable(device_security::LockType::Device,
-                                        onSecurityToggleRequestFinished,
-                                        &app->_deviceLockToggleContext);
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingSettingsLockValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool requested_state = false;
-    bool current_state = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    requested_state = (lv_obj_get_state(app->_securitySettingsLockSwitch) & LV_STATE_CHECKED) != 0;
-    current_state = device_security::isLockEnabled(device_security::LockType::Settings);
-    if (requested_state == current_state) {
-        return;
-    }
-
-    if (requested_state) {
-        device_security::requestEnable(device_security::LockType::Settings,
-                                       onSecurityToggleRequestFinished,
-                                       &app->_settingsLockToggleContext);
-    } else {
-        device_security::requestDisable(device_security::LockType::Settings,
-                                        onSecurityToggleRequestFinished,
-                                        &app->_settingsLockToggleContext);
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onSecurityToggleRequestFinished(bool success, void *user_data)
-{
-    SecurityToggleContext *context = static_cast<SecurityToggleContext *>(user_data);
-    if ((context == nullptr) || (context->app == nullptr)) {
-        return;
-    }
-
-    context->app->handleSecurityToggleResult(context->type, success);
-}
-
-void AppSettings::handleSecurityToggleResult(device_security::LockType type, bool success)
-{
-    (void)type;
-    (void)success;
-    refreshSecurityUi();
-}
-
-void AppSettings::onSliderPanelVolumeSwitchValueChangeEventCallback( lv_event_t * e) {
-    int volume = lv_slider_get_value(ui_SliderPanelScreenSettingVolumeSwitch);
-
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if (volume != app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME]) {
-        if ((bsp_extra_audio_media_volume_set(volume) != ESP_OK) && (bsp_extra_audio_media_volume_get() != volume)) {
-            ESP_LOGE(TAG, "Set volume failed");
-            lv_slider_set_value(ui_SliderPanelScreenSettingVolumeSwitch, app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME], LV_ANIM_OFF);
-            return;
-        }
-        app->_nvs_param_map[NVS_KEY_AUDIO_VOLUME] = volume;
-        app->setNvsParam(NVS_KEY_AUDIO_VOLUME, volume);
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onSliderPanelSystemVolumeValueChangeEventCallback( lv_event_t * e) {
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    int volume = 0;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app->_audioSystemVolumeSlider, end, "Invalid system volume slider");
-
-    volume = lv_slider_get_value(app->_audioSystemVolumeSlider);
-    if (volume != app->_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME]) {
-        if ((bsp_extra_audio_system_volume_set(volume) != ESP_OK) &&
-            (bsp_extra_audio_system_volume_get() != volume)) {
-            ESP_LOGE(TAG, "Set system sound volume failed");
-            lv_slider_set_value(app->_audioSystemVolumeSlider, app->_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME], LV_ANIM_OFF);
-            goto end;
-        }
-
-        app->_nvs_param_map[NVS_KEY_SYSTEM_AUDIO_VOLUME] = volume;
-        app->setNvsParam(NVS_KEY_SYSTEM_AUDIO_VOLUME, volume);
-    }
-
-    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
-        bsp_extra_audio_play_system_notification();
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingTapSoundValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool enabled = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app->_audioTapSoundSwitch, end, "Invalid tap sound switch");
-
-    enabled = (lv_obj_get_state(app->_audioTapSoundSwitch) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_AUDIO_TAP_SOUND] = enabled ? 1 : 0;
-    app->setNvsParam(NVS_KEY_AUDIO_TAP_SOUND, enabled ? 1 : 0);
-    jc_ui_tap_sound_set_enabled(enabled);
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingHapticFeedbackValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool enabled = false;
-    lv_obj_t *target = nullptr;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid haptic feedback switch");
-
-    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_AUDIO_HAPTIC_FEEDBACK] = enabled ? 1 : 0;
-    app->setNvsParam(NVS_KEY_AUDIO_HAPTIC_FEEDBACK, enabled ? 1 : 0);
-    jc_ui_haptic_feedback_set_enabled(enabled);
-
-end:
-    return;
-}
-
-void AppSettings::onSliderPanelLightSwitchValueChangeEventCallback( lv_event_t * e) {
-    brightness = lv_slider_get_value(ui_SliderPanelScreenSettingLightSwitch1);
-
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    if (brightness != app->_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS]) {
-        // if ((bsp_display_brightness_set(brightness) != ESP_OK) && (bsp_display_brightness_get() != brightness)) {
-        if (bsp_display_brightness_set(brightness) != ESP_OK) {
-            ESP_LOGE(TAG, "Set brightness failed");
-            lv_slider_set_value(ui_SliderPanelScreenSettingLightSwitch1, app->_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS], LV_ANIM_OFF);
-            return;
-        }
-        app->_nvs_param_map[NVS_KEY_DISPLAY_BRIGHTNESS] = brightness;
-        app->setNvsParam(NVS_KEY_DISPLAY_BRIGHTNESS, brightness);
-        app->applyDisplayIdleSettings();
-    }
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingNeopixelPowerValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    bool enabled = false;
-    lv_obj_t *target = nullptr;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel power switch");
-    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_NEOPIXEL_POWER] = enabled ? 1 : 0;
-    app->setNvsParam(NVS_KEY_NEOPIXEL_POWER, enabled ? 1 : 0);
-    app->applyNeopixelConfig();
-    app->refreshDisplayIdleUi();
-    app->refreshJoypadUi();
-
-end:
-    return;
-}
-
-void AppSettings::onDropdownPanelScreenSettingNeopixelGpioValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    uint16_t selected = 0;
-    int32_t value = -1;
-    lv_obj_t *target = nullptr;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel GPIO dropdown");
-    selected = lv_dropdown_get_selected(target);
-    value = getDropdownValueForIndex(kNeopixelGpioOptions,
-                                     sizeof(kNeopixelGpioOptions) / sizeof(kNeopixelGpioOptions[0]),
-                                     selected);
-    value = sanitizeNeopixelGpio(value);
-    app->_nvs_param_map[NVS_KEY_NEOPIXEL_GPIO] = value;
-    app->setNvsParam(NVS_KEY_NEOPIXEL_GPIO, value);
-    app->applyNeopixelConfig();
-    app->refreshDisplayIdleUi();
-    app->refreshJoypadUi();
-
-end:
-    return;
-}
-
-void AppSettings::onDropdownPanelScreenSettingNeopixelPaletteValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    uint16_t selected = 0;
-    int32_t value = 0;
-    lv_obj_t *target = nullptr;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel palette dropdown");
-    selected = lv_dropdown_get_selected(target);
-    value = getDropdownValueForIndex(kNeopixelPaletteOptions,
-                                     sizeof(kNeopixelPaletteOptions) / sizeof(kNeopixelPaletteOptions[0]),
-                                     selected);
-    app->_nvs_param_map[NVS_KEY_NEOPIXEL_PALETTE] = value;
-    app->setNvsParam(NVS_KEY_NEOPIXEL_PALETTE, value);
-    app->applyNeopixelConfig();
-    app->refreshDisplayIdleUi();
-    app->refreshJoypadUi();
-
-end:
-    return;
-}
-
-void AppSettings::onDropdownPanelScreenSettingNeopixelEffectValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    uint16_t selected = 0;
-    int32_t value = 0;
-    lv_obj_t *target = nullptr;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel effect dropdown");
-    selected = lv_dropdown_get_selected(target);
-    value = getDropdownValueForIndex(kNeopixelEffectOptions,
-                                     sizeof(kNeopixelEffectOptions) / sizeof(kNeopixelEffectOptions[0]),
-                                     selected);
-    app->_nvs_param_map[NVS_KEY_NEOPIXEL_EFFECT] = value;
-    app->setNvsParam(NVS_KEY_NEOPIXEL_EFFECT, value);
-    app->applyNeopixelConfig();
-    app->refreshDisplayIdleUi();
-    app->refreshJoypadUi();
-
-end:
-    return;
-}
-
-void AppSettings::onSliderPanelScreenSettingNeopixelBrightnessValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    int32_t brightness_value = 0;
-    lv_obj_t *target = nullptr;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid Neopixel brightness slider");
-    brightness_value = lv_slider_get_value(target);
-    app->_nvs_param_map[NVS_KEY_NEOPIXEL_BRIGHTNESS] = brightness_value;
-    app->setNvsParam(NVS_KEY_NEOPIXEL_BRIGHTNESS, brightness_value);
-    app->applyNeopixelConfig();
-    app->refreshDisplayIdleUi();
-    app->refreshJoypadUi();
-
-end:
-    return;
-}
+#include "display/SettingDisplayCallbacks.inc"
 
 void AppSettings::onDropdownJoypadLocalHapticGpioValueChangeEventCallback(lv_event_t *e)
 {
@@ -11519,283 +9649,4 @@ end:
     return;
 }
 
-void AppSettings::onSwitchPanelScreenSettingAdaptiveBrightnessValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool enabled = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    enabled = (lv_obj_get_state(app->_displayAdaptiveBrightnessSwitch) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_DISPLAY_ADAPTIVE] = enabled;
-    app->setNvsParam(NVS_KEY_DISPLAY_ADAPTIVE, enabled ? 1 : 0);
-    app->applyDisplayIdleSettings();
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingScreensaverValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool enabled = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    enabled = (lv_obj_get_state(app->_displayScreensaverSwitch) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_DISPLAY_SCREENSAVER] = enabled;
-    app->setNvsParam(NVS_KEY_DISPLAY_SCREENSAVER, enabled ? 1 : 0);
-    app->applyDisplayIdleSettings();
-
-end:
-    return;
-}
-
-void AppSettings::onDropdownPanelScreenSettingTimeoffIntervalValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    uint16_t selected_index = 0;
-    int32_t selected_value = 0;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    selected_index = lv_dropdown_get_selected(app->_displayTimeoffDropdown);
-    selected_value = getDropdownValueForIndex(kDisplayTimeoffOptionsSec,
-                                              sizeof(kDisplayTimeoffOptionsSec) / sizeof(kDisplayTimeoffOptionsSec[0]),
-                                              selected_index);
-    app->_nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF] = selected_value;
-    app->setNvsParam(NVS_KEY_DISPLAY_TIMEOFF, selected_value);
-    app->applyDisplayIdleSettings();
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingTimeoffInGameValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *target = nullptr;
-    bool enabled = false;
-    if (app == nullptr) {
-        ESP_LOGE(TAG, "Invalid app pointer");
-        return;
-    }
-
-    target = lv_event_get_target(e);
-    if (target == nullptr) {
-        ESP_LOGE(TAG, "Invalid screen timeoff in game switch");
-        return;
-    }
-
-    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_DISPLAY_TIMEOFF_IN_GAME] = enabled;
-    app->setNvsParam(NVS_KEY_DISPLAY_TIMEOFF_IN_GAME, enabled ? 1 : 0);
-}
-
-void AppSettings::onDropdownPanelScreenSettingSleepIntervalValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    uint16_t selected_index = 0;
-    int32_t selected_value = 0;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    selected_index = lv_dropdown_get_selected(app->_displaySleepDropdown);
-    selected_value = getDropdownValueForIndex(kDisplaySleepOptionsSec,
-                                              sizeof(kDisplaySleepOptionsSec) / sizeof(kDisplaySleepOptionsSec[0]),
-                                              selected_index);
-    app->_nvs_param_map[NVS_KEY_DISPLAY_SLEEP] = selected_value;
-    app->setNvsParam(NVS_KEY_DISPLAY_SLEEP, selected_value);
-    app->applyDisplayIdleSettings();
-
-end:
-    return;
-}
-
-void AppSettings::onDisplayOrientationPreviewPopupEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *msgbox = lv_event_get_current_target(e);
-    const lv_event_code_t code = lv_event_get_code(e);
-    if (app == nullptr) {
-        return;
-    }
-
-    if (code == LV_EVENT_DELETE) {
-        if (app->_displayOrientationPreviewResolving) {
-            app->_displayOrientationPreviewMsgbox = nullptr;
-            app->_displayOrientationPreviewLabel = nullptr;
-            app->_displayOrientationPreviewSpinner = nullptr;
-            app->_displayOrientationPreviewCountdownLabel = nullptr;
-            app->_displayOrientationPreviewSecondsRemaining = 0;
-            app->_displayOrientationPreviewResolving = false;
-            return;
-        }
-
-        if (msgbox == app->_displayOrientationPreviewMsgbox) {
-            app->_displayOrientationPreviewMsgbox = nullptr;
-            app->_displayOrientationPreviewLabel = nullptr;
-            app->_displayOrientationPreviewSpinner = nullptr;
-            app->_displayOrientationPreviewCountdownLabel = nullptr;
-            app->finishDisplayOrientationPreview(false);
-        }
-        return;
-    }
-
-    if ((code != LV_EVENT_VALUE_CHANGED) || (msgbox == nullptr)) {
-        return;
-    }
-
-    const char *button_text = lv_msgbox_get_active_btn_text(msgbox);
-    if (button_text == nullptr) {
-        return;
-    }
-
-    if (strcmp(button_text, "OK") == 0) {
-        app->finishDisplayOrientationPreview(true);
-    } else if (strcmp(button_text, "Cancel") == 0) {
-        app->finishDisplayOrientationPreview(false);
-    }
-}
-
-void AppSettings::onDisplayOrientationPreviewTimerCallback(lv_timer_t *timer)
-{
-    AppSettings *app = (timer != nullptr) ? static_cast<AppSettings *>(timer->user_data) : nullptr;
-    if (app == nullptr) {
-        return;
-    }
-
-    if (app->_displayOrientationPreviewSecondsRemaining > 0) {
-        --app->_displayOrientationPreviewSecondsRemaining;
-    }
-
-    if (app->_displayOrientationPreviewSecondsRemaining <= 0) {
-        app->finishDisplayOrientationPreview(false);
-        return;
-    }
-
-    app->updateDisplayOrientationPreviewPopup();
-}
-
-void AppSettings::onDropdownPanelScreenSettingOrientationValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    uint16_t selected_index = 0;
-    int32_t selected_value = 0;
-    if (app == nullptr) {
-        ESP_LOGE(TAG, "Invalid app pointer");
-        return;
-    }
-
-    const int32_t previous_value = sanitizeDisplayOrientationDegrees(app->_nvs_param_map[NVS_KEY_DISPLAY_ORIENTATION]);
-
-    selected_index = lv_dropdown_get_selected(app->_displayOrientationDropdown);
-    selected_value = getDropdownValueForIndex(kDisplayOrientationOptionsDeg,
-                                              sizeof(kDisplayOrientationOptionsDeg) / sizeof(kDisplayOrientationOptionsDeg[0]),
-                                              selected_index);
-    selected_value = sanitizeDisplayOrientationDegrees(selected_value);
-    if (selected_value == previous_value) {
-        return;
-    }
-
-    app->requestDisplayOrientationPreview(selected_value);
-    ESP_LOGI(TAG, "Display orientation updated live to %ld degrees", static_cast<long>(selected_value));
-}
-
-void AppSettings::onSwitchPanelScreenSettingAutorotateValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *target = nullptr;
-    bool enabled = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid autorotate switch");
-    enabled = (lv_obj_get_state(target) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE] = enabled ? 1 : 0;
-    app->setNvsParam(NVS_KEY_DISPLAY_AUTOROTATE, enabled ? 1 : 0);
-    app->_displayAutorotateHasAppliedOrientation = false;
-    if (!enabled) {
-        app->updateDisplayAutorotateFromSample(nullptr, false);
-    }
-    app->refreshDisplayAutorotateUi();
-
-end:
-    return;
-}
-
-void AppSettings::onDropdownPanelScreenSettingAutorotateImuValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = static_cast<AppSettings *>(lv_event_get_user_data(e));
-    lv_obj_t *target = nullptr;
-    uint16_t selected = 0;
-    int32_t value = 0;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    target = lv_event_get_target(e);
-    ESP_BROOKESIA_CHECK_NULL_GOTO(target, end, "Invalid rotation axis dropdown");
-    selected = lv_dropdown_get_selected(target);
-    value = getDropdownValueForIndex(kDisplayAutorotateAxisOptions,
-                                     sizeof(kDisplayAutorotateAxisOptions) / sizeof(kDisplayAutorotateAxisOptions[0]),
-                                     selected);
-    value = sanitizeDisplayAutorotateAxis(value);
-    app->_nvs_param_map[NVS_KEY_DISPLAY_AUTOROTATE_IMU] = value;
-    app->setNvsParam(NVS_KEY_DISPLAY_AUTOROTATE_IMU, value);
-    app->refreshDisplayAutorotateUi();
-
-end:
-    return;
-}
-
-void AppSettings::onSwitchPanelScreenSettingAutoTimezoneValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    bool enabled = false;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    enabled = (lv_obj_get_state(app->_displayAutoTimezoneSwitch) & LV_STATE_CHECKED) != 0;
-    app->_nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO] = enabled;
-    app->setNvsParam(NVS_KEY_DISPLAY_TZ_AUTO, enabled ? 1 : 0);
-
-    if (enabled) {
-        app->_hasAutoDetectedTimezone = false;
-        app->_autoTimezoneStatus = "Auto timezone enabled";
-        app->_autoTimezoneRefreshPending = true;
-        if (xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_CONNECTED) {
-            app->syncAutoTimezoneFromInternet();
-            app->_autoTimezoneRefreshPending = false;
-            app_sntp_init();
-        }
-    } else {
-        app->_autoTimezoneRefreshPending = false;
-        app->_hasAutoDetectedTimezone = false;
-        app->_autoTimezoneStatus.clear();
-        app->applyManualTimezonePreference();
-        app_sntp_init();
-    }
-
-    app->refreshTimezoneUi();
-
-end:
-    return;
-}
-
-void AppSettings::onDropdownPanelScreenSettingTimezoneValueChangeEventCallback(lv_event_t *e)
-{
-    AppSettings *app = (AppSettings *)lv_event_get_user_data(e);
-    uint16_t selected_index = 0;
-    int32_t selected_offset_minutes = 0;
-    ESP_BROOKESIA_CHECK_NULL_GOTO(app, end, "Invalid app pointer");
-
-    selected_index = lv_dropdown_get_selected(app->_displayTimezoneDropdown);
-    selected_offset_minutes = getTimezoneOptionForIndex(selected_index).offset_minutes;
-    app->_nvs_param_map[NVS_KEY_DISPLAY_TIMEZONE] = selected_offset_minutes;
-    app->setNvsParam(NVS_KEY_DISPLAY_TIMEZONE, selected_offset_minutes);
-
-    if (!app->_nvs_param_map[NVS_KEY_DISPLAY_TZ_AUTO]) {
-        app->applyManualTimezonePreference();
-        app_sntp_init();
-    }
-
-    app->refreshTimezoneUi();
-
-end:
-    return;
-}
  

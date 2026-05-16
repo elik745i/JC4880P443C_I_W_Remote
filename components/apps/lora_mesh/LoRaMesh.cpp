@@ -4,12 +4,16 @@
 #include <array>
 #include <cctype>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <cerrno>
+#include <deque>
+#include <iomanip>
 #include <memory>
+#include <new>
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
@@ -54,7 +58,7 @@ constexpr char kTag[] = "LoRaMesh";
 constexpr spi_host_device_t kLoRaSpiHost = SPI3_HOST;
 constexpr uart_port_t kLoRaUartPort = UART_NUM_1;
 constexpr int kSpiClockHz = 1 * 1000 * 1000;
-constexpr int kUartBaudRate = 9600;
+constexpr int kE22ProgrammingUartBaudRate = 9600;
 constexpr uint8_t kRadioSyncWordMsb = 0x14;
 constexpr uint8_t kRadioSyncWordLsb = 0x24;
 constexpr uint8_t kDefaultTtl = 4;
@@ -78,6 +82,7 @@ constexpr uint32_t kUartTxCompleteTimeoutMs = 1500;
 // E22-400T22S drops AUX within a couple of milliseconds of receiving UART data.
 // We give it generous margin to cope with FreeRTOS scheduling jitter.
 constexpr uint32_t kUartAuxBusyTimeoutMs = 150;
+constexpr uint32_t kHistoryWriteTaskStack = 4096;
 
 constexpr uint8_t kE22CommandWritePersistent = 0xC0;
 constexpr uint8_t kE22CommandReadRegisters = 0xC1;
@@ -85,9 +90,64 @@ constexpr uint8_t kE22RegisterStart = 0x00;
 constexpr uint8_t kE22RegisterCount = 0x09;
 constexpr uint32_t kE22BaseFrequencyHz = 410125000;
 constexpr uint32_t kE22ChannelStepHz = 1000000;
-constexpr uint8_t kE22Reg0Default = 0x62;
-constexpr uint8_t kE22Reg1Default = 0x00;
-constexpr uint8_t kE22OptionTransparentDefault = 0x03;
+constexpr uint8_t kE22Parity8N1Bits = 0x00;
+constexpr uint8_t kE22AmbientRssiBit = 0x20;
+constexpr uint8_t kE22FixedTransmissionBit = 0x40;
+constexpr uint8_t kE22TransmissionModeDefault = 0x00;
+constexpr uint8_t kE22BroadcastAddressByte = 0xFF;
+constexpr size_t kE22DiagnosticMaxResponseBytes = 128;
+constexpr uint32_t kE22DiagnosticIdleGapMs = 60;
+constexpr char kE22PresetWriteSavedSettings[] = "@write_saved_e22_settings";
+constexpr std::array<int, 8> kE22RuntimeBaudRates = {1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200};
+
+struct E22RuntimeConfig {
+    uint8_t addh = 0;
+    uint8_t addl = 0;
+    uint8_t reg0 = 0;
+    uint8_t reg1 = 0;
+    uint8_t channel = 0;
+    uint8_t option = 0;
+    int uart_baud = kE22ProgrammingUartBaudRate;
+};
+
+static int e22_runtime_uart_baud_rate(const jc4880::lora_mesh::MeshSettings &settings)
+{
+    const size_t index = std::min<size_t>(settings.e22_uart_baud_index, kE22RuntimeBaudRates.size() - 1U);
+    return kE22RuntimeBaudRates[index];
+}
+
+static E22RuntimeConfig build_e22_runtime_config(const jc4880::lora_mesh::MeshSettings &settings)
+{
+    E22RuntimeConfig config = {};
+    config.addh = static_cast<uint8_t>((settings.e22_address >> 8) & 0xFFU);
+    config.addl = static_cast<uint8_t>(settings.e22_address & 0xFFU);
+    config.reg0 = static_cast<uint8_t>(((settings.e22_uart_baud_index & 0x07U) << 5) |
+                                       kE22Parity8N1Bits |
+                                       (settings.e22_air_data_rate_index & 0x07U));
+    config.reg1 = static_cast<uint8_t>(((settings.e22_sub_packet_index & 0x03U) << 6) |
+                                       (settings.e22_rssi_ambient_noise ? kE22AmbientRssiBit : 0U) |
+                                       (settings.e22_tx_power_index & 0x03U));
+    const uint32_t delta_hz = (settings.frequency_hz <= kE22BaseFrequencyHz)
+                                  ? 0U
+                                  : (settings.frequency_hz - kE22BaseFrequencyHz);
+    config.channel = static_cast<uint8_t>(std::min<uint32_t>(delta_hz / kE22ChannelStepHz, 0xFFU));
+    config.option = static_cast<uint8_t>(kE22TransmissionModeDefault |
+                                         (settings.e22_fixed_transmission ? kE22FixedTransmissionBit : 0U));
+    config.uart_baud = e22_runtime_uart_baud_rate(settings);
+    return config;
+}
+
+static std::string describe_e22_runtime_config(const E22RuntimeConfig &config)
+{
+    std::ostringstream detail;
+    detail << "addr=" << static_cast<unsigned>((static_cast<uint16_t>(config.addh) << 8) | config.addl)
+           << " baud=" << config.uart_baud
+           << " channel=" << static_cast<unsigned>(config.channel)
+           << " reg0=0x" << std::hex << std::uppercase << std::setw(2) << std::setfill('0') << static_cast<unsigned>(config.reg0)
+           << " reg1=0x" << std::setw(2) << static_cast<unsigned>(config.reg1)
+           << " option=0x" << std::setw(2) << static_cast<unsigned>(config.option);
+    return detail.str();
+}
 
 constexpr uint8_t SX126X_CMD_SET_STANDBY = 0x80;
 constexpr uint8_t SX126X_CMD_SET_RX = 0x82;
@@ -319,6 +379,64 @@ std::string format_hex_bytes(const uint8_t *data, size_t length)
     return stream.str();
 }
 
+bool parse_hex_command_bytes(const std::string &text, std::vector<uint8_t> &command, std::string &error)
+{
+    command.clear();
+    error.clear();
+
+    std::string normalized = text;
+    std::replace(normalized.begin(), normalized.end(), ',', ' ');
+    std::replace(normalized.begin(), normalized.end(), ';', ' ');
+
+    std::istringstream stream(normalized);
+    std::string token;
+    while (stream >> token) {
+        if ((token.size() >= 2) && (token[0] == '0') && ((token[1] == 'x') || (token[1] == 'X'))) {
+            token.erase(0, 2);
+        }
+        if (token.empty() || (token.size() > 2) ||
+            !std::all_of(token.begin(), token.end(), [](unsigned char ch) { return std::isxdigit(ch) != 0; })) {
+            error = std::string("Invalid hex byte: ") + token;
+            command.clear();
+            return false;
+        }
+
+        const unsigned long value = std::strtoul(token.c_str(), nullptr, 16);
+        if (value > 0xFFUL) {
+            error = std::string("Hex byte out of range: ") + token;
+            command.clear();
+            return false;
+        }
+        command.push_back(static_cast<uint8_t>(value));
+    }
+
+    if (command.empty()) {
+        error = "Enter hex bytes separated by spaces";
+        return false;
+    }
+
+    return true;
+}
+
+bool e22_command_uses_programming_mode(const std::vector<uint8_t> &command)
+{
+    if (command.empty()) {
+        return false;
+    }
+
+    switch (command.front()) {
+    case 0xC0:
+    case 0xC1:
+    case 0xC2:
+    case 0xC3:
+    case 0xC4:
+    case 0xC5:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool all_bytes_equal(const uint8_t *data, size_t length, uint8_t value)
 {
     if ((data == nullptr) || (length == 0)) {
@@ -441,11 +559,14 @@ struct LoRaMeshApp::Impl {
     bool uart_ready = false;
     bool radio_ready = false;
     bool rx_task_stop = false;
+    bool history_write_stop = false;
     TaskHandle_t rx_task = nullptr;
     TaskHandle_t startup_task = nullptr;
     TaskHandle_t send_task = nullptr;
     TaskHandle_t self_test_task = nullptr;
     TaskHandle_t settings_apply_task = nullptr;
+    TaskHandle_t module_command_task = nullptr;
+    TaskHandle_t history_write_task = nullptr;
     SemaphoreHandle_t mutex = nullptr;
     lv_timer_t *ui_timer = nullptr;
     lv_obj_t *root = nullptr;
@@ -497,6 +618,7 @@ struct LoRaMeshApp::Impl {
     bool self_test_ran = false;
     bool self_test_ok = false;
     bool self_test_running = false;
+    bool self_test_allow_uart_autodetect = true;
     volatile bool self_test_stop_requested = false;
     bool conversation_dirty = true;
     bool target_list_dirty = true;
@@ -509,6 +631,7 @@ struct LoRaMeshApp::Impl {
     bool settings_apply_pending = false;
     bool settings_apply_run_self_test = false;
     bool pending_self_test_on_next_open = false;
+    bool pending_self_test_allow_uart_autodetect = true;
     uint64_t next_pending_message_token = 1;
     int suspended_neopixel_gpio = -1;
     std::vector<uint8_t> uart_rx_bytes;
@@ -520,6 +643,7 @@ struct LoRaMeshApp::Impl {
     StoredState stored_state = {};
     std::vector<PendingPairRequest> pending_pair_requests;
     std::vector<ConversationEntry> conversation;
+    std::deque<std::pair<std::string, std::string>> pending_history_writes;
 
     struct PendingSendContext {
         Impl *impl = nullptr;
@@ -530,6 +654,11 @@ struct LoRaMeshApp::Impl {
         std::string bubble_meta;
         bool beacon = false;
         uint64_t pending_token = 0;
+    };
+
+    struct PendingModuleCommandContext {
+        Impl *impl = nullptr;
+        std::string command_text;
     };
 
     ~Impl()
@@ -668,6 +797,28 @@ struct LoRaMeshApp::Impl {
         selected_peer_id = peer_id;
         load_conversation_history_locked(selected_conversation_id);
         conversation_dirty = true;
+    }
+
+    void ensure_saved_mapping_self_test_for_chat_locked()
+    {
+        if (self_test_ran || self_test_running) {
+            return;
+        }
+
+        if (!startup_complete) {
+            pending_self_test_on_next_open = true;
+            pending_self_test_allow_uart_autodetect = false;
+            trace_event_locked("Chat open queued self-test using saved LoRa settings");
+            return;
+        }
+
+        if (!startup_ok) {
+            return;
+        }
+
+        status_text = "LoRa self-test: starting";
+        trace_event_locked("Chat open requested self-test using saved LoRa settings");
+        start_self_test_task(false);
     }
 
     bool clear_conversation_history_locked(const std::string &conversation_id)
@@ -1111,12 +1262,10 @@ struct LoRaMeshApp::Impl {
                 return role <= RadioPinRole::RxEnable;
             case RadioModule::E22_400T22S:
                 return (role == RadioPinRole::UartTx) || (role == RadioPinRole::UartRx) || (role == RadioPinRole::Mode0) ||
-                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux) || (role == RadioPinRole::TxEnable) ||
-                       (role == RadioPinRole::RxEnable);
+                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux);
             case RadioModule::E220_400T22D:
                 return (role == RadioPinRole::UartTx) || (role == RadioPinRole::UartRx) || (role == RadioPinRole::Mode0) ||
-                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux) || (role == RadioPinRole::TxEnable) ||
-                       (role == RadioPinRole::RxEnable);
+                       (role == RadioPinRole::Mode1) || (role == RadioPinRole::Aux);
             default:
                 return false;
         }
@@ -1137,13 +1286,13 @@ struct LoRaMeshApp::Impl {
                 settings.rxen_gpio = jc4880::lora_mesh::pin_profile::kRxEnableGpio;
                 break;
             case RadioModule::E22_400T22S:
-                settings.uart_tx_gpio = 31;
-                settings.uart_rx_gpio = 30;
+                settings.uart_tx_gpio = 30;
+                settings.uart_rx_gpio = 31;
                 settings.mode0_gpio = 51;
                 settings.mode1_gpio = 29;
                 settings.aux_gpio = 33;
-                settings.txen_gpio = jc4880::lora_mesh::pin_profile::kTxEnableGpio;
-                settings.rxen_gpio = jc4880::lora_mesh::pin_profile::kRxEnableGpio;
+                settings.txen_gpio = -1;
+                settings.rxen_gpio = -1;
                 settings.nrst_gpio = -1;
                 break;
             case RadioModule::E220_400T22D:
@@ -1152,8 +1301,9 @@ struct LoRaMeshApp::Impl {
                 settings.mode0_gpio = 29;
                 settings.mode1_gpio = 30;
                 settings.aux_gpio = 50;
-                settings.txen_gpio = jc4880::lora_mesh::pin_profile::kTxEnableGpio;
-                settings.rxen_gpio = jc4880::lora_mesh::pin_profile::kRxEnableGpio;
+                settings.txen_gpio = -1;
+                settings.rxen_gpio = -1;
+                settings.nrst_gpio = -1;
                 break;
         }
     }
@@ -1354,13 +1504,14 @@ struct LoRaMeshApp::Impl {
         vTaskDelete(nullptr);
     }
 
-    void start_self_test_task()
+    void start_self_test_task(bool allow_uart_autodetect = true)
     {
         if (self_test_task != nullptr) {
             return;
         }
         self_test_stop_requested = false;
         self_test_running = true;
+        self_test_allow_uart_autodetect = allow_uart_autodetect;
         set_self_test_mode_locked("starting");
         trace_event_locked("Self-test task start requested");
         if (!create_task_prefer_psram(&Impl::self_test_task_entry, "lora_mesh_test", 6144, this, kRxTaskPriority, &self_test_task)) {
@@ -1840,24 +1991,64 @@ struct LoRaMeshApp::Impl {
         return ESP_OK;
     }
 
+    esp_err_t uart_read_response(std::vector<uint8_t> &response, uint32_t timeout_ms, uint32_t idle_gap_ms)
+    {
+        response.clear();
+
+        const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
+        int64_t last_rx_us = 0;
+        std::array<uint8_t, 32> chunk = {};
+
+        while (esp_timer_get_time() < deadline_us) {
+            uint32_t wait_ms = 20;
+            if (!response.empty()) {
+                const int64_t idle_remaining_us = (last_rx_us + static_cast<int64_t>(idle_gap_ms) * 1000) - esp_timer_get_time();
+                if (idle_remaining_us <= 0) {
+                    return ESP_OK;
+                }
+                wait_ms = static_cast<uint32_t>(std::max<int64_t>(1, idle_remaining_us / 1000));
+            }
+
+            const int read = uart_read_bytes(kLoRaUartPort,
+                                             chunk.data(),
+                                             chunk.size(),
+                                             pdMS_TO_TICKS(std::min<uint32_t>(wait_ms, 20U)));
+            if (read < 0) {
+                return ESP_FAIL;
+            }
+            if (read == 0) {
+                continue;
+            }
+
+            const size_t allowed = std::min<size_t>(static_cast<size_t>(read), kE22DiagnosticMaxResponseBytes - response.size());
+            response.insert(response.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(allowed));
+            last_rx_us = esp_timer_get_time();
+            if (response.size() >= kE22DiagnosticMaxResponseBytes) {
+                return ESP_OK;
+            }
+        }
+
+        return response.empty() ? ESP_ERR_TIMEOUT : ESP_OK;
+    }
+
     esp_err_t sync_e22_400t22s_config_locked()
     {
         if (stored_state.settings.radio_module != RadioModule::E22_400T22S) {
             return ESP_OK;
         }
 
-        const uint8_t channel = e22_channel_for_frequency(stored_state.settings.frequency_hz);
+        const E22RuntimeConfig config = build_e22_runtime_config(stored_state.settings);
         const std::array<uint8_t, 12> write_command = {
             kE22CommandWritePersistent,
             kE22RegisterStart,
             kE22RegisterCount,
+            config.addh,
+            config.addl,
             0x00,
-            0x00,
-            0x00,
-            kE22Reg0Default,
-            kE22Reg1Default,
-            channel,
-            kE22OptionTransparentDefault,
+            config.reg0,
+            config.reg1,
+            config.channel,
+            config.option,
             0x00,
             0x00,
         };
@@ -1867,8 +2058,14 @@ struct LoRaMeshApp::Impl {
             kE22RegisterCount,
         };
 
+        append_line_capped(log_text, std::string("Programming E22 config ") + describe_e22_runtime_config(config));
+
+        ESP_RETURN_ON_ERROR(uart_set_baudrate(kLoRaUartPort, kE22ProgrammingUartBaudRate),
+                            kTag,
+                            "e22 programming baud setup failed");
         set_uart_module_mode(false);
         if (!wait_for_uart_aux_ready(kUartCommandTimeoutMs)) {
+            append_line_capped(log_text, "E22 programming mode did not become ready");
             return ESP_ERR_TIMEOUT;
         }
 
@@ -1896,11 +2093,22 @@ struct LoRaMeshApp::Impl {
         std::array<uint8_t, 12> read_style_write_response = write_command;
         read_style_write_response[0] = kE22CommandReadRegisters;
         if ((write_response != write_echo_response) && (write_response != read_style_write_response)) {
+            append_line_capped(log_text,
+                               std::string("E22 write response mismatch expected=") +
+                       format_hex_bytes(write_echo_response.data(), write_echo_response.size()) +
+                       " or " +
+                       format_hex_bytes(read_style_write_response.data(), read_style_write_response.size()) +
+                                   " actual=" +
+                                   format_hex_bytes(write_response.data(), write_response.size()));
             ESP_LOGW(kTag,
                      "E22 config write response differed expected=[%s] or [%s] actual=[%s]",
                      format_hex_bytes(write_echo_response.data(), write_echo_response.size()).c_str(),
                      format_hex_bytes(read_style_write_response.data(), read_style_write_response.size()).c_str(),
                      format_hex_bytes(write_response.data(), write_response.size()).c_str());
+        } else {
+            append_line_capped(log_text,
+                               std::string("E22 write response ") +
+                                   format_hex_bytes(write_response.data(), write_response.size()));
         }
 
         uart_flush_input(kLoRaUartPort);
@@ -1917,6 +2125,9 @@ struct LoRaMeshApp::Impl {
         std::array<uint8_t, 12> read_response = {};
         const esp_err_t readback_err = uart_read_exact(read_response.data(), read_response.size(), kUartCommandTimeoutMs);
         if (readback_err == ESP_OK) {
+            append_line_capped(log_text,
+                               std::string("E22 readback ") +
+                                   format_hex_bytes(read_response.data(), read_response.size()));
             if (read_response[0] != kE22CommandReadRegisters ||
                 read_response[1] != kE22RegisterStart ||
                 read_response[2] != kE22RegisterCount) {
@@ -1924,22 +2135,30 @@ struct LoRaMeshApp::Impl {
                          "E22 config readback header differed actual=[%s]",
                          format_hex_bytes(read_response.data(), read_response.size()).c_str());
             } else if (read_response != read_style_write_response) {
+                append_line_capped(log_text,
+                                   std::string("E22 readback mismatch desired=") +
+                                       format_hex_bytes(read_style_write_response.data(), read_style_write_response.size()) +
+                                       " actual=" +
+                                       format_hex_bytes(read_response.data(), read_response.size()));
                 ESP_LOGW(kTag,
                          "E22 config readback differed desired=[%s] actual=[%s]",
                          format_hex_bytes(read_style_write_response.data(), read_style_write_response.size()).c_str(),
                          format_hex_bytes(read_response.data(), read_response.size()).c_str());
+            } else {
+                append_line_capped(log_text, "E22 readback confirmed saved settings");
             }
         } else {
+            append_line_capped(log_text, std::string("E22 config readback unavailable err=") + esp_err_to_name(readback_err));
             ESP_LOGW(kTag, "E22 config readback unavailable err=%s", esp_err_to_name(readback_err));
         }
 
         ESP_LOGI(kTag,
                  "Synchronized E22-400T22S config freq=%" PRIu32 "Hz channel=%u reg0=0x%02X reg1=0x%02X option=0x%02X",
                  stored_state.settings.frequency_hz,
-                 channel,
-                 kE22Reg0Default,
-                 kE22Reg1Default,
-                 kE22OptionTransparentDefault);
+                 config.channel,
+                 config.reg0,
+                 config.reg1,
+                 config.option);
         return ESP_OK;
     }
 
@@ -2037,6 +2256,205 @@ struct LoRaMeshApp::Impl {
             return false;
         }
 
+        return true;
+    }
+
+    bool run_module_command(const std::string &command_text)
+    {
+        if (!ensure_radio_ready()) {
+            return false;
+        }
+
+        StoredState state_snapshot = {};
+        lock();
+        state_snapshot = stored_state;
+        unlock();
+
+        if (state_snapshot.settings.radio_module != RadioModule::E22_400T22S) {
+            set_status("Manual UART commands are only available for E22-400T22S");
+            return false;
+        }
+
+        std::vector<uint8_t> command;
+        std::string parse_error;
+        std::string log_description;
+        if (command_text == kE22PresetWriteSavedSettings) {
+            const E22RuntimeConfig config = build_e22_runtime_config(state_snapshot.settings);
+            command = {
+                kE22CommandWritePersistent,
+                kE22RegisterStart,
+                kE22RegisterCount,
+                config.addh,
+                config.addl,
+                0x00,
+                config.reg0,
+                config.reg1,
+                config.channel,
+                config.option,
+                0x00,
+                0x00,
+            };
+            log_description = std::string("saved settings ") + describe_e22_runtime_config(config);
+        } else {
+            if (!parse_hex_command_bytes(command_text, command, parse_error)) {
+                set_status(parse_error.c_str());
+                lock();
+                append_line_capped(log_text, std::string("Manual E22 command rejected: ") + parse_error);
+                unlock();
+                return false;
+            }
+            log_description = format_hex_bytes(command.data(), command.size());
+        }
+
+        bool restart_rx_task = false;
+        while (true) {
+            lock();
+            const bool rx_active = rx_task != nullptr;
+            if (rx_active) {
+                rx_task_stop = true;
+                restart_rx_task = true;
+            }
+            unlock();
+            if (!rx_active) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+
+        bool ok = false;
+        std::string status_message = "Module command failed";
+        const bool programming_mode = e22_command_uses_programming_mode(command);
+        const int active_baud = programming_mode ? kE22ProgrammingUartBaudRate : e22_runtime_uart_baud_rate(state_snapshot.settings);
+
+        lock();
+        const esp_err_t stop_err = stop_receive_locked();
+        if (stop_err != ESP_OK) {
+            append_line_capped(log_text, "Manual E22 command failed to stop receive mode");
+            unlock();
+            set_status("Failed to stop receive mode for module command");
+        } else {
+            append_line_capped(log_text,
+                               std::string("Manual E22 command TX[") + (programming_mode ? "prog" : "normal") + "] " + log_description);
+            uart_flush_input(kLoRaUartPort);
+            if (uart_set_baudrate(kLoRaUartPort, active_baud) != ESP_OK) {
+                append_line_capped(log_text, "Manual E22 command failed to set UART baud");
+                status_message = "Failed to switch UART baud";
+            } else {
+                set_uart_module_mode(!programming_mode);
+                if (!wait_for_uart_aux_ready(kUartCommandTimeoutMs)) {
+                    append_line_capped(log_text, "Manual E22 command timed out waiting for AUX ready");
+                    status_message = "Module AUX did not become ready";
+                } else if (uart_write_bytes(kLoRaUartPort,
+                                            reinterpret_cast<const char *>(command.data()),
+                                            command.size()) != static_cast<int>(command.size())) {
+                    append_line_capped(log_text, "Manual E22 command write failed");
+                    status_message = "Failed to write module command";
+                } else if (uart_wait_tx_done(kLoRaUartPort, pdMS_TO_TICKS(kUartTxCompleteTimeoutMs)) != ESP_OK) {
+                    append_line_capped(log_text, "Manual E22 command TX wait failed");
+                    status_message = "Module command transmit timed out";
+                } else if (programming_mode && !wait_for_uart_aux_ready(kUartCommandTimeoutMs)) {
+                    append_line_capped(log_text, "Manual E22 command timed out waiting for AUX after TX");
+                    status_message = "Module AUX timeout after transmit";
+                } else {
+                    std::vector<uint8_t> response;
+                    const esp_err_t response_err = uart_read_response(response, kUartCommandTimeoutMs, kE22DiagnosticIdleGapMs);
+                    if (response_err == ESP_OK) {
+                        append_line_capped(log_text,
+                                           std::string("Manual E22 response RX ") + format_hex_bytes(response.data(), response.size()));
+                        ok = true;
+                        status_message = "Module command completed";
+                    } else if (response_err == ESP_ERR_TIMEOUT) {
+                        append_line_capped(log_text, "Manual E22 response timed out");
+                        ok = true;
+                        status_message = "Module command sent; no response before timeout";
+                    } else {
+                        append_line_capped(log_text, "Manual E22 response read failed");
+                        status_message = "Module command response read failed";
+                    }
+                }
+            }
+
+            set_uart_module_mode(true);
+            (void)wait_for_uart_aux_ready(kUartCommandTimeoutMs);
+            (void)uart_set_baudrate(kLoRaUartPort, e22_runtime_uart_baud_rate(state_snapshot.settings));
+            (void)start_receive_locked();
+            unlock();
+            set_status(status_message.c_str());
+        }
+
+        if (restart_rx_task) {
+            lock();
+            rx_task_stop = false;
+            unlock();
+
+            TaskHandle_t restarted_rx_task = nullptr;
+            if (create_task_prefer_psram(&Impl::rx_task_entry, "lora_mesh_rx", kRxTaskStack, this, kRxTaskPriority, &restarted_rx_task)) {
+                lock();
+                rx_task = restarted_rx_task;
+                unlock();
+            } else {
+                set_status("Failed to restart LoRa receive task after module command");
+            }
+        }
+
+        return ok;
+    }
+
+    static void module_command_task_entry(void *context)
+    {
+        std::unique_ptr<PendingModuleCommandContext> request(static_cast<PendingModuleCommandContext *>(context));
+        if ((request == nullptr) || (request->impl == nullptr)) {
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        Impl *impl = request->impl;
+        (void)impl->run_module_command(request->command_text);
+
+        bsp_display_lock(0);
+        (void)lv_async_call(&Impl::refresh_ui_async, impl);
+        bsp_display_unlock();
+
+        impl->lock();
+        if (impl->module_command_task == xTaskGetCurrentTaskHandle()) {
+            impl->module_command_task = nullptr;
+        }
+        impl->unlock();
+        vTaskDelete(nullptr);
+    }
+
+    bool start_module_command_task(const std::string &command_text)
+    {
+        PendingModuleCommandContext *context = new PendingModuleCommandContext{this, command_text};
+        if (context == nullptr) {
+            set_status("Failed to allocate module command task");
+            return false;
+        }
+
+        lock();
+        const bool busy = (module_command_task != nullptr) || (self_test_task != nullptr);
+        unlock();
+        if (busy) {
+            delete context;
+            set_status("Wait for the current LoRa diagnostic task to finish");
+            return false;
+        }
+
+        TaskHandle_t task = nullptr;
+        if (!create_task_prefer_psram(&Impl::module_command_task_entry,
+                                      "lora_mesh_cmd",
+                                      6144,
+                                      context,
+                                      kRxTaskPriority,
+                                      &task)) {
+            delete context;
+            set_status("Failed to start module command task");
+            return false;
+        }
+
+        lock();
+        module_command_task = task;
+        unlock();
         return true;
     }
 
@@ -2308,6 +2726,16 @@ struct LoRaMeshApp::Impl {
         return sanitized;
     }
 
+    std::string build_conversation_history_line_locked(const std::string &text,
+                                                       const std::string &meta,
+                                                       bool outgoing) const
+    {
+        const std::string timestamp = sanitize_chat_history_field(current_timestamp_text());
+        const std::string author = sanitize_chat_history_field(conversation_author_from_meta_locked(meta, outgoing));
+        return timestamp + kChatHistoryFieldSeparator + author + kChatHistoryFieldSeparator +
+               sanitize_chat_history_field(text) + "\n";
+    }
+
     std::string current_timestamp_text() const
     {
         const std::time_t now = std::time(nullptr);
@@ -2367,6 +2795,99 @@ struct LoRaMeshApp::Impl {
         return ((mkdir(full_path.c_str(), 0775) == 0) || (errno == EEXIST));
     }
 
+    bool flush_conversation_history_write(const std::string &path, const std::string &line)
+    {
+        if (!ensure_chat_history_directory()) {
+            append_log("Chat history writer: SD card unavailable");
+            return false;
+        }
+
+        FILE *file = std::fopen(path.c_str(), "ab");
+        if (file == nullptr) {
+            std::ostringstream stream;
+            stream << "Chat history writer: open failed for " << path << " errno=" << errno;
+            append_log(stream.str());
+            return false;
+        }
+
+        (void)std::fwrite(line.data(), 1, line.size(), file);
+        std::fclose(file);
+        return true;
+    }
+
+    static void history_write_task_entry(void *context)
+    {
+        auto *impl = static_cast<Impl *>(context);
+        if (impl == nullptr) {
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        while (true) {
+            std::pair<std::string, std::string> write_request;
+            bool should_stop = false;
+
+            impl->lock();
+            if (!impl->pending_history_writes.empty()) {
+                write_request = std::move(impl->pending_history_writes.front());
+                impl->pending_history_writes.pop_front();
+            } else if (impl->history_write_stop) {
+                impl->history_write_task = nullptr;
+                should_stop = true;
+            }
+            impl->unlock();
+
+            if (!write_request.first.empty()) {
+                (void)impl->flush_conversation_history_write(write_request.first, write_request.second);
+                continue;
+            }
+
+            if (should_stop) {
+                break;
+            }
+
+            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        }
+
+        vTaskDelete(nullptr);
+    }
+
+    bool ensure_history_write_task_locked()
+    {
+        if (history_write_task != nullptr) {
+            return true;
+        }
+
+        history_write_stop = false;
+        TaskHandle_t task = nullptr;
+        if (!create_task_prefer_psram(&Impl::history_write_task_entry,
+                                      "lora_hist_wr",
+                                      kHistoryWriteTaskStack,
+                                      this,
+                                      kRxTaskPriority,
+                                      &task)) {
+            append_line_capped(log_text, "Chat history writer task start failed");
+            return false;
+        }
+
+        history_write_task = task;
+        return true;
+    }
+
+    void append_conversation_history_deferred_locked(const std::string &conversation_id,
+                                                     const std::string &text,
+                                                     const std::string &meta,
+                                                     bool outgoing)
+    {
+        if (!ensure_history_write_task_locked()) {
+            return;
+        }
+
+        pending_history_writes.emplace_back(conversation_history_path(conversation_id),
+                                            build_conversation_history_line_locked(text, meta, outgoing));
+        xTaskNotifyGive(history_write_task);
+    }
+
     std::string conversation_author_from_meta_locked(const std::string &meta, bool outgoing) const
     {
         if (outgoing) {
@@ -2385,22 +2906,11 @@ struct LoRaMeshApp::Impl {
                                             const std::string &meta,
                                             bool outgoing)
     {
-        if (!ensure_chat_history_directory()) {
+        if (conversation_id.empty()) {
             return;
         }
 
-        const std::string path = conversation_history_path(conversation_id);
-        FILE *file = std::fopen(path.c_str(), "ab");
-        if (file == nullptr) {
-            return;
-        }
-
-        const std::string timestamp = sanitize_chat_history_field(current_timestamp_text());
-        const std::string author = sanitize_chat_history_field(conversation_author_from_meta_locked(meta, outgoing));
-        const std::string line = timestamp + kChatHistoryFieldSeparator + author + kChatHistoryFieldSeparator +
-                                 sanitize_chat_history_field(text) + "\n";
-        (void)std::fwrite(line.data(), 1, line.size(), file);
-        std::fclose(file);
+        append_conversation_history_deferred_locked(conversation_id, text, meta, outgoing);
     }
 
     void push_conversation_entry_locked(const std::string &conversation_id,
@@ -2589,6 +3099,17 @@ struct LoRaMeshApp::Impl {
         }
         if (passed) {
             passed = send_uart_self_test_probe_locked(detail);
+        }
+        if (!passed && self_test_allow_uart_autodetect && uart_ok &&
+            (stored_state.settings.radio_module == RadioModule::E22_400T22S)) {
+            std::string recovery_detail;
+            if (try_self_test_recover_e22_uart_pins_locked(recovery_detail)) {
+                detail = recovery_detail;
+                return true;
+            }
+            if (!recovery_detail.empty()) {
+                detail += detail.empty() ? recovery_detail : std::string(" ") + recovery_detail;
+            }
         }
         return passed;
     }
@@ -3106,7 +3627,7 @@ struct LoRaMeshApp::Impl {
 
         if (!uart_ready) {
             uart_config_t config = {};
-            config.baud_rate = kUartBaudRate;
+            config.baud_rate = kE22ProgrammingUartBaudRate;
             config.data_bits = UART_DATA_8_BITS;
             config.parity = UART_PARITY_DISABLE;
             config.stop_bits = UART_STOP_BITS_1;
@@ -3147,9 +3668,21 @@ struct LoRaMeshApp::Impl {
         };
 
         esp_err_t uart_sync_err = try_uart_pin_pair(configured_tx_gpio, configured_rx_gpio);
+        if ((uart_sync_err == ESP_ERR_TIMEOUT) &&
+            (stored_state.settings.radio_module == RadioModule::E22_400T22S)) {
+            ESP_LOGW(kTag,
+                     "E22 config sync unavailable on UART; continuing with existing pin map TX=%d RX=%d",
+                     stored_state.settings.uart_tx_gpio,
+                     stored_state.settings.uart_rx_gpio);
+            trace_event("E22 config sync unavailable; using existing UART settings");
+            uart_sync_err = ESP_OK;
+        }
         ESP_RETURN_ON_ERROR(uart_sync_err, kTag, "e22 config sync failed");
         set_uart_module_mode(true);
         ESP_RETURN_ON_FALSE(wait_for_uart_aux_ready(kUartCommandTimeoutMs), ESP_ERR_TIMEOUT, kTag, "uart normal mode wait failed");
+        ESP_RETURN_ON_ERROR(uart_set_baudrate(kLoRaUartPort, e22_runtime_uart_baud_rate(stored_state.settings)),
+                    kTag,
+                    "uart runtime baud setup failed");
         uart_flush_input(kLoRaUartPort);
         uart_rx_bytes.clear();
         ESP_RETURN_ON_ERROR(start_receive_locked(), kTag, "uart receive prep failed");
@@ -3394,18 +3927,28 @@ struct LoRaMeshApp::Impl {
                                " header=" + format_hex_bytes(bytes.data(), std::min<size_t>(18, bytes.size())));
 
         if (!radio_module_uses_spi(stored_state.settings.radio_module)) {
+            std::vector<uint8_t> uart_bytes = bytes;
+            if ((stored_state.settings.radio_module == RadioModule::E22_400T22S) &&
+                stored_state.settings.e22_fixed_transmission) {
+                const uint8_t channel = build_e22_runtime_config(stored_state.settings).channel;
+                uart_bytes.reserve(bytes.size() + 3U);
+                uart_bytes.insert(uart_bytes.begin(), {kE22BroadcastAddressByte, kE22BroadcastAddressByte, channel});
+                append_line_capped(log_text,
+                                   std::string("TX fixed header=FF FF ") +
+                                       format_hex_bytes(&channel, 1));
+            }
             set_uart_module_mode(true);
             if (!wait_for_uart_aux_ready(kUartAuxTimeoutMs)) {
-                last_tx_diagnostic = std::string("uart_aux_busy_before_tx len=") + std::to_string(bytes.size());
+                last_tx_diagnostic = std::string("uart_aux_busy_before_tx len=") + std::to_string(uart_bytes.size());
                 return false;
             }
             uart_flush_input(kLoRaUartPort);
             const int written = uart_write_bytes(kLoRaUartPort,
-                                                 reinterpret_cast<const char *>(bytes.data()),
-                                                 static_cast<uint32_t>(bytes.size()));
-            if (written != static_cast<int>(bytes.size())) {
+                                                 reinterpret_cast<const char *>(uart_bytes.data()),
+                                                 static_cast<uint32_t>(uart_bytes.size()));
+            if (written != static_cast<int>(uart_bytes.size())) {
                 last_tx_diagnostic = std::string("uart_write_short written=") + std::to_string(written) +
-                                     " expected=" + std::to_string(bytes.size());
+                                     " expected=" + std::to_string(uart_bytes.size());
                 return false;
             }
             if (uart_wait_tx_done(kLoRaUartPort, pdMS_TO_TICKS(kUartTxCompleteTimeoutMs)) != ESP_OK) {
@@ -3421,7 +3964,7 @@ struct LoRaMeshApp::Impl {
             }
             esp_rom_delay_us(kUartFrameGapMs * 1000U);
             if (!wait_for_uart_aux_ready(kUartTxCompleteTimeoutMs)) {
-                last_tx_diagnostic = std::string("uart_aux_timeout_after_tx len=") + std::to_string(bytes.size()) +
+                last_tx_diagnostic = std::string("uart_aux_timeout_after_tx len=") + std::to_string(uart_bytes.size()) +
                                      " timeout_ms=" + std::to_string(kUartTxCompleteTimeoutMs);
                 return false;
             }
@@ -3578,23 +4121,26 @@ struct LoRaMeshApp::Impl {
         startup_ok = true;
         unlock();
 
+        const bool pause_rx_task_for_transmit = radio_module_uses_spi(stored_state.settings.radio_module);
         bool restart_rx_task = false;
-        while (true) {
-            lock();
-            const bool rx_active = rx_task != nullptr;
-            if (rx_active) {
-                rx_task_stop = true;
-                restart_rx_task = true;
+        if (pause_rx_task_for_transmit) {
+            while (true) {
+                lock();
+                const bool rx_active = rx_task != nullptr;
+                if (rx_active) {
+                    rx_task_stop = true;
+                    restart_rx_task = true;
+                }
+                unlock();
+                if (!rx_active) {
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
-            unlock();
-            if (!rx_active) {
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(20));
         }
 
         lock();
-        if (stop_receive_locked() != ESP_OK) {
+        if (pause_rx_task_for_transmit && (stop_receive_locked() != ESP_OK)) {
             unlock();
             set_status("Failed to stop LoRa receive before transmit");
             return false;
@@ -4246,9 +4792,12 @@ struct LoRaMeshApp::Impl {
             impl->lock();
             if (impl->pending_self_test_on_next_open && impl->startup_complete && impl->startup_ok && !impl->self_test_running) {
                 impl->pending_self_test_on_next_open = false;
-                impl->trace_event_locked("Pending self-test started after app open");
+                impl->trace_event_locked(impl->pending_self_test_allow_uart_autodetect
+                                             ? "Pending self-test started after app open"
+                                             : "Pending self-test started after chat open using saved LoRa settings");
                 impl->status_text = "LoRa self-test: starting";
-                impl->start_self_test_task();
+                impl->start_self_test_task(impl->pending_self_test_allow_uart_autodetect);
+                impl->pending_self_test_allow_uart_autodetect = true;
             }
             impl->unlock();
             impl->refresh_ui();
@@ -4264,6 +4813,7 @@ struct LoRaMeshApp::Impl {
         impl->lock();
         impl->trace_event_locked("UI opened common chat");
         impl->show_common_chat_locked();
+        impl->ensure_saved_mapping_self_test_for_chat_locked();
         impl->unlock();
         impl->refresh_ui();
         if (impl->startup_complete) {
@@ -4297,6 +4847,7 @@ struct LoRaMeshApp::Impl {
         impl->lock();
         impl->trace_event_locked(std::string("UI opened peer chat ") + peer_id);
         impl->show_peer_chat_locked(peer_id);
+        impl->ensure_saved_mapping_self_test_for_chat_locked();
         impl->unlock();
         impl->refresh_ui();
         if (impl->startup_complete) {
@@ -4343,7 +4894,7 @@ struct LoRaMeshApp::Impl {
 
         impl->set_status("LoRa self-test: starting");
         impl->trace_event("UI requested self-test start");
-        impl->start_self_test_task();
+        impl->start_self_test_task(true);
         impl->refresh_ui();
     }
 
@@ -4717,7 +5268,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_size(send_button, 48, 48);
         lv_obj_set_style_radius(send_button, 24, 0);
         lv_obj_set_style_bg_color(send_button, lv_color_hex(0x00A884), 0);
-        lv_obj_add_event_cb(send_button, on_send_clicked, LV_EVENT_PRESSED, this);
+        lv_obj_add_event_cb(send_button, on_send_clicked, LV_EVENT_CLICKED, this);
         lv_obj_t *send_label = lv_label_create(send_button);
         lv_obj_set_style_text_font(send_label, &lv_font_montserrat_22, 0);
         lv_label_set_text(send_label, LV_SYMBOL_RIGHT);
@@ -4875,8 +5426,38 @@ void LoRaMeshApp::requestSelfTestOnNextOpen()
 
     _impl->lock();
     _impl->pending_self_test_on_next_open = true;
+    _impl->pending_self_test_allow_uart_autodetect = true;
     _impl->trace_event_locked("Self-test scheduled for next app open");
     _impl->unlock();
+}
+
+bool LoRaMeshApp::syncRuntimeStateFromStorage()
+{
+    if (_impl == nullptr) {
+        return false;
+    }
+
+    StoredState loaded_state = {};
+    if (!jc4880::lora_mesh::load_stored_state(loaded_state)) {
+        return false;
+    }
+
+    _impl->lock();
+    const bool identity_changed = (_impl->stored_state.identity.display_name != loaded_state.identity.display_name);
+    const bool common_chat_changed = (_impl->stored_state.settings.common_chat_name != loaded_state.settings.common_chat_name);
+    _impl->stored_state.identity = loaded_state.identity;
+    _impl->stored_state.settings.common_chat_name = loaded_state.settings.common_chat_name;
+    if (identity_changed || common_chat_changed) {
+        _impl->target_list_dirty = true;
+        _impl->conversation_dirty = true;
+        _impl->trace_event_locked(identity_changed
+                                      ? "Reloaded LoRa runtime identity from saved settings"
+                                      : "Reloaded LoRa common chat title from saved settings");
+    }
+    _impl->unlock();
+
+    _impl->refresh_ui();
+    return true;
 }
 
 bool LoRaMeshApp::applyStoredSettingsFromSettings(bool run_self_test)
@@ -4911,6 +5492,27 @@ bool LoRaMeshApp::applyStoredSettingsFromSettings(bool run_self_test)
 bool LoRaMeshApp::startSelfTestFromSettings()
 {
     return applyStoredSettingsFromSettings(true);
+}
+
+bool LoRaMeshApp::startAutoDetectFromSettings()
+{
+    if (_impl == nullptr) {
+        return false;
+    }
+
+    _impl->lock();
+    if (_impl->self_test_running) {
+        _impl->unlock();
+        return true;
+    }
+
+    _impl->pending_self_test_on_next_open = false;
+    _impl->status_text = "LoRa auto-detect: starting";
+    _impl->trace_event_locked("Settings requested LoRa auto-detect with UART pin recovery");
+    _impl->start_self_test_task(true);
+    const bool started = _impl->self_test_running;
+    _impl->unlock();
+    return started;
 }
 
 std::string LoRaMeshApp::getSelfTestStatus(bool *is_running, bool *has_result) const
@@ -4968,6 +5570,7 @@ bool LoRaMeshApp::resume()
         _impl->ui_paused = false;
         _impl->unlock();
         _impl->trace_event("App resume requested");
+        (void)syncRuntimeStateFromStorage();
         lv_timer_resume(_impl->ui_timer);
         _impl->refresh_ui();
     }
@@ -5000,7 +5603,12 @@ bool LoRaMeshApp::close()
     _impl->lock();
     _impl->trace_event_locked("App close requested");
     _impl->request_self_test_stop_locked("app closing");
+    _impl->history_write_stop = true;
+    TaskHandle_t history_write_task = _impl->history_write_task;
     _impl->unlock();
+    if (history_write_task != nullptr) {
+        xTaskNotifyGive(history_write_task);
+    }
     _impl->rx_task_stop = true;
     while (_impl->rx_task != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -5012,6 +5620,9 @@ bool LoRaMeshApp::close()
         vTaskDelay(pdMS_TO_TICKS(20));
     }
     while (_impl->settings_apply_task != nullptr) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    while (_impl->history_write_task != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
@@ -5050,11 +5661,7 @@ bool LoRaMeshApp::queueDebugUiAction(int action, const std::string &peer_id)
         return false;
     }
 
-    auto *context = new (std::nothrow) DebugUiActionContext{
-        .app = this,
-        .action = static_cast<DebugUiAction>(action),
-        .peer_id = peer_id,
-    };
+    DebugUiActionContext *context = new DebugUiActionContext{this, static_cast<DebugUiAction>(action), peer_id};
     if (context == nullptr) {
         return false;
     }
@@ -5182,6 +5789,15 @@ bool LoRaMeshApp::debugSendCommonMessageVisible(const std::string &message)
     return queueDebugUiAction(static_cast<int>(DebugUiAction::SendCommonMessage), message);
 }
 
+bool LoRaMeshApp::debugSendModuleCommandVisible(const std::string &command)
+{
+    if (_impl == nullptr) {
+        return false;
+    }
+
+    return _impl->start_module_command_task(command);
+}
+
 std::string LoRaMeshApp::debugDescribeState() const
 {
     if (_impl == nullptr) {
@@ -5273,6 +5889,30 @@ std::vector<std::string> LoRaMeshApp::debugListPeerSummaries() const
 
 std::vector<std::string> LoRaMeshApp::debugRecentLogLines(size_t max_lines) const
 {
+    return debugLogLinesSince(0, max_lines);
+}
+
+size_t LoRaMeshApp::debugLogLineCount() const
+{
+    if (_impl == nullptr) {
+        return 0;
+    }
+
+    std::string log_copy;
+    _impl->lock();
+    log_copy = _impl->log_text;
+    _impl->unlock();
+
+    size_t line_count = 0;
+    std::istringstream stream(log_copy);
+    for (std::string line; std::getline(stream, line);) {
+        ++line_count;
+    }
+    return line_count;
+}
+
+std::vector<std::string> LoRaMeshApp::debugLogLinesSince(size_t start_line, size_t max_lines) const
+{
     std::vector<std::string> lines;
     if ((_impl == nullptr) || (max_lines == 0)) {
         return lines;
@@ -5283,10 +5923,14 @@ std::vector<std::string> LoRaMeshApp::debugRecentLogLines(size_t max_lines) cons
     log_copy = _impl->log_text;
     _impl->unlock();
 
+    size_t current_line = 0;
     std::istringstream stream(log_copy);
-    for (std::string line; std::getline(stream, line);) {
-        lines.push_back(line);
+    for (std::string line; std::getline(stream, line); ++current_line) {
+        if (current_line >= start_line) {
+            lines.push_back(line);
+        }
     }
+
     if (lines.size() > max_lines) {
         lines.erase(lines.begin(), lines.end() - static_cast<std::ptrdiff_t>(max_lines));
     }

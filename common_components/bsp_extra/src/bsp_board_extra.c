@@ -87,6 +87,9 @@ static audio_player_cb_t audio_idle_callback = NULL;
 static void *audio_idle_cb_user_data = NULL;
 static char audio_file_path[512];
 
+static void audio_file_path_set(const char *path);
+static esp_err_t audio_recover_output_path(void);
+
 #define AUDIO_NOTIFICATION_TASK_STACK_SIZE       (4096)
 #define AUDIO_NOTIFICATION_TASK_PRIORITY         (4)
 #define AUDIO_NOTIFICATION_CHUNK_FRAMES         (256)
@@ -211,6 +214,12 @@ static audio_notification_profile_t audio_get_notification_profile(bsp_extra_aud
             .duration_ms = 600,
             .amplitude = 0.35f,
         };
+    case BSP_EXTRA_AUDIO_SYSTEM_SOUND_TIMER_COMPLETE:
+        return (audio_notification_profile_t) {
+            .frequency_hz = 1397,
+            .duration_ms = 320,
+            .amplitude = 0.34f,
+        };
     case BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_AVAILABLE:
         return (audio_notification_profile_t) {
             .frequency_hz = 1175,
@@ -316,6 +325,51 @@ static esp_err_t audio_apply_output_volume_locked(void)
     ESP_RETURN_ON_ERROR(esp_codec_dev_set_out_vol(play_dev_handle, target), TAG, "Set Codec volume failed");
     s_audio_mix_state.applied_output_volume = target;
     return ESP_OK;
+}
+
+static esp_err_t audio_recover_output_path(void)
+{
+    uint32_t sample_rate = CODEC_DEFAULT_SAMPLE_RATE;
+    uint32_t bits_per_sample = CODEC_DEFAULT_BIT_WIDTH;
+    i2s_slot_mode_t channel_mode = CODEC_DEFAULT_CHANNEL;
+
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        sample_rate = s_audio_mix_state.sample_rate;
+        bits_per_sample = s_audio_mix_state.bits_per_sample;
+        channel_mode = s_audio_mix_state.channel_mode;
+        audio_mix_unlock();
+    }
+
+    esp_err_t ret = ESP_OK;
+    if (!_is_audio_init || (play_dev_handle == NULL) || (record_dev_handle == NULL)) {
+        ret = bsp_extra_codec_deinit();
+        if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
+            ESP_LOGW(TAG, "Failed to deinit codec during output recovery: %s", esp_err_to_name(ret));
+        }
+
+        ret = bsp_extra_codec_init();
+        if (ret != ESP_OK) {
+            return ret;
+        }
+    }
+
+    ret = bsp_extra_codec_set_fs_play(sample_rate, bits_per_sample, channel_mode);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    ret = bsp_extra_codec_mute_set(false);
+    if (ret != ESP_OK) {
+        return ret;
+    }
+
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.applied_output_volume = -1;
+        ret = audio_apply_output_volume_locked();
+        audio_mix_unlock();
+    }
+
+    return ret;
 }
 
 static uint8_t *audio_ensure_mix_buffer(size_t len)
@@ -566,6 +620,41 @@ static esp_err_t audio_mute_function(AUDIO_PLAYER_MUTE_SETTING setting)
 
 static void audio_callback(audio_player_cb_ctx_t *ctx)
 {
+    if ((ctx != NULL) &&
+        ((ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_IDLE) ||
+         (ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_ERROR) ||
+         (ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE) ||
+         (ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN))) {
+        audio_file_path_set(NULL);
+
+        if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+            s_audio_mix_state.notification_active = false;
+            s_audio_mix_state.notification_remaining_frames = 0;
+            s_audio_mix_state.notification_direct_task_running = false;
+            s_audio_mix_state.applied_output_volume = -1;
+            audio_mix_unlock();
+        }
+
+        if (bsp_extra_codec_init() == ESP_OK) {
+            if (bsp_extra_codec_set_fs_play(CODEC_DEFAULT_SAMPLE_RATE,
+                                            CODEC_DEFAULT_BIT_WIDTH,
+                                            CODEC_DEFAULT_CHANNEL) != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to restore default playback format after player event %d", (int)ctx->audio_event);
+            }
+            if (bsp_extra_codec_mute_set(false) != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to unmute codec after player event %d", (int)ctx->audio_event);
+            }
+        } else {
+            ESP_LOGW(TAG, "Failed to reinitialize codec after player event %d", (int)ctx->audio_event);
+        }
+
+        if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+            s_audio_mix_state.applied_output_volume = -1;
+            audio_apply_output_volume_locked();
+            audio_mix_unlock();
+        }
+    }
+
     if (audio_idle_callback) {
         ctx->user_ctx = audio_idle_cb_user_data;
         audio_idle_callback(ctx);
@@ -698,6 +787,21 @@ esp_err_t bsp_extra_i2s_write(void *audio_buffer, size_t len, size_t *bytes_writ
                  (unsigned)len,
                  (unsigned)timeout_ms,
                  s_audio_mix_state.notification_active ? 1 : 0);
+
+        const esp_err_t recover_ret = audio_recover_output_path();
+        if (recover_ret == ESP_OK) {
+            ret = esp_codec_dev_write(play_dev_handle, audio_buffer, len);
+            if (ret == ESP_OK) {
+                if (bytes_written) {
+                    *bytes_written = len;
+                }
+                ESP_LOGI(TAG, "Recovered audio output path after write failure");
+            } else {
+                ESP_LOGW(TAG, "Audio output retry failed after recovery: %s", esp_err_to_name(ret));
+            }
+        } else {
+            ESP_LOGW(TAG, "Audio output recovery failed: %s", esp_err_to_name(recover_ret));
+        }
     }
     return ret;
 }
@@ -1098,6 +1202,21 @@ esp_err_t bsp_extra_player_play_file(const char *file_path)
     return ESP_OK;
 }
 
+esp_err_t bsp_extra_player_stop(void)
+{
+    esp_err_t ret = audio_player_stop();
+
+    if (audio_mix_lock(pdMS_TO_TICKS(1000))) {
+        s_audio_mix_state.notification_active = false;
+        s_audio_mix_state.notification_remaining_frames = 0;
+        s_audio_mix_state.notification_total_frames = 0;
+        audio_mix_unlock();
+    }
+
+    audio_file_path_set(NULL);
+    return ret;
+}
+
 void bsp_extra_player_register_callback(audio_player_cb_t cb, void *user_data)
 {
     audio_idle_callback = cb;
@@ -1112,6 +1231,21 @@ bool bsp_extra_player_is_playing_by_path(const char *file_path)
 bool bsp_extra_player_is_playing_by_index(file_iterator_instance_t *instance, int index)
 {
     return (index == file_iterator_get_index(instance));
+}
+
+bool bsp_extra_player_is_active(void)
+{
+    if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {
+        return true;
+    }
+
+    bool notification_active = false;
+    if (audio_mix_lock(pdMS_TO_TICKS(20))) {
+        notification_active = s_audio_mix_state.notification_active;
+        audio_mix_unlock();
+    }
+
+    return notification_active;
 }
 
 esp_err_t bsp_extra_display_idle_init(void)

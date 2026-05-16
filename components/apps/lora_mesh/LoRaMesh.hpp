@@ -19,7 +19,9 @@ public:
     bool close() override;
     void requestSelfTestOnNextOpen();
     bool applyStoredSettingsFromSettings(bool run_self_test);
+    bool syncRuntimeStateFromStorage();
     bool startSelfTestFromSettings();
+    bool startAutoDetectFromSettings();
     std::string getSelfTestStatus(bool *is_running = nullptr, bool *has_result = nullptr) const;
 
     bool debugShowTargetsVisible();
@@ -29,8 +31,11 @@ public:
     bool debugRunSelfTestVisible();
     bool debugStopSelfTestVisible();
     bool debugSendCommonMessageVisible(const std::string &message);
+    bool debugSendModuleCommandVisible(const std::string &command);
     std::string debugDescribeState() const;
     std::vector<std::string> debugListPeerSummaries() const;
+    size_t debugLogLineCount() const;
+    std::vector<std::string> debugLogLinesSince(size_t start_line, size_t max_lines) const;
     std::vector<std::string> debugRecentLogLines(size_t max_lines) const;
 
 private:

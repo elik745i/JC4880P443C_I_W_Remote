@@ -126,6 +126,7 @@ private:
     lv_obj_t *_terminalInput;
     lv_obj_t *_terminalTemplatesLabel;
     lv_obj_t *_terminalLogLabel;
+    lv_obj_t *_terminalLogPanel;
 
     lv_obj_t *_browserResultLabel;
 
@@ -149,6 +150,9 @@ private:
     uint8_t _activeScreen;
     uint8_t _lastRenderedLogCount;
     uint8_t _lastPolledSlaveAddress;
+    size_t _terminalViewStartIndex;
+    size_t _lastRenderedTerminalLogCount;
+    uint32_t _lastRenderedTerminalTailTimestamp;
     std::array<int16_t, 16> _dashboardTrend;
     uint16_t _lastPrimaryValue;
     uint16_t _lastStartAddress;

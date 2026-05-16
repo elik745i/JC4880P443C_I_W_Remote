@@ -6,7 +6,9 @@
 #include <cstdint>
 #include <ctime>
 
+#if CONFIG_JC4880_FEATURE_IMU
 #include "ImuService.hpp"
+#endif
 #include "battery_history_service.h"
 #include "hardware_history_service.h"
 #include "joypad_runtime.h"
@@ -30,25 +32,34 @@ namespace {
 static const char *TAG = "SystemUiService";
 static constexpr uint32_t kStatusRefreshTaskStack = 4096;
 static constexpr uint32_t kBatteryRefreshTaskStack = 4096;
+#if CONFIG_JC4880_FEATURE_IMU
 static constexpr uint32_t kImuAutorotateTaskStack = 4096;
 static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(2000);
 static constexpr TickType_t kBatteryRefreshPeriod = pdMS_TO_TICKS(5000);
 static constexpr TickType_t kImuAutorotateActivePeriod = pdMS_TO_TICKS(150);
 static constexpr TickType_t kImuAutorotateIdlePeriod = pdMS_TO_TICKS(1000);
 static constexpr int64_t kImuAutorotateRetryDelayUs = 3LL * 1000LL * 1000LL;
+#else
+static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(2000);
+static constexpr TickType_t kBatteryRefreshPeriod = pdMS_TO_TICKS(5000);
+#endif
 static constexpr const char *kNvsStorageNamespace = "storage";
 static constexpr const char *kNvsKeyDisplayOrientation = "disp_rot";
 static constexpr const char *kNvsKeyDisplayAutorotate = "disp_auto_rot";
+#if CONFIG_JC4880_FEATURE_IMU
 static constexpr const char *kNvsKeyDisplayAutorotateImu = "disp_auto_imu";
+#endif
 
 static ESP_Brookesia_StatusBar *s_statusBar = nullptr;
 static std::atomic<bool> s_initialized{false};
 static std::atomic<bool> s_wifiConnected{false};
 static std::atomic<int> s_wifiSignalLevel{0};
 static nvs_handle_t s_settingsNvsHandle = 0;
+#if CONFIG_JC4880_FEATURE_IMU
 static int32_t s_imuAutorotateAppliedOrientation = 0;
 static bool s_imuAutorotateHasAppliedOrientation = false;
 static int64_t s_imuAutorotateRetryAfterUs = 0;
+#endif
 
 static BaseType_t create_background_task_prefer_psram(TaskFunction_t task,
                                                       const char *name,
@@ -213,6 +224,7 @@ static int32_t sanitize_display_autorotate_axis(int32_t axis)
     }
 }
 
+#if CONFIG_JC4880_FEATURE_IMU
 static void update_display_autorotate_from_sample(const jc4880::imu::ImuSample *sample,
                                                   bool sample_ok,
                                                   bool enabled,
@@ -266,6 +278,7 @@ static void update_display_autorotate_from_sample(const jc4880::imu::ImuSample *
         }
     }
 }
+#endif
 
 static void update_status_bar_clock_and_wifi(void)
 {
@@ -319,6 +332,7 @@ static void battery_refresh_task(void *arg)
     }
 }
 
+#if CONFIG_JC4880_FEATURE_IMU
 static void imu_autorotate_task(void *arg)
 {
     (void)arg;
@@ -366,6 +380,7 @@ static void imu_autorotate_task(void *arg)
         vTaskDelay(sample_ok ? kImuAutorotateActivePeriod : kImuAutorotateIdlePeriod);
     }
 }
+#endif
 
 } // namespace
 
@@ -421,6 +436,7 @@ bool initialize(ESP_Brookesia_Phone &phone)
         }
     }
 
+#if CONFIG_JC4880_FEATURE_IMU
     if (create_background_task_prefer_psram(imu_autorotate_task,
                                             "imu_autorotate",
                                             kImuAutorotateTaskStack,
@@ -429,6 +445,7 @@ bool initialize(ESP_Brookesia_Phone &phone)
                                             1) != pdPASS) {
         ESP_LOGW(TAG, "Failed to start IMU autorotate task");
     }
+#endif
 
     s_initialized.store(true);
     update_status_bar_clock_and_wifi();

@@ -24,6 +24,7 @@ RS485App::RS485App()
       _terminalInput(nullptr),
       _terminalTemplatesLabel(nullptr),
       _terminalLogLabel(nullptr),
+    _terminalLogPanel(nullptr),
       _browserResultLabel(nullptr),
       _profilesLabel(nullptr),
       _dashboardPrimaryLabel(nullptr),
@@ -41,12 +42,15 @@ RS485App::RS485App()
       _scanProgressTotal(0),
       _activeScreen(RS485_SCREEN_HOME),
       _lastRenderedLogCount(0),
-    _lastPolledSlaveAddress(0),
+            _lastPolledSlaveAddress(0),
+            _terminalViewStartIndex(0),
+            _lastRenderedTerminalLogCount(0),
+            _lastRenderedTerminalTailTimestamp(0),
       _dashboardTrend{},
-    _lastPrimaryValue(0),
-    _lastStartAddress(0),
-    _lastPollTimestampMs(0),
-    _lastPollHealthy(false),
+            _lastPrimaryValue(0),
+            _lastStartAddress(0),
+            _lastPollTimestampMs(0),
+            _lastPollHealthy(false),
       _statusMessage("RS-485 app ready"),
       _scanSummaryText("No scan run yet"),
       _browserSummaryText("Select a read action to query a device"),
@@ -85,6 +89,7 @@ bool RS485App::init()
     if (_activeScreen >= static_cast<uint8_t>(RS485_SCREEN_COUNT)) {
         _activeScreen = static_cast<uint8_t>(RS485_SCREEN_HOME);
     }
+    _terminalViewStartIndex = rs485_log_store_count(&s_logStore);
     _dashboardTrend.fill(0);
     return true;
 }
@@ -166,6 +171,7 @@ void RS485App::releaseRuntimeResources()
     _terminalInput = nullptr;
     _terminalTemplatesLabel = nullptr;
     _terminalLogLabel = nullptr;
+    _terminalLogPanel = nullptr;
     _browserResultLabel = nullptr;
     _profilesLabel = nullptr;
     _dashboardPrimaryLabel = nullptr;
@@ -178,6 +184,9 @@ void RS485App::releaseRuntimeResources()
     _discoveredDevices.shrink_to_fit();
     _lastRenderedLogCount = 0;
     _lastPolledSlaveAddress = 0;
+    _terminalViewStartIndex = 0;
+    _lastRenderedTerminalLogCount = 0;
+    _lastRenderedTerminalTailTimestamp = 0;
     _lastPrimaryValue = 0;
     _lastStartAddress = 0;
     _lastPollTimestampMs = 0;

@@ -35,6 +35,7 @@ typedef enum {
 	BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_SENT,
 	BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED,
 	BSP_EXTRA_AUDIO_SYSTEM_SOUND_ALARM_CLOCK,
+	BSP_EXTRA_AUDIO_SYSTEM_SOUND_TIMER_COMPLETE,
 	BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_AVAILABLE,
 	BSP_EXTRA_AUDIO_SYSTEM_SOUND_UPDATE_SUCCESS,
 	BSP_EXTRA_AUDIO_SYSTEM_SOUND_SHUTTING_DOWN,
@@ -314,6 +315,15 @@ esp_err_t bsp_extra_player_play_index(file_iterator_instance_t *instance, int in
 esp_err_t bsp_extra_player_play_file(const char *file_path);
 
 /**
+ * @brief Stop active file playback and active system notification output.
+ *
+ * @return
+ *     - ESP_OK: Stop request accepted.
+ *     - Others: Failed to queue the stop request.
+ */
+esp_err_t bsp_extra_player_stop(void);
+
+/**
  * @brief Register a callback function for the audio player
  *
  * @param cb The callback function to be registered.
@@ -341,6 +351,13 @@ bool bsp_extra_player_is_playing_by_path(const char *file_path);
  *     - false: The audio file at the specified index is not currently playing.
  */
 bool bsp_extra_player_is_playing_by_index(file_iterator_instance_t *instance, int index);
+
+/**
+ * @brief Check whether file playback or system notification audio is active.
+ *
+ * @return true when audio is active, otherwise false.
+ */
+bool bsp_extra_player_is_active(void);
 
 /**
  * @brief Initialize display idle management.

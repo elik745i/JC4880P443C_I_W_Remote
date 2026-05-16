@@ -94,13 +94,20 @@ void apply_module_defaults(MeshSettings &settings)
             settings.busy_gpio = 51;
             settings.dio1_gpio = 50;
             settings.nrst_gpio = -1;
-            settings.txen_gpio = 35;
-            settings.rxen_gpio = 34;
-            settings.uart_tx_gpio = 31;
-            settings.uart_rx_gpio = 30;
+            settings.txen_gpio = -1;
+            settings.rxen_gpio = -1;
+            settings.uart_tx_gpio = 30;
+            settings.uart_rx_gpio = 31;
             settings.mode0_gpio = 51;
             settings.mode1_gpio = 29;
             settings.aux_gpio = 33;
+            settings.e22_address = 0;
+            settings.e22_uart_baud_index = 3;
+            settings.e22_air_data_rate_index = 2;
+            settings.e22_sub_packet_index = 0;
+            settings.e22_tx_power_index = 0;
+            settings.e22_fixed_transmission = false;
+            settings.e22_rssi_ambient_noise = false;
             break;
         case RadioModule::E220_400T22D:
             settings.spi_miso_gpio = 33;
@@ -117,15 +124,150 @@ void apply_module_defaults(MeshSettings &settings)
             settings.mode0_gpio = 29;
             settings.mode1_gpio = 30;
             settings.aux_gpio = 50;
+            settings.e22_address = 0;
+            settings.e22_uart_baud_index = 3;
+            settings.e22_air_data_rate_index = 2;
+            settings.e22_sub_packet_index = 0;
+            settings.e22_tx_power_index = 0;
+            settings.e22_fixed_transmission = false;
+            settings.e22_rssi_ambient_noise = false;
             break;
     }
+}
+
+bool heal_known_e22_swapped_spi_pins(MeshSettings &settings, const MeshSettings &defaults)
+{
+    if (settings.radio_module != RadioModule::E22_400M22S) {
+        return false;
+    }
+
+    const bool swapped_spi_pair = (settings.spi_miso_gpio == defaults.spi_sck_gpio) &&
+                                  (settings.spi_sck_gpio == defaults.spi_miso_gpio);
+    const bool other_pins_match_defaults = (settings.spi_mosi_gpio == defaults.spi_mosi_gpio) &&
+                                           (settings.spi_nss_gpio == defaults.spi_nss_gpio) &&
+                                           (settings.busy_gpio == defaults.busy_gpio) &&
+                                           (settings.dio1_gpio == defaults.dio1_gpio) &&
+                                           (settings.nrst_gpio == defaults.nrst_gpio) &&
+                                           (settings.txen_gpio == defaults.txen_gpio) &&
+                                           (settings.rxen_gpio == defaults.rxen_gpio);
+    if (!swapped_spi_pair || !other_pins_match_defaults) {
+        return false;
+    }
+
+    ESP_LOGW(kTag,
+             "Correcting stored E22 SPI pin override MISO=%d/SCK=%d to defaults MISO=%d/SCK=%d",
+             settings.spi_miso_gpio,
+             settings.spi_sck_gpio,
+             defaults.spi_miso_gpio,
+             defaults.spi_sck_gpio);
+    settings.spi_miso_gpio = defaults.spi_miso_gpio;
+    settings.spi_sck_gpio = defaults.spi_sck_gpio;
+    return true;
+}
+
+bool heal_legacy_e22_400t22s_pin_map(MeshSettings &settings)
+{
+    if (settings.radio_module != RadioModule::E22_400T22S) {
+        return false;
+    }
+
+    const bool legacy_reset_pin = (settings.nrst_gpio == 51) || (settings.nrst_gpio == 52) || (settings.nrst_gpio < 0);
+    const bool matches_legacy_uart_map = (settings.uart_tx_gpio == 31) && (settings.uart_rx_gpio == 33) &&
+                                         (settings.mode0_gpio == 29) && (settings.mode1_gpio == 30) &&
+                                         (settings.aux_gpio == 50) && legacy_reset_pin;
+    if (!matches_legacy_uart_map) {
+        return false;
+    }
+
+    ESP_LOGW(kTag,
+             "Migrating stored E22-400T22S pins from legacy defaults TX=%d RX=%d AUX=%d M0=%d M1=%d NRST=%d",
+             settings.uart_tx_gpio,
+             settings.uart_rx_gpio,
+             settings.aux_gpio,
+             settings.mode0_gpio,
+             settings.mode1_gpio,
+             settings.nrst_gpio);
+    settings.uart_tx_gpio = 30;
+    settings.uart_rx_gpio = 31;
+    settings.mode0_gpio = 51;
+    settings.mode1_gpio = 29;
+    settings.aux_gpio = 33;
+    settings.nrst_gpio = -1;
+    settings.txen_gpio = -1;
+    settings.rxen_gpio = -1;
+    return true;
+}
+
+bool heal_swapped_e22_400t22s_uart_pins(MeshSettings &settings, const MeshSettings &defaults)
+{
+    if (settings.radio_module != RadioModule::E22_400T22S) {
+        return false;
+    }
+
+    const bool swapped_uart_pair = (settings.uart_tx_gpio == defaults.uart_rx_gpio) &&
+                                   (settings.uart_rx_gpio == defaults.uart_tx_gpio);
+    const bool reset_pin_compatible = (settings.nrst_gpio == defaults.nrst_gpio) ||
+                                      (settings.nrst_gpio == 52) || (settings.nrst_gpio == 51) ||
+                                      (settings.nrst_gpio < 0);
+    const bool other_pins_match_defaults = (settings.mode0_gpio == defaults.mode0_gpio) &&
+                                           (settings.mode1_gpio == defaults.mode1_gpio) &&
+                                           (settings.aux_gpio == defaults.aux_gpio) &&
+                                           reset_pin_compatible;
+    if (!swapped_uart_pair || !other_pins_match_defaults) {
+        return false;
+    }
+
+    ESP_LOGW(kTag,
+             "Correcting stored E22-400T22S UART pin override TX=%d/RX=%d to defaults TX=%d/RX=%d",
+             settings.uart_tx_gpio,
+             settings.uart_rx_gpio,
+             defaults.uart_tx_gpio,
+             defaults.uart_rx_gpio);
+    settings.uart_tx_gpio = defaults.uart_tx_gpio;
+    settings.uart_rx_gpio = defaults.uart_rx_gpio;
+    settings.nrst_gpio = defaults.nrst_gpio;
+    settings.txen_gpio = defaults.txen_gpio;
+    settings.rxen_gpio = defaults.rxen_gpio;
+    return true;
+}
+
+bool heal_missing_e22_400t22s_reset_pin(MeshSettings &settings, const MeshSettings &defaults)
+{
+    if (settings.radio_module != RadioModule::E22_400T22S) {
+        return false;
+    }
+
+    if (defaults.nrst_gpio < 0) {
+        return false;
+    }
+
+    const bool missing_reset_pin = settings.nrst_gpio < 0;
+    const bool other_pins_match_defaults = (settings.uart_tx_gpio == defaults.uart_tx_gpio) &&
+                                           (settings.uart_rx_gpio == defaults.uart_rx_gpio) &&
+                                           (settings.mode0_gpio == defaults.mode0_gpio) &&
+                                           (settings.mode1_gpio == defaults.mode1_gpio) &&
+                                           (settings.aux_gpio == defaults.aux_gpio) &&
+                                           (settings.txen_gpio == defaults.txen_gpio) &&
+                                           (settings.rxen_gpio == defaults.rxen_gpio);
+    if (!missing_reset_pin || !other_pins_match_defaults) {
+        return false;
+    }
+
+    ESP_LOGW(kTag,
+             "Restoring missing E22-400T22S reset pin from NRST=%d to default NRST=%d",
+             settings.nrst_gpio,
+             defaults.nrst_gpio);
+    settings.nrst_gpio = defaults.nrst_gpio;
+    return true;
 }
 
 bool sanitize_module_pins(MeshSettings &settings)
 {
     MeshSettings defaults = settings;
     apply_module_defaults(defaults);
-    bool changed = false;
+    bool changed = heal_known_e22_swapped_spi_pins(settings, defaults);
+    changed = heal_legacy_e22_400t22s_pin_map(settings) || changed;
+    changed = heal_missing_e22_400t22s_reset_pin(settings, defaults) || changed;
 
     auto sanitize_pin = [&changed](int8_t &pin, int8_t fallback) {
         if (!is_allowed_gpio(pin)) {
@@ -222,6 +364,22 @@ bool sanitize_state(StoredState &state)
         state.settings.coding_rate = 1;
         changed = true;
     }
+    if (state.settings.e22_uart_baud_index > 7U) {
+        state.settings.e22_uart_baud_index = 3;
+        changed = true;
+    }
+    if (state.settings.e22_air_data_rate_index > 7U) {
+        state.settings.e22_air_data_rate_index = 2;
+        changed = true;
+    }
+    if (state.settings.e22_sub_packet_index > 3U) {
+        state.settings.e22_sub_packet_index = 0;
+        changed = true;
+    }
+    if (state.settings.e22_tx_power_index > 3U) {
+        state.settings.e22_tx_power_index = 0;
+        changed = true;
+    }
     if (!state.settings.radio_enabled && state.settings.antenna_warning_acknowledged) {
         // Keep the disable state but do not treat the warning ack as invalid.
     }
@@ -285,6 +443,13 @@ bool load_stored_state(StoredState &state)
     state.settings.mode0_gpio = static_cast<int8_t>(read_int(settings, "mode0_gpio", state.settings.mode0_gpio));
     state.settings.mode1_gpio = static_cast<int8_t>(read_int(settings, "mode1_gpio", state.settings.mode1_gpio));
     state.settings.aux_gpio = static_cast<int8_t>(read_int(settings, "aux_gpio", state.settings.aux_gpio));
+    state.settings.e22_address = static_cast<uint16_t>(read_int(settings, "e22_address", state.settings.e22_address));
+    state.settings.e22_uart_baud_index = static_cast<uint8_t>(read_int(settings, "e22_uart_baud_index", state.settings.e22_uart_baud_index));
+    state.settings.e22_air_data_rate_index = static_cast<uint8_t>(read_int(settings, "e22_air_data_rate_index", state.settings.e22_air_data_rate_index));
+    state.settings.e22_sub_packet_index = static_cast<uint8_t>(read_int(settings, "e22_sub_packet_index", state.settings.e22_sub_packet_index));
+    state.settings.e22_tx_power_index = static_cast<uint8_t>(read_int(settings, "e22_tx_power_index", state.settings.e22_tx_power_index));
+    state.settings.e22_fixed_transmission = read_bool(settings, "e22_fixed_transmission", state.settings.e22_fixed_transmission);
+    state.settings.e22_rssi_ambient_noise = read_bool(settings, "e22_rssi_ambient_noise", state.settings.e22_rssi_ambient_noise);
     state.settings.public_chat_encryption = read_bool(settings, "public_chat_encryption", state.settings.public_chat_encryption);
     state.settings.common_chat_name = read_string(settings, "common_chat_name");
     state.settings.hop_limit = static_cast<uint8_t>(read_int(settings, "hop_limit", state.settings.hop_limit));
@@ -354,6 +519,13 @@ bool save_stored_state(const StoredState &state)
     cJSON_AddNumberToObject(settings, "mode0_gpio", state.settings.mode0_gpio);
     cJSON_AddNumberToObject(settings, "mode1_gpio", state.settings.mode1_gpio);
     cJSON_AddNumberToObject(settings, "aux_gpio", state.settings.aux_gpio);
+    cJSON_AddNumberToObject(settings, "e22_address", state.settings.e22_address);
+    cJSON_AddNumberToObject(settings, "e22_uart_baud_index", state.settings.e22_uart_baud_index);
+    cJSON_AddNumberToObject(settings, "e22_air_data_rate_index", state.settings.e22_air_data_rate_index);
+    cJSON_AddNumberToObject(settings, "e22_sub_packet_index", state.settings.e22_sub_packet_index);
+    cJSON_AddNumberToObject(settings, "e22_tx_power_index", state.settings.e22_tx_power_index);
+    cJSON_AddBoolToObject(settings, "e22_fixed_transmission", state.settings.e22_fixed_transmission);
+    cJSON_AddBoolToObject(settings, "e22_rssi_ambient_noise", state.settings.e22_rssi_ambient_noise);
     cJSON_AddBoolToObject(settings, "public_chat_encryption", state.settings.public_chat_encryption);
     add_string(settings, "common_chat_name", state.settings.common_chat_name);
     cJSON_AddNumberToObject(settings, "hop_limit", state.settings.hop_limit);

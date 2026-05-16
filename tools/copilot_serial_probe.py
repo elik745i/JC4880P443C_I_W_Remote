@@ -33,8 +33,16 @@ def main():
     parser.add_argument("--pre-read", type=float, default=3.0)
     parser.add_argument("--post-read", type=float, default=2.0)
     parser.add_argument("--settle", type=float, default=0.5)
+    parser.add_argument("--command", action="append", default=[])
+    parser.add_argument("--command-file")
     parser.add_argument("commands", nargs="*")
     args = parser.parse_args()
+
+    commands = list(args.command)
+    if args.command_file:
+        with open(args.command_file, "r", encoding="utf-8") as file:
+            commands.extend(line.strip() for line in file if line.strip())
+    commands.extend(args.commands)
 
     with serial.Serial(args.port, args.baud, timeout=0.2) as port:
         port.dtr = False
@@ -46,7 +54,7 @@ def main():
             read_available(port)
             time.sleep(0.1)
 
-        for command in args.commands:
+        for command in commands:
             print(f"\n>>> {command}")
             port.write((command + "\n").encode("utf-8"))
             port.flush()

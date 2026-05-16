@@ -198,7 +198,7 @@
 		{
 			"label": "JC4880: Flash P4",
 			"type": "shell",
-			"command": "Set-Location '${workspaceFolder}\\build'; & 'C:\\Espressif\\tools\\python\\v5.5.4\\venv\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xfc0000 storage.bin",
+			"command": "Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash '@flash_args'",
 			"options": {
 				"cwd": "${workspaceFolder}",
 				"shell": {
@@ -314,7 +314,7 @@
 		{
 			"label": "JC4880: Flash Selected Target",
 			"type": "shell",
-			"command": "$target = '${config:jc4880.flashTarget}'; if ($target -eq 'c6') { Set-Location '${workspaceFolder}\\coprocessor_c6\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32c6 -p '${config:jc4880.ports.c6}' -b ${config:jc4880.flashBaud.c6} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 bootloader\\bootloader.bin 0x8000 partition_table\\partition-table.bin 0xd000 ota_data_initial.bin 0x10000 network_adapter.bin } elseif ($target -eq 'p4') { Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xfc0000 storage.bin } else { Write-Error ('Unsupported jc4880.flashTarget ' + $target + '. Use p4 or c6.'); exit 1 }",
+			"command": "$target = '${config:jc4880.flashTarget}'; if ($target -eq 'c6') { Set-Location '${workspaceFolder}\\coprocessor_c6\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32c6 -p '${config:jc4880.ports.c6}' -b ${config:jc4880.flashBaud.c6} --before default_reset --after hard_reset write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 bootloader\\bootloader.bin 0x8000 partition_table\\partition-table.bin 0xd000 ota_data_initial.bin 0x10000 network_adapter.bin } elseif ($target -eq 'p4') { Set-Location '${workspaceFolder}\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p '${config:jc4880.ports.p4}' -b ${config:jc4880.flashBaud.p4} --before default_reset --after hard_reset write_flash '@flash_args' } else { Write-Error ('Unsupported jc4880.flashTarget ' + $target + '. Use p4 or c6.'); exit 1 }",
 			"options": {
 				"cwd": "${workspaceFolder}",
 				"shell": {
@@ -352,7 +352,7 @@
 		{
 			"label": "Copilot: Flash P4 COM11",
 			"type": "shell",
-			"command": "& 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM11 -b 921600 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xfc0000 storage.bin",
+			"command": "& 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM11 -b 921600 --before default_reset --after hard_reset write_flash '@flash_args'",
 			"args": [],
 			"isBackground": false,
 			"problemMatcher": [
@@ -395,7 +395,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"Set-Location 'c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM10 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xfc0000 storage.bin"
+				"Set-Location 'c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM10 -b 460800 --before default_reset --after hard_reset write_flash '@flash_args'"
 			],
 			"isBackground": false,
 			"problemMatcher": [],
@@ -519,7 +519,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"Set-Location 'c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM10 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xfc0000 storage.bin"
+				"Set-Location 'c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM10 -b 460800 --before default_reset --after hard_reset write_flash '@flash_args'"
 			],
 			"isBackground": false,
 			"problemMatcher": [],
@@ -559,7 +559,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"Set-Location 'c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM10 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size keep --flash_freq 80m 0x2000 bootloader\\bootloader.bin 0x20000 ESP32P4_Remote.bin 0x8000 partition_table\\partition-table.bin 0xf000 ota_data_initial.bin 0xfc0000 storage.bin"
+				"Set-Location 'c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\build'; & 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe' -m esptool --chip esp32p4 -p COM10 -b 460800 --before default_reset --after hard_reset write_flash '@flash_args'"
 			],
 			"isBackground": false,
 			"problemMatcher": [],
@@ -811,6 +811,109 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
+		},
+		{
+			"label": "JC4880: Package Release v1.4.0",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"$ErrorActionPreference = 'Stop'; $workspace = 'C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote'; $releaseDir = Join-Path $workspace 'release\\v1.4.0'; $p4Dir = Join-Path $releaseDir 'p4_full_flash'; $c6Dir = Join-Path $releaseDir 'c6_full_flash'; $python = 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe'; $esptool = 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\esptool_py\\esptool\\esptool.py'; New-Item -ItemType Directory -Force -Path $p4Dir, (Join-Path $p4Dir 'bootloader'), (Join-Path $p4Dir 'partition_table'), $c6Dir, (Join-Path $c6Dir 'bootloader'), (Join-Path $c6Dir 'partition_table') | Out-Null; & $python $esptool --chip esp32c6 merge_bin -o (Join-Path $workspace 'coprocessor_c6\\build\\merged-binary.bin') --flash_mode dio --flash_freq 80m --flash_size 4MB 0x10000 (Join-Path $workspace 'coprocessor_c6\\build\\network_adapter.bin') 0x8000 (Join-Path $workspace 'coprocessor_c6\\build\\partition_table\\partition-table.bin') 0xd000 (Join-Path $workspace 'coprocessor_c6\\build\\ota_data_initial.bin') 0x0 (Join-Path $workspace 'coprocessor_c6\\build\\bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'build\\ESP32P4_Remote.bin') (Join-Path $releaseDir 'JC4880P443C_I_W_Remote_v1.4.0_ota.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\merged-binary.bin') (Join-Path $releaseDir 'JC4880P443C_I_W_Remote_C6_v1.4.0_merged.bin'); Copy-Item -Force (Join-Path $workspace 'build\\ESP32P4_Remote.bin') (Join-Path $p4Dir 'ESP32P4_Remote.bin'); Copy-Item -Force (Join-Path $workspace 'build\\flash_args') (Join-Path $p4Dir 'flash_args'); Copy-Item -Force (Join-Path $workspace 'build\\ota_data_initial.bin') (Join-Path $p4Dir 'ota_data_initial.bin'); Copy-Item -Force (Join-Path $workspace 'build\\storage.bin') (Join-Path $p4Dir 'storage.bin'); Copy-Item -Force (Join-Path $workspace 'build\\bootloader\\bootloader.bin') (Join-Path $p4Dir 'bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'build\\partition_table\\partition-table.bin') (Join-Path $p4Dir 'partition_table\\partition-table.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\network_adapter.bin') (Join-Path $c6Dir 'network_adapter.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\flash_args') (Join-Path $c6Dir 'flash_args'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\ota_data_initial.bin') (Join-Path $c6Dir 'ota_data_initial.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\bootloader\\bootloader.bin') (Join-Path $c6Dir 'bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\partition_table\\partition-table.bin') (Join-Path $c6Dir 'partition_table\\partition-table.bin'); $p4Zip = Join-Path $releaseDir 'JC4880P443C_I_W_Remote_v1.4.0_full_flash.zip'; $c6Zip = Join-Path $releaseDir 'JC4880P443C_I_W_Remote_C6_v1.4.0_full_flash.zip'; Remove-Item -Force -ErrorAction SilentlyContinue $p4Zip, $c6Zip; Compress-Archive -Path (Join-Path $p4Dir '*') -DestinationPath $p4Zip -Force; Compress-Archive -Path (Join-Path $c6Dir '*') -DestinationPath $c6Zip -Force; Get-ChildItem $releaseDir | Select-Object Name,Length | Format-Table -AutoSize"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "JC4880: Package Current Release",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"tools\\package_current_release.ps1",
+				"-WorkspaceRoot",
+				"c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "JC4880: Git Status Release",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"status",
+				"--short"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "JC4880: Stage Release v1.4.0",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"add",
+				"-u",
+				"&&",
+				"git",
+				"add",
+				"components/apps/setting/audio",
+				"components/apps/setting/bluetooth",
+				"components/apps/setting/display",
+				"components/apps/setting/firmware",
+				"components/apps/setting/gpio",
+				"components/apps/setting/imu",
+				"components/apps/setting/joypad/SettingJoypadPrivate.hpp",
+				"components/apps/setting/lora",
+				"components/apps/setting/security",
+				"components/apps/setting/zigbee",
+				"icons",
+				"release/v1.4.0",
+				"tools/package_current_release.ps1",
+				"tools/copilot_serial_probe_compact.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "JC4880: Stage Release v1.4.0 Retry",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"git add -u; git add components/apps/setting/audio components/apps/setting/bluetooth components/apps/setting/display components/apps/setting/firmware components/apps/setting/gpio components/apps/setting/imu components/apps/setting/joypad/SettingJoypadPrivate.hpp components/apps/setting/lora components/apps/setting/security components/apps/setting/zigbee icons release/v1.4.0 tools/package_current_release.ps1 tools/copilot_serial_probe_compact.py; git status --short"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "JC4880: Continue Release Rebase",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"git add .vscode/settings.json .vscode/tasks.json components/apps/lora_mesh/LoRaMesh.cpp components/apps/lora_mesh/LoRaMesh.hpp components/apps/lora_mesh/LoRaMeshStorage.cpp components/apps/setting/Setting.cpp components/apps/setting/Setting.hpp components/apps/setting/lora/SettingLoraPrivate.hpp; git rebase --continue"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
 		}
 	]
 }

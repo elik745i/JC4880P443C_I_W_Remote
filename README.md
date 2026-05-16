@@ -1,6 +1,6 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.3.10 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.4.0 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
@@ -127,6 +127,8 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - The SEGA browser header and save-slot picker scrolling were cleaned up so the title no longer overlaps and the horizontal save list no longer recenters itself while browsing.
 - Genesis runtime timing, audio pacing, and framebuffer rotation were tuned further to match the handheld layout and reduce slow-background-music behavior.
 - On-screen keyboards now share the same shift and password-toggle behavior across Settings, File Manager, Music Player, and other text-entry flows.
+- Settings now includes a dedicated GPIO Control page for ESP32-P4 header testing, with input/output/PWM/wave/timer/alarm modes, centralized multi-pin output actions, and on-screen keyboard entry for the editable control fields.
+- GPIO timer and alarm flows now run asynchronously, can hold the selected output state until stopped, rescan `/sdcard/wav` plus other supported audio formats for alert playback, and avoid overlapping timer melodies by keeping a single active alert owner.
 
 ## Feature Summary
 
@@ -219,10 +221,10 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 ## Storage And OTA Layout
 
 - Flash size is configured for 16 MB.
-- Partition table provides two balanced OTA app slots of `0x7C0000` each.
+- Partition table provides two balanced OTA app slots of `0x7D0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
-- SPIFFS storage is `0x040000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
-- Version 1.3.10 validates at `0x76CAB0` (`7,785,136` bytes), leaving `0x053550` (`341,328` bytes) free in either OTA app slot.
+- SPIFFS storage is `0x020000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
+- Version 1.4.0 validates at `0x77B780` (`7,845,760` bytes), leaving `0x054880` (`346,240` bytes) free in either `0x7D0000` OTA app slot.
 - Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout

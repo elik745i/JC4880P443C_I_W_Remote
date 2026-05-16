@@ -262,27 +262,15 @@ void music_library_download_task(void *context);
 
 bool ensure_music_audio_ready()
 {
-    esp_err_t ret = bsp_extra_codec_dev_stop();
-    if ((ret != ESP_OK) && (ret != ESP_ERR_INVALID_STATE)) {
-        ESP_LOGW(TAG, "Failed to stop codec output path before music playback: %s", esp_err_to_name(ret));
-        return false;
-    }
-
     const esp_err_t codec_init_err = bsp_extra_codec_init();
     if (codec_init_err != ESP_OK) {
         ESP_LOGW(TAG, "Music playback unavailable due to limited audio resources: %s", esp_err_to_name(codec_init_err));
         return false;
     }
 
-    ret = bsp_extra_player_init();
+    esp_err_t ret = bsp_extra_player_init();
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to initialize shared audio player for music playback: %s", esp_err_to_name(ret));
-        return false;
-    }
-
-    ret = bsp_extra_codec_dev_resume();
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to resume codec output path for music playback: %s", esp_err_to_name(ret));
         return false;
     }
 

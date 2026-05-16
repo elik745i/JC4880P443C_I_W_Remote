@@ -525,6 +525,13 @@ CONFIG_SECURE_ROM_DL_MODE_ENABLED=y
 # end of Security features
 
 #
+# Example Board Configuration
+#
+# CONFIG_ESP_LYRAT_V4_3_BOARD is not set
+CONFIG_ESP_CUSTOM_BOARD=y
+# end of Example Board Configuration
+
+#
 # Application manager
 #
 CONFIG_APP_COMPILE_TIME_DATE=y
@@ -714,13 +721,6 @@ CONFIG_ESP_HOSTED_ENABLE_PEER_DATA_TRANSFER=y
 CONFIG_ESP_HOSTED_MAX_CUSTOM_MSG_HANDLERS=3
 # CONFIG_ESP_HOSTED_EXTRA_EXAMPLES is not set
 # end of Example Configuration
-
-#
-# Example Board Configuration
-#
-# CONFIG_ESP_LYRAT_V4_3_BOARD is not set
-CONFIG_ESP_CUSTOM_BOARD=y
-# end of Example Board Configuration
 
 #
 # Compiler options
@@ -936,6 +936,12 @@ CONFIG_BT_LE_DFT_SYNC_SCHED_PRIO_LEVEL=1
 # end of Bluetooth
 
 # CONFIG_BLE_MESH is not set
+
+#
+# BTstack Configuration
+#
+# CONFIG_BTSTACK_AUDIO is not set
+# end of BTstack Configuration
 
 #
 # Console Library
@@ -2296,12 +2302,6 @@ CONFIG_BLUEPAD32_ENABLE_BLE_BY_DEFAULT=y
 CONFIG_BLUEPAD32_MAX_ALLOWLIST=4
 # CONFIG_BLUEPAD32_ENABLE_VIRTUAL_DEVICE_BY_DEFAULT is not set
 # end of Bluepad32
-
-#
-# BTstack Configuration
-#
-# CONFIG_BTSTACK_AUDIO is not set
-# end of BTstack Configuration
 
 #
 # Zigbee

@@ -72,6 +72,7 @@ static bool read_nvs_string_value(const char *key, std::string &value)
 EventGroupHandle_t s_wifi_event_group = nullptr;
 bool s_wifi_restore_in_progress = false;
 bool s_wifi_runtime_ready = false;
+static bool s_wifi_handlers_registered = false;
 
 char st_wifi_ssid[WIFI_SSID_STORAGE_SIZE] = {0};
 char st_wifi_password[WIFI_PASSWORD_STORAGE_SIZE] = {0};
@@ -880,7 +881,13 @@ esp_err_t AppSettings::applyWifiOperatingMode(bool reconnect_sta, const char *re
 esp_err_t AppSettings::initWifi()
 {
     s_wifi_runtime_ready = false;
-    s_wifi_event_group = xEventGroupCreate();
+    if (s_wifi_event_group == nullptr) {
+        s_wifi_event_group = xEventGroupCreate();
+        if (s_wifi_event_group == nullptr) {
+            ESP_LOGE(TAG, "Failed to create Wi-Fi event group");
+            return ESP_ERR_NO_MEM;
+        }
+    }
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_CONNECTED);
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_INIT_DONE);
     xEventGroupClearBits(s_wifi_event_group, WIFI_EVENT_SCANING);
@@ -902,13 +909,19 @@ esp_err_t AppSettings::initWifi()
         return err;
     }
 
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (sta_netif == nullptr) {
+        sta_netif = esp_netif_create_default_wifi_sta();
+    }
     if (sta_netif == nullptr) {
         ESP_LOGE(TAG, "Failed to create default station netif");
         return ESP_FAIL;
     }
 
-    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif == nullptr) {
+        ap_netif = esp_netif_create_default_wifi_ap();
+    }
     if (ap_netif == nullptr) {
         ESP_LOGE(TAG, "Failed to create default SoftAP netif");
         return ESP_FAIL;
@@ -916,7 +929,7 @@ esp_err_t AppSettings::initWifi()
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     err = esp_wifi_init(&cfg);
-    if (err != ESP_OK) {
+    if ((err != ESP_OK) && (err != ESP_ERR_INVALID_STATE)) {
         ESP_LOGE(TAG, "Failed to initialize hosted Wi-Fi: %s", esp_err_to_name(err));
         return err;
     }
@@ -927,26 +940,30 @@ esp_err_t AppSettings::initWifi()
         return err;
     }
 
-    esp_event_handler_instance_t instance_any_id;
-    err = esp_event_handler_instance_register(WIFI_EVENT,
-                                              ESP_EVENT_ANY_ID,
-                                              &wifiEventHandler,
-                                              this,
-                                              &instance_any_id);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register Wi-Fi event handler: %s", esp_err_to_name(err));
-        return err;
-    }
+    if (!s_wifi_handlers_registered) {
+        esp_event_handler_instance_t instance_any_id;
+        err = esp_event_handler_instance_register(WIFI_EVENT,
+                                                  ESP_EVENT_ANY_ID,
+                                                  &wifiEventHandler,
+                                                  this,
+                                                  &instance_any_id);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register Wi-Fi event handler: %s", esp_err_to_name(err));
+            return err;
+        }
 
-    esp_event_handler_instance_t instance_got_ip;
-    err = esp_event_handler_instance_register(IP_EVENT,
-                                              IP_EVENT_STA_GOT_IP,
-                                              &wifiEventHandler,
-                                              this,
-                                              &instance_got_ip);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to register IP event handler: %s", esp_err_to_name(err));
-        return err;
+        esp_event_handler_instance_t instance_got_ip;
+        err = esp_event_handler_instance_register(IP_EVENT,
+                                                  IP_EVENT_STA_GOT_IP,
+                                                  &wifiEventHandler,
+                                                  this,
+                                                  &instance_got_ip);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to register IP event handler: %s", esp_err_to_name(err));
+            return err;
+        }
+
+        s_wifi_handlers_registered = true;
     }
 
     loadNvsStringParam(NVS_KEY_WIFI_AP_SSID, st_wifi_ap_ssid, sizeof(st_wifi_ap_ssid));
@@ -1186,27 +1203,26 @@ void AppSettings::deinitWifiListButton(void)
 void AppSettings::wifiScanTask(void *arg)
 {
     AppSettings *app = (AppSettings *)arg;
-    esp_err_t ret = ESP_OK;
 
     if (app == NULL) {
         ESP_LOGE(TAG, "App instance is NULL");
-        goto err;
-    }
-
-    ret = app->initWifi();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Init Wi-Fi failed");
-        goto err;
-    }
-
-    if (ret == ESP_OK) {
-        xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_INIT_DONE);
-        ESP_LOGI(TAG, "wifi_init done");
-    } else {
-        ESP_LOGE(TAG, "wifi_init failed");
+        vTaskDelete(NULL);
+        return;
     }
 
     while (true) {
+        if (!s_wifi_runtime_ready) {
+            const esp_err_t init_err = app->initWifi();
+            if (init_err == ESP_OK) {
+                xEventGroupSetBits(s_wifi_event_group, WIFI_EVENT_INIT_DONE);
+                ESP_LOGI(TAG, "wifi_init done");
+            } else {
+                ESP_LOGW(TAG, "Init Wi-Fi failed: %s. Retrying...", esp_err_to_name(init_err));
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                continue;
+            }
+        }
+
         if ((xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_INIT_DONE) &&
             (xEventGroupGetBits(s_wifi_event_group) & WIFI_EVENT_UI_INIT_DONE)) {
             if (app->isUiActive() && lv_obj_ready(ui_SwitchPanelScreenSettingWiFiSwitch)) {
@@ -1241,9 +1257,6 @@ void AppSettings::wifiScanTask(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-
-err:
-    vTaskDelete(NULL);
 }
 
 void AppSettings::wifiConnectTask(void *arg)

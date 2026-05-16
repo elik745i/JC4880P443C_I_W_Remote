@@ -9,7 +9,9 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
+#if CONFIG_JC4880_FEATURE_IMU
 #include "ImuService.hpp"
+#endif
 
 namespace {
 
@@ -268,6 +270,9 @@ void LabyrinthApp::onAxisMappingChangedEvent(lv_event_t *event)
 
 void LabyrinthApp::ensureImuReady()
 {
+#if !CONFIG_JC4880_FEATURE_IMU
+    _imuReady = false;
+#else
     jc4880::imu::ImuConfig config = {};
     if (!jc4880::imu::ImuService::instance().loadConfig(config) || !config.enabled ||
         (config.model == jc4880::imu::ImuModel::IMU_NONE)) {
@@ -276,6 +281,7 @@ void LabyrinthApp::ensureImuReady()
     }
 
     _imuReady = jc4880::imu::ImuService::instance().begin(&config);
+#endif
 }
 
 void LabyrinthApp::buildUi()
@@ -895,6 +901,11 @@ bool LabyrinthApp::readImuSample(float &control_x, float &control_y)
 {
     control_x = 0.0f;
     control_y = 0.0f;
+
+#if !CONFIG_JC4880_FEATURE_IMU
+    _imuReady = false;
+    return false;
+#endif
 
     jc4880::imu::ImuSample sample = {};
     bool sample_ok = jc4880::imu::ImuService::instance().getLastSample(sample);

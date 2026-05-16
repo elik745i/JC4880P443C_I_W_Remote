@@ -169,6 +169,7 @@ static RS485App *s_rs485App = nullptr;
 static LoRaMeshApp *s_loraMeshApp = nullptr;
 #endif
 
+static AppSettings *s_settingsApp = nullptr;
 static bool s_crashReportUploadInFlight = false;
 static bool s_tapSoundEnabled = true;
 static bool s_hapticFeedbackEnabled = true;
@@ -1361,6 +1362,7 @@ static void print_serial_command_help(void)
     printf("[serial]   help\r\n");
     printf("[serial]   app.list\r\n");
     printf("[serial]   app.start <app name>\r\n");
+    printf("[serial]   settings.gpio.build\r\n");
     printf("[serial]   display.status\r\n");
     printf("[serial]   display.rotate 0|90|180|270\r\n");
     printf("[serial]   image.status\r\n");
@@ -1493,6 +1495,17 @@ static void handle_serial_command(const std::string &raw_command)
             return;
         }
         start_serial_app(app_name);
+        return;
+    }
+
+    if (command == "settings.gpio.build") {
+        if (s_settingsApp == nullptr) {
+            printf("[settings] app unavailable\r\n");
+            return;
+        }
+
+        printf("[settings] gpio build %s\r\n",
+               s_settingsApp->debugQueueBuildGpioControlScreen() ? "queued" : "failed");
         return;
     }
 
@@ -2876,6 +2889,7 @@ extern "C" void app_main(void)
 
 #if CONFIG_JC4880_APP_SETTINGS
     if (AppSettings *settings = install_app_or_delete(*phone, new AppSettings(), "settings"); settings != nullptr) {
+        s_settingsApp = settings;
         ESP_BROOKESIA_CHECK_FALSE_EXIT(phone->hideLauncherIcon(settings->getId()), "Hide Settings launcher icon failed");
     }
 #endif

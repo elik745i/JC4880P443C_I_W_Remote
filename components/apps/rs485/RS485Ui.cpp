@@ -45,6 +45,11 @@ lv_obj_t *make_scroll_label_panel(lv_obj_t *parent, lv_coord_t width, lv_coord_t
     lv_obj_set_style_pad_all(panel, 12, 0);
     lv_obj_add_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(panel, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(panel, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_style_bg_color(panel, lv_color_hex(0x6D89C9), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(panel, LV_OPA_60, LV_PART_SCROLLBAR);
+    lv_obj_set_style_width(panel, 6, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(panel, LV_RADIUS_CIRCLE, LV_PART_SCROLLBAR);
 
     lv_obj_t *label = lv_label_create(panel);
     lv_obj_set_width(label, lv_pct(100));
@@ -200,7 +205,8 @@ bool RS485App::buildUi()
     lv_obj_set_style_text_color(_terminalTemplatesLabel, lv_color_hex(0x9CC2FF), 0);
     lv_obj_align(_terminalTemplatesLabel, LV_ALIGN_TOP_LEFT, 0, 154);
     make_scroll_label_panel(terminalPanel, width - 90, panelHeight - 210, &_terminalLogLabel);
-    lv_obj_align(lv_obj_get_parent(_terminalLogLabel), LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    _terminalLogPanel = lv_obj_get_parent(_terminalLogLabel);
+    lv_obj_align(_terminalLogPanel, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
     lv_obj_t *modbusPanel = _screenPanels[RS485_SCREEN_MODBUS];
     lv_obj_t *readHolding = make_action_button(modbusPanel, "Read HR", 128);
@@ -293,8 +299,22 @@ void RS485App::switchScreen(int screenId)
         return;
     }
 
+    const uint8_t previous_screen = _activeScreen;
     _activeScreen = static_cast<uint8_t>(screenId);
     s_settings.selected_screen = _activeScreen;
+
+    if ((_activeScreen == RS485_SCREEN_TERMINAL) && (previous_screen != RS485_SCREEN_TERMINAL)) {
+        _terminalViewStartIndex = rs485_log_store_count(&s_logStore);
+        _lastRenderedTerminalLogCount = 0;
+        _lastRenderedTerminalTailTimestamp = 0;
+        if (_terminalLogLabel != nullptr) {
+            lv_label_set_text(_terminalLogLabel, "");
+        }
+        if (_terminalLogPanel != nullptr) {
+            lv_obj_scroll_to_y(_terminalLogPanel, 0, LV_ANIM_OFF);
+        }
+    }
+
     for (size_t index = 0; index < _screenPanels.size(); ++index) {
         if (_screenPanels[index] == nullptr) {
             continue;
@@ -391,11 +411,26 @@ void RS485App::refreshTerminalView()
     }
     lv_label_set_text(_terminalTemplatesLabel, templ.str().c_str());
 
-    std::ostringstream logs;
-    rs485_log_entry_t entry = {};
     const size_t total = rs485_log_store_count(&s_logStore);
-    const size_t start = total > 18 ? total - 18 : 0;
-    for (size_t index = start; index < total; ++index) {
+    if (_terminalViewStartIndex > total) {
+        _terminalViewStartIndex = total;
+    }
+
+    uint32_t tail_timestamp = 0;
+    rs485_log_entry_t entry = {};
+    if ((total > _terminalViewStartIndex) && rs485_log_store_get_entry(&s_logStore, total - 1, &entry)) {
+        tail_timestamp = entry.timestamp_ms;
+    }
+
+    if ((total == _lastRenderedTerminalLogCount) && (tail_timestamp == _lastRenderedTerminalTailTimestamp)) {
+        return;
+    }
+
+    const lv_coord_t previous_scroll_y = (_terminalLogPanel != nullptr) ? lv_obj_get_scroll_y(_terminalLogPanel) : 0;
+    const bool auto_scroll = (_terminalLogPanel == nullptr) || (lv_obj_get_scroll_bottom(_terminalLogPanel) <= 12);
+
+    std::ostringstream logs;
+    for (size_t index = _terminalViewStartIndex; index < total; ++index) {
         if (!rs485_log_store_get_entry(&s_logStore, index, &entry)) {
             continue;
         }
@@ -408,6 +443,17 @@ void RS485App::refreshTerminalView()
         logs << "\n";
     }
     lv_label_set_text(_terminalLogLabel, logs.str().c_str());
+
+    if (_terminalLogPanel != nullptr) {
+        if (auto_scroll) {
+            lv_obj_scroll_to_y(_terminalLogPanel, LV_COORD_MAX, LV_ANIM_OFF);
+        } else {
+            lv_obj_scroll_to_y(_terminalLogPanel, previous_scroll_y, LV_ANIM_OFF);
+        }
+    }
+
+    _lastRenderedTerminalLogCount = total;
+    _lastRenderedTerminalTailTimestamp = tail_timestamp;
 }
 
 void RS485App::refreshBrowserView()
@@ -604,6 +650,9 @@ void RS485App::onActionButtonEvent(lv_event_t *event)
         break;
     case ACTION_TERMINAL_CLEAR:
         rs485_log_store_clear(&s_logStore);
+        app->_terminalViewStartIndex = 0;
+        app->_lastRenderedTerminalLogCount = 0;
+        app->_lastRenderedTerminalTailTimestamp = 0;
         if (app->_terminalInput != nullptr) {
             lv_textarea_set_text(app->_terminalInput, "");
         }

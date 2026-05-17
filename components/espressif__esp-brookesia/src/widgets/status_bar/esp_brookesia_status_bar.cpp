@@ -15,6 +15,19 @@
 
 using namespace std;
 
+static lv_coord_t get_clock_sample_width(lv_obj_t *label, const char *sample)
+{
+    if ((label == nullptr) || (sample == nullptr)) {
+        return LV_SIZE_CONTENT;
+    }
+
+    const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+    const lv_coord_t letter_space = lv_obj_get_style_text_letter_space(label, LV_PART_MAIN);
+    lv_point_t text_size = {0, 0};
+    lv_txt_get_size(&text_size, sample, font, letter_space, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return text_size.x + 2;
+}
+
 ESP_Brookesia_StatusBar::ESP_Brookesia_StatusBar(const ESP_Brookesia_Core &core, const ESP_Brookesia_StatusBarData_t &data, int battery_id,
         int wifi_id):
     _core(core),
@@ -28,6 +41,7 @@ ESP_Brookesia_StatusBar::ESP_Brookesia_StatusBar(const ESP_Brookesia_Core &core,
     _wifi_id(wifi_id),
     _clock_hour(-1),
     _clock_min(-1),
+    _clock_sec(-1),
     _is_clock_out_of_area(false),
     _clock_obj(nullptr),
     _clock_hour_label(nullptr),
@@ -582,19 +596,23 @@ bool ESP_Brookesia_StatusBar::beginClock(void)
     clock_hour_label = ESP_BROOKESIA_LV_OBJ(label, clock_obj.get());
     ESP_BROOKESIA_CHECK_NULL_RETURN(clock_hour_label, false, "Alloc clock hour label failed");
     lv_obj_add_style(clock_hour_label.get(), _core.getCoreHome().getCoreContainerStyle(), 0);
+    lv_label_set_long_mode(clock_hour_label.get(), LV_LABEL_LONG_CLIP);
 
     clock_dot_label = ESP_BROOKESIA_LV_OBJ(label, clock_obj.get());
     ESP_BROOKESIA_CHECK_NULL_RETURN(clock_dot_label, false, "Alloc clock dot label failed");
     lv_obj_add_style(clock_dot_label.get(), _core.getCoreHome().getCoreContainerStyle(), 0);
+    lv_label_set_long_mode(clock_dot_label.get(), LV_LABEL_LONG_CLIP);
     lv_label_set_text(clock_dot_label.get(), ":");
 
     clock_min_label = ESP_BROOKESIA_LV_OBJ(label, clock_obj.get());
     ESP_BROOKESIA_CHECK_NULL_RETURN(clock_min_label, false, "Alloc clock min label failed");
     lv_obj_add_style(clock_min_label.get(), _core.getCoreHome().getCoreContainerStyle(), 0);
+    lv_label_set_long_mode(clock_min_label.get(), LV_LABEL_LONG_CLIP);
 
     clock_period_label = ESP_BROOKESIA_LV_OBJ(label, clock_obj.get());
     ESP_BROOKESIA_CHECK_NULL_RETURN(clock_period_label, false, "Alloc clock period label failed");
     lv_obj_add_style(clock_period_label.get(), _core.getCoreHome().getCoreContainerStyle(), 0);
+    lv_label_set_long_mode(clock_period_label.get(), LV_LABEL_LONG_CLIP);
 
     // Setup objects style
     lv_obj_add_style(clock_obj.get(), _core.getCoreHome().getCoreContainerStyle(), 0);
@@ -611,7 +629,7 @@ bool ESP_Brookesia_StatusBar::beginClock(void)
     _clock_period_label = clock_period_label;
 
     ESP_BROOKESIA_CHECK_FALSE_GOTO(updateClockByNewData(), err, "Update clock style failed");
-    ESP_BROOKESIA_CHECK_FALSE_GOTO(setClock(0, 0, false), err, "Set clock failed");
+    ESP_BROOKESIA_CHECK_FALSE_GOTO(setClock(0, 0, 0, false), err, "Set clock failed");
 
     return true;
 
@@ -643,6 +661,13 @@ bool ESP_Brookesia_StatusBar::updateClockByNewData(void)
         lv_obj_set_style_text_opa(_clock_dot_label.get(), _data.main.text_color.opacity, 0);
         lv_obj_set_style_text_color(_clock_period_label.get(), lv_color_hex(_data.main.text_color.color), 0);
         lv_obj_set_style_text_opa(_clock_period_label.get(), _data.main.text_color.opacity, 0);
+
+        lv_obj_set_width(_clock_hour_label.get(), get_clock_sample_width(_clock_hour_label.get(), "88"));
+        lv_obj_set_width(_clock_min_label.get(), get_clock_sample_width(_clock_min_label.get(), "88:88"));
+        lv_obj_set_width(_clock_period_label.get(), get_clock_sample_width(_clock_period_label.get(), " PM "));
+        lv_obj_set_style_text_align(_clock_hour_label.get(), LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(_clock_min_label.get(), LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_align(_clock_period_label.get(), LV_TEXT_ALIGN_CENTER, 0);
     }
 
     return true;
@@ -661,6 +686,9 @@ bool ESP_Brookesia_StatusBar::delClock(void)
     _clock_dot_label.reset();
     _clock_min_label.reset();
     _clock_period_label.reset();
+    _clock_hour = -1;
+    _clock_min = -1;
+    _clock_sec = -1;
 
     return true;
 }
@@ -687,19 +715,26 @@ bool ESP_Brookesia_StatusBar::setClockFormat(ClockFormat format) const
 
 bool ESP_Brookesia_StatusBar::setClock(int hour, int minute, bool is_pm) const
 {
-    ESP_BROOKESIA_LOGD("Set clock(%02d:%02d %s)", hour, minute, is_pm ? "PM" : "AM");
+    return setClock(hour, minute, 0, is_pm);
+}
+
+bool ESP_Brookesia_StatusBar::setClock(int hour, int minute, int second, bool is_pm) const
+{
+    ESP_BROOKESIA_LOGD("Set clock(%02d:%02d:%02d %s)", hour, minute, second, is_pm ? "PM" : "AM");
     ESP_BROOKESIA_CHECK_NULL_RETURN(_clock_obj, false, "Invalid clock");
 
     hour = max(min(hour, 23), 0);
     minute = max(min(minute, 59), 0);
+    second = max(min(second, 59), 0);
 
     if (_clock_hour != hour) {
         _clock_hour = hour;
         lv_label_set_text_fmt(_clock_hour_label.get(), "%02d", hour);
     }
-    if (_clock_min != minute) {
+    if ((_clock_min != minute) || (_clock_sec != second)) {
         _clock_min = minute;
-        lv_label_set_text_fmt(_clock_min_label.get(), "%02d", minute);
+        _clock_sec = second;
+        lv_label_set_text_fmt(_clock_min_label.get(), "%02d:%02d", minute, second);
     }
     lv_label_set_text(_clock_period_label.get(), is_pm ? " PM " : " AM ");
 

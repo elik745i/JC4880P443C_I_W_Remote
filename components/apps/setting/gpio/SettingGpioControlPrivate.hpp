@@ -14,6 +14,8 @@
     void processHardwareGpioTestTimers(void);
     void processHardwareGpioTestAlarms(void);
     bool applyHardwareGpioTestDrivenLevel(size_t index, bool high);
+    bool releaseHardwareGpioTestDrivenLevel(size_t index);
+    bool prepareHardwareGpioTestPeripheralOutput(size_t index);
     void applyHardwareGpioTestRunningTimers(void);
     void applyHardwareGpioTestActiveAlarms(void);
     void applyHardwareGpioTestScheduledOutputs(void);
@@ -54,6 +56,7 @@
 #elif defined(APP_SETTINGS_GPIO_SCREEN_INIT)
     _gpioTestScreen(nullptr),
 #elif defined(APP_SETTINGS_GPIO_UI_STATE)
+    lv_obj_t *_hardwareGpioTestPanel;
     lv_obj_t *_hardwareGpioTestModeDropdown;
     lv_obj_t *_hardwareGpioTestAllLowButton;
     lv_obj_t *_hardwareGpioTestAllHighButton;
@@ -95,6 +98,7 @@
     int8_t _hardwareGpioTestActivePwmIndex;
     int8_t _hardwareGpioTestActiveWaveIndex;
     int8_t _hardwareGpioTestTimerAlertAudioIndex;
+    int8_t _hardwareGpioTestAlarmAlertAudioIndex;
     lv_timer_t *_hardwareGpioTestWaveTimer;
     int64_t _hardwareGpioTestWaveStartUs;
     lv_timer_t *_hardwareGpioTestTimerTick;
@@ -105,6 +109,7 @@
     bool _hardwareGpioTestAudioScanPending;
     bool _hardwareGpioTestUiSyncInProgress;
 #elif defined(APP_SETTINGS_GPIO_UI_INIT)
+    _hardwareGpioTestPanel(nullptr),
     _hardwareGpioTestModeDropdown(nullptr),
     _hardwareGpioTestAllLowButton(nullptr),
     _hardwareGpioTestAllHighButton(nullptr),
@@ -146,6 +151,7 @@
     _hardwareGpioTestActivePwmIndex(-1),
     _hardwareGpioTestActiveWaveIndex(-1),
     _hardwareGpioTestTimerAlertAudioIndex(-1),
+    _hardwareGpioTestAlarmAlertAudioIndex(-1),
     _hardwareGpioTestWaveTimer(nullptr),
     _hardwareGpioTestWaveStartUs(0),
     _hardwareGpioTestTimerTick(nullptr),

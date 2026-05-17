@@ -813,7 +813,7 @@
 			"group": "test"
 		},
 		{
-			"label": "JC4880: Package Release v1.4.0",
+			"label": "JC4880: Package Release v1.4.1",
 			"type": "shell",
 			"command": "powershell.exe",
 			"args": [
@@ -821,7 +821,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"$ErrorActionPreference = 'Stop'; $workspace = 'C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote'; $releaseDir = Join-Path $workspace 'release\\v1.4.0'; $p4Dir = Join-Path $releaseDir 'p4_full_flash'; $c6Dir = Join-Path $releaseDir 'c6_full_flash'; $python = 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe'; $esptool = 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\esptool_py\\esptool\\esptool.py'; New-Item -ItemType Directory -Force -Path $p4Dir, (Join-Path $p4Dir 'bootloader'), (Join-Path $p4Dir 'partition_table'), $c6Dir, (Join-Path $c6Dir 'bootloader'), (Join-Path $c6Dir 'partition_table') | Out-Null; & $python $esptool --chip esp32c6 merge_bin -o (Join-Path $workspace 'coprocessor_c6\\build\\merged-binary.bin') --flash_mode dio --flash_freq 80m --flash_size 4MB 0x10000 (Join-Path $workspace 'coprocessor_c6\\build\\network_adapter.bin') 0x8000 (Join-Path $workspace 'coprocessor_c6\\build\\partition_table\\partition-table.bin') 0xd000 (Join-Path $workspace 'coprocessor_c6\\build\\ota_data_initial.bin') 0x0 (Join-Path $workspace 'coprocessor_c6\\build\\bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'build\\ESP32P4_Remote.bin') (Join-Path $releaseDir 'JC4880P443C_I_W_Remote_v1.4.0_ota.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\merged-binary.bin') (Join-Path $releaseDir 'JC4880P443C_I_W_Remote_C6_v1.4.0_merged.bin'); Copy-Item -Force (Join-Path $workspace 'build\\ESP32P4_Remote.bin') (Join-Path $p4Dir 'ESP32P4_Remote.bin'); Copy-Item -Force (Join-Path $workspace 'build\\flash_args') (Join-Path $p4Dir 'flash_args'); Copy-Item -Force (Join-Path $workspace 'build\\ota_data_initial.bin') (Join-Path $p4Dir 'ota_data_initial.bin'); Copy-Item -Force (Join-Path $workspace 'build\\storage.bin') (Join-Path $p4Dir 'storage.bin'); Copy-Item -Force (Join-Path $workspace 'build\\bootloader\\bootloader.bin') (Join-Path $p4Dir 'bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'build\\partition_table\\partition-table.bin') (Join-Path $p4Dir 'partition_table\\partition-table.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\network_adapter.bin') (Join-Path $c6Dir 'network_adapter.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\flash_args') (Join-Path $c6Dir 'flash_args'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\ota_data_initial.bin') (Join-Path $c6Dir 'ota_data_initial.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\bootloader\\bootloader.bin') (Join-Path $c6Dir 'bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\partition_table\\partition-table.bin') (Join-Path $c6Dir 'partition_table\\partition-table.bin'); $p4Zip = Join-Path $releaseDir 'JC4880P443C_I_W_Remote_v1.4.0_full_flash.zip'; $c6Zip = Join-Path $releaseDir 'JC4880P443C_I_W_Remote_C6_v1.4.0_full_flash.zip'; Remove-Item -Force -ErrorAction SilentlyContinue $p4Zip, $c6Zip; Compress-Archive -Path (Join-Path $p4Dir '*') -DestinationPath $p4Zip -Force; Compress-Archive -Path (Join-Path $c6Dir '*') -DestinationPath $c6Zip -Force; Get-ChildItem $releaseDir | Select-Object Name,Length | Format-Table -AutoSize"
+				"$ErrorActionPreference = 'Stop'; $workspace = 'C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote'; $releaseDir = Join-Path $workspace 'release\\v1.4.1'; $p4Dir = Join-Path $releaseDir 'p4_full_flash'; $c6Dir = Join-Path $releaseDir 'c6_full_flash'; $python = 'C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe'; $esptool = 'C:\\Espressif\\frameworks\\esp-idf-v5.5.4\\components\\esptool_py\\esptool\\esptool.py'; New-Item -ItemType Directory -Force -Path $p4Dir, (Join-Path $p4Dir 'bootloader'), (Join-Path $p4Dir 'partition_table'), $c6Dir, (Join-Path $c6Dir 'bootloader'), (Join-Path $c6Dir 'partition_table') | Out-Null; & $python $esptool --chip esp32c6 merge_bin -o (Join-Path $workspace 'coprocessor_c6\\build\\merged-binary.bin') --flash_mode dio --flash_freq 80m --flash_size 4MB 0x10000 (Join-Path $workspace 'coprocessor_c6\\build\\network_adapter.bin') 0x8000 (Join-Path $workspace 'coprocessor_c6\\build\\partition_table\\partition-table.bin') 0xd000 (Join-Path $workspace 'coprocessor_c6\\build\\ota_data_initial.bin') 0x0 (Join-Path $workspace 'coprocessor_c6\\build\\bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'build\\ESP32P4_Remote.bin') (Join-Path $releaseDir 'JC4880P443C_I_W_Remote_v1.4.1_ota.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\merged-binary.bin') (Join-Path $releaseDir 'JC4880P443C_I_W_Remote_C6_v1.4.1_merged.bin'); Copy-Item -Force (Join-Path $workspace 'build\\ESP32P4_Remote.bin') (Join-Path $p4Dir 'ESP32P4_Remote.bin'); Copy-Item -Force (Join-Path $workspace 'build\\flash_args') (Join-Path $p4Dir 'flash_args'); Copy-Item -Force (Join-Path $workspace 'build\\ota_data_initial.bin') (Join-Path $p4Dir 'ota_data_initial.bin'); Copy-Item -Force (Join-Path $workspace 'build\\storage.bin') (Join-Path $p4Dir 'storage.bin'); Copy-Item -Force (Join-Path $workspace 'build\\bootloader\\bootloader.bin') (Join-Path $p4Dir 'bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'build\\partition_table\\partition-table.bin') (Join-Path $p4Dir 'partition_table\\partition-table.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\network_adapter.bin') (Join-Path $c6Dir 'network_adapter.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\flash_args') (Join-Path $c6Dir 'flash_args'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\ota_data_initial.bin') (Join-Path $c6Dir 'ota_data_initial.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\bootloader\\bootloader.bin') (Join-Path $c6Dir 'bootloader\\bootloader.bin'); Copy-Item -Force (Join-Path $workspace 'coprocessor_c6\\build\\partition_table\\partition-table.bin') (Join-Path $c6Dir 'partition_table\\partition-table.bin'); $p4Zip = Join-Path $releaseDir 'JC4880P443C_I_W_Remote_v1.4.1_full_flash.zip'; $c6Zip = Join-Path $releaseDir 'JC4880P443C_I_W_Remote_C6_v1.4.1_full_flash.zip'; Remove-Item -Force -ErrorAction SilentlyContinue $p4Zip, $c6Zip; Compress-Archive -Path (Join-Path $p4Dir '*') -DestinationPath $p4Zip -Force; Compress-Archive -Path (Join-Path $c6Dir '*') -DestinationPath $c6Zip -Force; Get-ChildItem $releaseDir | Select-Object Name,Length | Format-Table -AutoSize"
 			],
 			"isBackground": false,
 			"problemMatcher": [],
@@ -857,7 +857,7 @@
 			"group": "build"
 		},
 		{
-			"label": "JC4880: Stage Release v1.4.0",
+			"label": "JC4880: Stage Release v1.4.1",
 			"type": "shell",
 			"command": "git",
 			"args": [
@@ -877,7 +877,7 @@
 				"components/apps/setting/security",
 				"components/apps/setting/zigbee",
 				"icons",
-				"release/v1.4.0",
+				"release/v1.4.1",
 				"tools/package_current_release.ps1",
 				"tools/copilot_serial_probe_compact.py"
 			],
@@ -886,7 +886,7 @@
 			"group": "build"
 		},
 		{
-			"label": "JC4880: Stage Release v1.4.0 Retry",
+			"label": "JC4880: Stage Release v1.4.1 Retry",
 			"type": "shell",
 			"command": "powershell.exe",
 			"args": [
@@ -894,7 +894,7 @@
 				"-ExecutionPolicy",
 				"Bypass",
 				"-Command",
-				"git add -u; git add components/apps/setting/audio components/apps/setting/bluetooth components/apps/setting/display components/apps/setting/firmware components/apps/setting/gpio components/apps/setting/imu components/apps/setting/joypad/SettingJoypadPrivate.hpp components/apps/setting/lora components/apps/setting/security components/apps/setting/zigbee icons release/v1.4.0 tools/package_current_release.ps1 tools/copilot_serial_probe_compact.py; git status --short"
+				"git add -u; git add components/apps/setting/audio components/apps/setting/bluetooth components/apps/setting/display components/apps/setting/firmware components/apps/setting/gpio components/apps/setting/imu components/apps/setting/joypad/SettingJoypadPrivate.hpp components/apps/setting/lora components/apps/setting/security components/apps/setting/zigbee icons release/v1.4.1 tools/package_current_release.ps1 tools/copilot_serial_probe_compact.py; git status --short"
 			],
 			"isBackground": false,
 			"problemMatcher": [],
@@ -910,6 +910,38 @@
 				"Bypass",
 				"-Command",
 				"git add .vscode/settings.json .vscode/tasks.json components/apps/lora_mesh/LoRaMesh.cpp components/apps/lora_mesh/LoRaMesh.hpp components/apps/lora_mesh/LoRaMeshStorage.cpp components/apps/setting/Setting.cpp components/apps/setting/Setting.hpp components/apps/setting/lora/SettingLoraPrivate.hpp; git rebase --continue"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "JC4880: Push Rebasing Release",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"git push origin main; git tag -f v1.4.1; git push -f origin v1.4.1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "JC4880: Publish Current Release",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"tools\\publish_current_release.ps1",
+				"-WorkspaceRoot",
+				"c:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote"
 			],
 			"isBackground": false,
 			"problemMatcher": [],

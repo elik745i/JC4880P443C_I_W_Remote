@@ -34,13 +34,13 @@ static constexpr uint32_t kStatusRefreshTaskStack = 4096;
 static constexpr uint32_t kBatteryRefreshTaskStack = 4096;
 #if CONFIG_JC4880_FEATURE_IMU
 static constexpr uint32_t kImuAutorotateTaskStack = 4096;
-static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(2000);
+static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(1000);
 static constexpr TickType_t kBatteryRefreshPeriod = pdMS_TO_TICKS(5000);
 static constexpr TickType_t kImuAutorotateActivePeriod = pdMS_TO_TICKS(150);
 static constexpr TickType_t kImuAutorotateIdlePeriod = pdMS_TO_TICKS(1000);
 static constexpr int64_t kImuAutorotateRetryDelayUs = 3LL * 1000LL * 1000LL;
 #else
-static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(2000);
+static constexpr TickType_t kStatusRefreshPeriod = pdMS_TO_TICKS(1000);
 static constexpr TickType_t kBatteryRefreshPeriod = pdMS_TO_TICKS(5000);
 #endif
 static constexpr const char *kNvsStorageNamespace = "storage";
@@ -299,7 +299,7 @@ static void update_status_bar_clock_and_wifi(void)
     }
 
     bsp_display_lock(0);
-    s_statusBar->setClock(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_hour >= 12);
+    s_statusBar->setClock(timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, timeinfo.tm_hour >= 12);
     s_statusBar->setWifiIconState(wifi_level);
     bsp_display_unlock();
 }
@@ -397,6 +397,7 @@ bool initialize(ESP_Brookesia_Phone &phone)
         ESP_LOGW(TAG, "Status bar is unavailable during system UI service init");
         return false;
     }
+    s_statusBar->setClockFormat(ESP_Brookesia_StatusBar::ClockFormat::FORMAT_24H);
 
 #if CONFIG_JC4880_FEATURE_BATTERY
     jc4880_joypad_config_t joypadConfig = {};

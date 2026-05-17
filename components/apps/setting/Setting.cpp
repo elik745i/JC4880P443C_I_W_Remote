@@ -856,9 +856,9 @@ static constexpr uint32_t kHardwareGpioTestTimerMaxSeconds = 86400;
 static constexpr size_t kHardwareGpioTestPersistBufferSize = 512;
 static constexpr ledc_mode_t kHardwareGpioTestPwmSpeedMode = LEDC_LOW_SPEED_MODE;
 static constexpr ledc_timer_bit_t kHardwareGpioTestPwmResolution = LEDC_TIMER_10_BIT;
-static constexpr ledc_timer_t kHardwareGpioTestPwmTimer = LEDC_TIMER_0;
+static constexpr ledc_timer_t kHardwareGpioTestPwmTimer = LEDC_TIMER_2;
 static constexpr uint32_t kHardwareGpioTestPwmFrequencyHz = 5000;
-static constexpr ledc_channel_t kHardwareGpioTestPwmChannel = LEDC_CHANNEL_0;
+static constexpr ledc_channel_t kHardwareGpioTestPwmChannel = LEDC_CHANNEL_2;
 static constexpr uint32_t kHardwareGpioTestPwmMaxDuty = (1U << 10U) - 1U;
 
 static const char *hardware_gpio_test_wave_name(uint8_t waveform)
@@ -912,13 +912,12 @@ static bool parse_hardware_gpio_test_wave_tenths(const char *text, uint16_t *val
 
     char *end = nullptr;
     const double seconds = std::strtod(normalized.c_str(), &end);
-    if ((end == normalized.c_str()) || (*end != '\0') || !std::isfinite(seconds) || (seconds <= 0.0)) {
+    if ((end == normalized.c_str()) || (*end != '\0') || !std::isfinite(seconds) || (seconds < 0.0)) {
         return false;
     }
 
     const uint32_t tenths = static_cast<uint32_t>(std::lround(seconds * 10.0));
-    *value_out = static_cast<uint16_t>(std::max<uint32_t>(kHardwareGpioTestWaveMinTenths,
-                                                          std::min<uint32_t>(kHardwareGpioTestWaveMaxTenths, tenths)));
+    *value_out = static_cast<uint16_t>(std::min<uint32_t>(kHardwareGpioTestWaveMaxTenths, tenths));
     return true;
 }
 
@@ -976,9 +975,28 @@ static bool parse_hardware_gpio_test_alarm_minutes(const char *text, uint16_t *v
 
     int hours = 0;
     int minutes = 0;
-    if (std::sscanf(text, "%d:%d", &hours, &minutes) != 2) {
-        return false;
+    if (std::strchr(text, ':') != nullptr) {
+        if (std::sscanf(text, "%d:%d", &hours, &minutes) != 2) {
+            return false;
+        }
+    } else {
+        size_t digit_count = 0;
+        for (const char *cursor = text; *cursor != '\0'; ++cursor) {
+            if ((*cursor < '0') || (*cursor > '9')) {
+                return false;
+            }
+            ++digit_count;
+        }
+
+        if ((digit_count < 3) || (digit_count > 4)) {
+            return false;
+        }
+
+        const int raw_value = std::atoi(text);
+        hours = raw_value / 100;
+        minutes = raw_value % 100;
     }
+
     if ((hours < 0) || (hours > 23) || (minutes < 0) || (minutes > 59)) {
         return false;
     }
@@ -4429,6 +4447,55 @@ void AppSettings::ensureSecurityScreen(void)
 #include "imu/SettingImuSection.inc"
 #include "lora/SettingLoraMethods.inc"
 #include "gpio/SettingGpioControlSection.inc"
+
+void AppSettings::scheduleLoRaConfigApply(uint32_t delay_ms)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    (void)delay_ms;
+    return;
+#else
+    cancelLoRaConfigApply();
+    _loraApplyTimer = lv_timer_create(
+        [](lv_timer_t *timer) {
+            auto *app = static_cast<AppSettings *>(timer->user_data);
+            if (app == nullptr) {
+                return;
+            }
+            app->_loraApplyTimer = nullptr;
+            if (!app->isUiActive()) {
+                return;
+            }
+            (void)app->persistLoRaConfigFromUi();
+        },
+        delay_ms > 0 ? delay_ms : kLoRaApplyDebounceMs,
+        this);
+    if ((_loraInfoLabel != nullptr) && lv_obj_ready(_loraInfoLabel)) {
+        lv_label_set_text(_loraInfoLabel, "LoRa changes pending. Applying after 2 seconds of no edits.");
+    }
+#endif
+}
+
+void AppSettings::cancelLoRaConfigApply(void)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    return;
+#else
+    if (_loraApplyTimer != nullptr) {
+        lv_timer_del(_loraApplyTimer);
+        _loraApplyTimer = nullptr;
+    }
+#endif
+}
+
+bool AppSettings::flushPendingLoRaConfigApply(void)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    return false;
+#else
+    cancelLoRaConfigApply();
+    return persistLoRaConfigFromUi();
+#endif
+}
 
 #if 0
 void AppSettings::ensureImuScreen(void)

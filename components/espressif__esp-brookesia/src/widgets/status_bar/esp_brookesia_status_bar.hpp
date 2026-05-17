@@ -50,6 +50,7 @@ public:
     // Clock
     bool setClockFormat(ClockFormat format) const;
     bool setClock(int hour, int min, bool is_pm) const;
+    bool setClock(int hour, int min, int sec, bool is_pm) const;
 
     bool checkVisible(void) const;
     lv_obj_t *getMainObject(void) const { return _main_obj.get(); }
@@ -99,6 +100,7 @@ private:
     // Clock
     mutable int _clock_hour;
     mutable int _clock_min;
+    mutable int _clock_sec;
     bool _is_clock_out_of_area;
     ESP_Brookesia_LvObj_t _clock_obj;
     ESP_Brookesia_LvObj_t _clock_hour_label;

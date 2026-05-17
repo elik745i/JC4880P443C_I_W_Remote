@@ -29,8 +29,10 @@
     static void onLoRaDiagnosticPresetChangedEventCallback(lv_event_t *e);
     static void onLoRaSelfCheckStatusTimerCallback(lv_timer_t *timer);
 #elif defined(APP_SETTINGS_LORA_TIMER_STATE)
+    lv_timer_t *_loraApplyTimer;
     lv_timer_t *_loraSelfCheckStatusTimer;
 #elif defined(APP_SETTINGS_LORA_TIMER_INIT)
+    _loraApplyTimer(nullptr),
     _loraSelfCheckStatusTimer(nullptr),
 #elif defined(APP_SETTINGS_LORA_MENU_STATE)
     lv_obj_t *_loraMenuItem;

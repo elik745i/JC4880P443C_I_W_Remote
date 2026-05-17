@@ -18,26 +18,26 @@ void AppSettings::ensureGpioTestScreen(void)
     lv_obj_set_style_text_color(gpioTitle, lv_color_hex(0x0F172A), 0);
     lv_obj_align(gpioTitle, LV_ALIGN_TOP_MID, 0, 52);
 
-    lv_obj_t *gpioPanel = lv_obj_create(_gpioTestScreen);
-    lv_obj_set_size(gpioPanel, lv_pct(92), 650);
-    lv_obj_align(gpioPanel, LV_ALIGN_TOP_MID, 0, 114);
-    lv_obj_set_style_radius(gpioPanel, 20, 0);
-    lv_obj_set_style_border_width(gpioPanel, 0, 0);
-    lv_obj_set_style_bg_color(gpioPanel, lv_color_hex(0xF8FAFC), 0);
-    lv_obj_set_style_pad_all(gpioPanel, 14, 0);
-    lv_obj_set_style_pad_row(gpioPanel, 12, 0);
-    lv_obj_set_flex_flow(gpioPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(gpioPanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_scroll_dir(gpioPanel, LV_DIR_VER);
+    _hardwareGpioTestPanel = lv_obj_create(_gpioTestScreen);
+    lv_obj_set_size(_hardwareGpioTestPanel, lv_pct(92), 650);
+    lv_obj_align(_hardwareGpioTestPanel, LV_ALIGN_TOP_MID, 0, 114);
+    lv_obj_set_style_radius(_hardwareGpioTestPanel, 20, 0);
+    lv_obj_set_style_border_width(_hardwareGpioTestPanel, 0, 0);
+    lv_obj_set_style_bg_color(_hardwareGpioTestPanel, lv_color_hex(0xF8FAFC), 0);
+    lv_obj_set_style_pad_all(_hardwareGpioTestPanel, 14, 0);
+    lv_obj_set_style_pad_row(_hardwareGpioTestPanel, 12, 0);
+    lv_obj_set_flex_flow(_hardwareGpioTestPanel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(_hardwareGpioTestPanel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(_hardwareGpioTestPanel, LV_DIR_VER);
 
-    lv_obj_t *gpioModeRow = create_settings_toggle_row(gpioPanel, "Mode");
+    lv_obj_t *gpioModeRow = create_settings_toggle_row(_hardwareGpioTestPanel, "Mode");
     _hardwareGpioTestModeDropdown = lv_dropdown_create(gpioModeRow);
     lv_dropdown_set_options_static(_hardwareGpioTestModeDropdown, kHardwareGpioTestModeOptions);
     lv_obj_set_width(_hardwareGpioTestModeDropdown, 150);
     lv_obj_align(_hardwareGpioTestModeDropdown, LV_ALIGN_RIGHT_MID, 0, 0);
     lv_obj_add_event_cb(_hardwareGpioTestModeDropdown, onHardwareGpioTestModeChangedEventCallback, LV_EVENT_VALUE_CHANGED, this);
 
-    lv_obj_t *gpioAllRow = lv_obj_create(gpioPanel);
+    lv_obj_t *gpioAllRow = lv_obj_create(_hardwareGpioTestPanel);
     lv_obj_set_width(gpioAllRow, lv_pct(100));
     lv_obj_set_height(gpioAllRow, LV_SIZE_CONTENT);
     lv_obj_clear_flag(gpioAllRow, LV_OBJ_FLAG_SCROLLABLE);
@@ -71,10 +71,10 @@ void AppSettings::ensureGpioTestScreen(void)
     lv_obj_center(allHighLabel);
 
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
-        appendHardwareGpioTestPinRow(gpioPanel, index);
+        appendHardwareGpioTestPinRow(_hardwareGpioTestPanel, index);
     }
 
-    appendHardwareGpioTestAudioRows(gpioPanel);
+    appendHardwareGpioTestAudioRows(_hardwareGpioTestPanel);
 
     scanHardwareGpioTestAudioFiles(true);
     refreshHardwareGpioTestAudioDropdowns();
@@ -125,10 +125,29 @@ void AppSettings::setHardwareGpioTestKeyboardVisible(bool visible, lv_obj_t *tex
         lv_obj_clear_flag(_hardwareGpioTestKeyboard, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(_hardwareGpioTestKeyboard);
         lv_obj_align(_hardwareGpioTestKeyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+        if (lv_obj_ready(_hardwareGpioTestPanel)) {
+            const lv_coord_t keyboard_height = lv_obj_get_height(_hardwareGpioTestKeyboard);
+            const lv_coord_t panel_top = lv_obj_get_y(_hardwareGpioTestPanel);
+            const lv_coord_t keyboard_top = lv_obj_get_y(_hardwareGpioTestKeyboard);
+            const lv_coord_t available_height = std::max<lv_coord_t>(260, keyboard_top - panel_top - 12);
+            lv_obj_set_height(_hardwareGpioTestPanel, available_height);
+            lv_obj_set_style_pad_bottom(_hardwareGpioTestPanel, static_cast<lv_coord_t>(keyboard_height + 20), 0);
+            lv_obj_update_layout(_hardwareGpioTestPanel);
+        }
+
+        if (lv_obj_ready(_hardwareGpioTestKeyboardTarget)) {
+            lv_obj_scroll_to_view_recursive(_hardwareGpioTestKeyboardTarget, LV_ANIM_ON);
+        }
     } else {
         lv_keyboard_set_textarea(_hardwareGpioTestKeyboard, nullptr);
         lv_keyboard_set_mode(_hardwareGpioTestKeyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
         lv_obj_add_flag(_hardwareGpioTestKeyboard, LV_OBJ_FLAG_HIDDEN);
+        if (lv_obj_ready(_hardwareGpioTestPanel)) {
+            lv_obj_set_height(_hardwareGpioTestPanel, 650);
+            lv_obj_set_style_pad_bottom(_hardwareGpioTestPanel, 14, 0);
+            lv_obj_update_layout(_hardwareGpioTestPanel);
+        }
         _hardwareGpioTestKeyboardTarget = nullptr;
     }
 #endif
@@ -555,7 +574,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
                 lv_obj_add_flag(_hardwareGpioTestTimerLevelDropdowns[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_add_state(_hardwareGpioTestTimerLevelDropdowns[index], LV_STATE_DISABLED);
             }
-            lv_dropdown_set_selected(_hardwareGpioTestTimerLevelDropdowns[index], _hardwareGpioTestTimerLevelsHigh[index] ? 0 : 1);
+            lv_dropdown_set_selected(_hardwareGpioTestTimerLevelDropdowns[index], _hardwareGpioTestTimerLevelsHigh[index] ? 1 : 0);
         }
 
         if (lv_obj_ready(_hardwareGpioTestTimerButtons[index])) {
@@ -603,7 +622,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
                 lv_obj_add_flag(_hardwareGpioTestAlarmLevelDropdowns[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_add_state(_hardwareGpioTestAlarmLevelDropdowns[index], LV_STATE_DISABLED);
             }
-            lv_dropdown_set_selected(_hardwareGpioTestAlarmLevelDropdowns[index], _hardwareGpioTestAlarmLevelsHigh[index] ? 0 : 1);
+            lv_dropdown_set_selected(_hardwareGpioTestAlarmLevelDropdowns[index], _hardwareGpioTestAlarmLevelsHigh[index] ? 1 : 0);
         }
 
         if (lv_obj_ready(_hardwareGpioTestAlarmToggleButtons[index])) {
@@ -615,10 +634,14 @@ void AppSettings::refreshHardwareGpioTestUi(void)
                 lv_obj_add_state(_hardwareGpioTestAlarmToggleButtons[index], LV_STATE_DISABLED);
             }
             lv_obj_set_style_bg_color(_hardwareGpioTestAlarmToggleButtons[index],
-                                      _hardwareGpioTestAlarmArmed[index] ? lv_color_hex(0x22C55E) : lv_color_hex(0xCBD5E1),
+                                      _hardwareGpioTestAlarmActive[index] ? lv_color_hex(0xF59E0B)
+                                                                          : (_hardwareGpioTestAlarmArmed[index] ? lv_color_hex(0x22C55E)
+                                                                                                                : lv_color_hex(0xCBD5E1)),
                                       0);
             if (lv_obj_ready(_hardwareGpioTestAlarmToggleLabels[index])) {
-                lv_label_set_text(_hardwareGpioTestAlarmToggleLabels[index], _hardwareGpioTestAlarmArmed[index] ? "Set" : "Off");
+                lv_label_set_text(_hardwareGpioTestAlarmToggleLabels[index],
+                                  _hardwareGpioTestAlarmActive[index] ? "Stop"
+                                                                      : (_hardwareGpioTestAlarmArmed[index] ? "Set" : "Off"));
                 lv_obj_center(_hardwareGpioTestAlarmToggleLabels[index]);
             }
         }
@@ -684,8 +707,11 @@ void AppSettings::setHardwareGpioTestMode(HardwareGpioTestMode mode)
     _hardwareGpioTestMode = mode;
 
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
-        gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-        _hardwareGpioTestLevels[index] = -1;
+        if ((mode == HardwareGpioTestMode::Output) || (mode == HardwareGpioTestMode::Pwm)) {
+            (void)applyHardwareGpioTestDrivenLevel(index, false);
+        } else {
+            (void)releaseHardwareGpioTestDrivenLevel(index);
+        }
         _hardwareGpioTestPwmValues[index] = 0;
         if (previous_mode != HardwareGpioTestMode::Timer) {
             _hardwareGpioTestTimerRemainingSec[index] = _hardwareGpioTestTimerDurationsSec[index];
@@ -727,6 +753,61 @@ bool AppSettings::applyHardwareGpioTestDrivenLevel(size_t index, bool high)
 #endif
 }
 
+bool AppSettings::releaseHardwareGpioTestDrivenLevel(size_t index)
+{
+#if !APP_SETTINGS_FEATURE_HARDWARE_MENU
+    (void)index;
+    return false;
+#else
+    if (index >= AppSettings::kHardwareGpioTestPinCount) {
+        return false;
+    }
+
+    gpio_config_t config = {};
+    config.pin_bit_mask = (1ULL << kHardwareGpioTestPins[index]);
+    config.intr_type = GPIO_INTR_DISABLE;
+    config.pull_up_en = GPIO_PULLUP_DISABLE;
+    config.mode = GPIO_MODE_INPUT;
+    config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    if (gpio_config(&config) != ESP_OK) {
+        return false;
+    }
+
+    _hardwareGpioTestLevels[index] = -1;
+    return true;
+#endif
+}
+
+bool AppSettings::prepareHardwareGpioTestPeripheralOutput(size_t index)
+{
+#if !APP_SETTINGS_FEATURE_HARDWARE_MENU
+    (void)index;
+    return false;
+#else
+    if (index >= AppSettings::kHardwareGpioTestPinCount) {
+        return false;
+    }
+
+    const gpio_num_t gpio_num = static_cast<gpio_num_t>(kHardwareGpioTestPins[index]);
+    (void)gpio_hold_dis(gpio_num);
+
+    gpio_config_t config = {};
+    config.pin_bit_mask = (1ULL << kHardwareGpioTestPins[index]);
+    config.intr_type = GPIO_INTR_DISABLE;
+    config.pull_up_en = GPIO_PULLUP_DISABLE;
+    config.mode = GPIO_MODE_INPUT;
+    config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    if (gpio_config(&config) != ESP_OK) {
+        return false;
+    }
+
+    (void)gpio_input_enable(gpio_num);
+    (void)gpio_set_drive_capability(gpio_num, GPIO_DRIVE_CAP_3);
+    _hardwareGpioTestLevels[index] = -1;
+    return true;
+#endif
+}
+
 void AppSettings::applyHardwareGpioTestRunningTimers(void)
 {
 #if !APP_SETTINGS_FEATURE_HARDWARE_MENU
@@ -734,7 +815,7 @@ void AppSettings::applyHardwareGpioTestRunningTimers(void)
 #else
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
         if (_hardwareGpioTestTimerRunning[index]) {
-            (void)applyHardwareGpioTestDrivenLevel(index, _hardwareGpioTestTimerLevelsHigh[index]);
+            (void)releaseHardwareGpioTestDrivenLevel(index);
         }
     }
 #endif
@@ -757,8 +838,7 @@ void AppSettings::setHardwareGpioTestLevel(size_t index, bool high)
 
     const int8_t requested_level = high ? 1 : 0;
     if (_hardwareGpioTestLevels[index] == requested_level) {
-        gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-        _hardwareGpioTestLevels[index] = -1;
+        (void)applyHardwareGpioTestDrivenLevel(index, false);
         refreshHardwareGpioTestUi();
         return;
     }
@@ -787,7 +867,12 @@ void AppSettings::setHardwareGpioTestAllLevels(bool high)
     }
 
     if (all_already_requested) {
-        releaseHardwareGpioTestPins();
+        for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
+            if (applyHardwareGpioTestDrivenLevel(index, false)) {
+                _hardwareGpioTestLevels[index] = 0;
+            }
+        }
+        refreshHardwareGpioTestUi();
         return;
     }
 
@@ -831,34 +916,47 @@ void AppSettings::setHardwareGpioTestPwm(size_t index, uint8_t duty_percent)
         if (_hardwareGpioTestActivePwmIndex == static_cast<int8_t>(index)) {
             stopHardwareGpioTestPwm();
         }
+        (void)applyHardwareGpioTestDrivenLevel(index, false);
         refreshHardwareGpioTestUi();
         return;
     }
 
-    ledc_timer_config_t timer_config = {
-        .speed_mode = kHardwareGpioTestPwmSpeedMode,
-        .duty_resolution = kHardwareGpioTestPwmResolution,
-        .timer_num = kHardwareGpioTestPwmTimer,
-        .freq_hz = kHardwareGpioTestPwmFrequencyHz,
-        .clk_cfg = LEDC_AUTO_CLK,
-    };
+    if (!prepareHardwareGpioTestPeripheralOutput(index)) {
+        ESP_LOGE(TAG, "GPIO PWM prepare failed for GPIO %ld", static_cast<long>(kHardwareGpioTestPins[index]));
+        refreshHardwareGpioTestUi();
+        return;
+    }
+
+    ledc_timer_config_t timer_config = {};
+    timer_config.speed_mode = kHardwareGpioTestPwmSpeedMode;
+    timer_config.duty_resolution = kHardwareGpioTestPwmResolution;
+    timer_config.timer_num = kHardwareGpioTestPwmTimer;
+    timer_config.freq_hz = kHardwareGpioTestPwmFrequencyHz;
+    timer_config.clk_cfg = LEDC_USE_XTAL_CLK;
     if (ledc_timer_config(&timer_config) != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO PWM timer config failed for GPIO %ld", static_cast<long>(kHardwareGpioTestPins[index]));
         refreshHardwareGpioTestUi();
         return;
     }
 
-    ledc_channel_config_t channel_config = {
-        .gpio_num = kHardwareGpioTestPins[index],
-        .speed_mode = kHardwareGpioTestPwmSpeedMode,
-        .channel = kHardwareGpioTestPwmChannel,
-        .intr_type = LEDC_INTR_DISABLE,
-        .timer_sel = kHardwareGpioTestPwmTimer,
-        .duty = (kHardwareGpioTestPwmMaxDuty * duty_percent) / 100U,
-        .hpoint = 0,
-    };
-    if (ledc_channel_config(&channel_config) == ESP_OK) {
-        _hardwareGpioTestActivePwmIndex = static_cast<int8_t>(index);
+    ledc_channel_config_t channel_config = {};
+    channel_config.gpio_num = kHardwareGpioTestPins[index];
+    channel_config.speed_mode = kHardwareGpioTestPwmSpeedMode;
+    channel_config.channel = kHardwareGpioTestPwmChannel;
+    channel_config.timer_sel = kHardwareGpioTestPwmTimer;
+    channel_config.duty = (kHardwareGpioTestPwmMaxDuty * duty_percent) / 100U;
+    channel_config.hpoint = 0;
+    channel_config.sleep_mode = LEDC_SLEEP_MODE_KEEP_ALIVE;
+    if (ledc_channel_config(&channel_config) != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO PWM channel config failed for GPIO %ld", static_cast<long>(kHardwareGpioTestPins[index]));
+        refreshHardwareGpioTestUi();
+        return;
     }
+
+    const uint32_t duty_value = (kHardwareGpioTestPwmMaxDuty * duty_percent) / 100U;
+    ledc_set_duty(kHardwareGpioTestPwmSpeedMode, kHardwareGpioTestPwmChannel, duty_value);
+    ledc_update_duty(kHardwareGpioTestPwmSpeedMode, kHardwareGpioTestPwmChannel);
+    _hardwareGpioTestActivePwmIndex = static_cast<int8_t>(index);
 
     refreshHardwareGpioTestUi();
 #endif
@@ -873,10 +971,9 @@ void AppSettings::stopHardwareGpioTestPwm(void)
         return;
     }
 
-    const gpio_num_t gpio = static_cast<gpio_num_t>(kHardwareGpioTestPins[_hardwareGpioTestActivePwmIndex]);
     _hardwareGpioTestPwmValues[static_cast<size_t>(_hardwareGpioTestActivePwmIndex)] = 0;
     ledc_stop(kHardwareGpioTestPwmSpeedMode, kHardwareGpioTestPwmChannel, 0);
-    gpio_reset_pin(gpio);
+    (void)applyHardwareGpioTestDrivenLevel(static_cast<size_t>(_hardwareGpioTestActivePwmIndex), false);
     _hardwareGpioTestActivePwmIndex = -1;
 #endif
 }
@@ -898,28 +995,42 @@ void AppSettings::setHardwareGpioTestWave(size_t index)
         stopHardwareGpioTestWave();
     }
 
-    ledc_timer_config_t timer_config = {
-        .speed_mode = kHardwareGpioTestPwmSpeedMode,
-        .duty_resolution = kHardwareGpioTestPwmResolution,
-        .timer_num = kHardwareGpioTestPwmTimer,
-        .freq_hz = kHardwareGpioTestPwmFrequencyHz,
-        .clk_cfg = LEDC_AUTO_CLK,
-    };
-    if (ledc_timer_config(&timer_config) != ESP_OK) {
+    if (_hardwareGpioTestWaveDurationsTenths[index] < kHardwareGpioTestWaveMinTenths) {
+        if (_hardwareGpioTestActiveWaveIndex == static_cast<int8_t>(index)) {
+            stopHardwareGpioTestWave();
+        }
         refreshHardwareGpioTestUi();
         return;
     }
 
-    ledc_channel_config_t channel_config = {
-        .gpio_num = kHardwareGpioTestPins[index],
-        .speed_mode = kHardwareGpioTestPwmSpeedMode,
-        .channel = kHardwareGpioTestPwmChannel,
-        .intr_type = LEDC_INTR_DISABLE,
-        .timer_sel = kHardwareGpioTestPwmTimer,
-        .duty = 0,
-        .hpoint = 0,
-    };
+    if (!prepareHardwareGpioTestPeripheralOutput(index)) {
+        ESP_LOGE(TAG, "GPIO wave prepare failed for GPIO %ld", static_cast<long>(kHardwareGpioTestPins[index]));
+        refreshHardwareGpioTestUi();
+        return;
+    }
+
+    ledc_timer_config_t timer_config = {};
+    timer_config.speed_mode = kHardwareGpioTestPwmSpeedMode;
+    timer_config.duty_resolution = kHardwareGpioTestPwmResolution;
+    timer_config.timer_num = kHardwareGpioTestPwmTimer;
+    timer_config.freq_hz = kHardwareGpioTestPwmFrequencyHz;
+    timer_config.clk_cfg = LEDC_USE_XTAL_CLK;
+    if (ledc_timer_config(&timer_config) != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO wave timer config failed for GPIO %ld", static_cast<long>(kHardwareGpioTestPins[index]));
+        refreshHardwareGpioTestUi();
+        return;
+    }
+
+    ledc_channel_config_t channel_config = {};
+    channel_config.gpio_num = kHardwareGpioTestPins[index];
+    channel_config.speed_mode = kHardwareGpioTestPwmSpeedMode;
+    channel_config.channel = kHardwareGpioTestPwmChannel;
+    channel_config.timer_sel = kHardwareGpioTestPwmTimer;
+    channel_config.duty = 0;
+    channel_config.hpoint = 0;
+    channel_config.sleep_mode = LEDC_SLEEP_MODE_KEEP_ALIVE;
     if (ledc_channel_config(&channel_config) != ESP_OK) {
+        ESP_LOGE(TAG, "GPIO wave channel config failed for GPIO %ld", static_cast<long>(kHardwareGpioTestPins[index]));
         refreshHardwareGpioTestUi();
         return;
     }
@@ -950,10 +1061,9 @@ void AppSettings::stopHardwareGpioTestWave(void)
         _hardwareGpioTestWaveTimer = nullptr;
     }
     if (_hardwareGpioTestActiveWaveIndex >= 0) {
-        const gpio_num_t gpio = static_cast<gpio_num_t>(kHardwareGpioTestPins[_hardwareGpioTestActiveWaveIndex]);
         _hardwareGpioTestPwmValues[static_cast<size_t>(_hardwareGpioTestActiveWaveIndex)] = 0;
         ledc_stop(kHardwareGpioTestPwmSpeedMode, kHardwareGpioTestPwmChannel, 0);
-        gpio_reset_pin(gpio);
+        (void)applyHardwareGpioTestDrivenLevel(static_cast<size_t>(_hardwareGpioTestActiveWaveIndex), false);
         _hardwareGpioTestActiveWaveIndex = -1;
     }
     _hardwareGpioTestWaveStartUs = 0;
@@ -997,10 +1107,7 @@ void AppSettings::toggleHardwareGpioTestTimer(size_t index)
     _hardwareGpioTestTimerDurationsSec[index] = duration_seconds;
     _hardwareGpioTestTimerRemainingSec[index] = duration_seconds;
 
-    if (!applyHardwareGpioTestDrivenLevel(index, _hardwareGpioTestTimerLevelsHigh[index])) {
-        refreshHardwareGpioTestUi();
-        return;
-    }
+    (void)releaseHardwareGpioTestDrivenLevel(index);
 
     if (_hardwareGpioTestTimerTick == nullptr) {
         _hardwareGpioTestTimerTick = lv_timer_create(onHardwareGpioTestTimerTickCallback, 250, this);
@@ -1045,8 +1152,7 @@ void AppSettings::stopHardwareGpioTestTimer(size_t index, bool preserve_remainin
         _hardwareGpioTestTimerRemainingSec[index] = _hardwareGpioTestTimerDurationsSec[index];
     }
 
-    gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-    _hardwareGpioTestLevels[index] = -1;
+    (void)releaseHardwareGpioTestDrivenLevel(index);
     _hardwareGpioTestTimerRunning[index] = false;
     const bool stop_audio = _hardwareGpioTestTimerAlertActive[index] &&
                             (_hardwareGpioTestTimerAlertAudioIndex == static_cast<int8_t>(index));
@@ -1127,10 +1233,14 @@ void AppSettings::processHardwareGpioTestTimers(void)
         }
 
         _hardwareGpioTestTimerRunning[index] = false;
-        _hardwareGpioTestTimerAlertActive[index] = true;
         _hardwareGpioTestTimerRemainingSec[index] = _hardwareGpioTestTimerDurationsSec[index];
         _hardwareGpioTestTimerEndUs[index] = 0;
         _hardwareGpioTestTimerEndEpochSec[index] = 0;
+        if (!applyHardwareGpioTestDrivenLevel(index, _hardwareGpioTestTimerLevelsHigh[index])) {
+            state_changed = true;
+            continue;
+        }
+        _hardwareGpioTestTimerAlertActive[index] = true;
         if (_hardwareGpioTestTimerAlertAudioIndex < 0) {
             _hardwareGpioTestTimerAlertAudioIndex = static_cast<int8_t>(index);
             playHardwareGpioTestAlertSound(true);
@@ -1163,6 +1273,29 @@ void AppSettings::processHardwareGpioTestAlarms(void)
     const uint16_t current_minutes = static_cast<uint16_t>((local_time.tm_hour * 60) + local_time.tm_min);
     bool state_changed = false;
 
+    if ((_hardwareGpioTestAlarmAlertAudioIndex >= 0) &&
+        !_hardwareGpioTestAlarmActive[static_cast<size_t>(_hardwareGpioTestAlarmAlertAudioIndex)]) {
+        _hardwareGpioTestAlarmAlertAudioIndex = -1;
+        state_changed = true;
+    }
+
+    if (_hardwareGpioTestAlarmAlertAudioIndex < 0) {
+        for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
+            if (!_hardwareGpioTestAlarmActive[index]) {
+                continue;
+            }
+
+            _hardwareGpioTestAlarmAlertAudioIndex = static_cast<int8_t>(index);
+            playHardwareGpioTestAlertSound(false);
+            state_changed = true;
+            break;
+        }
+    }
+
+    if ((_hardwareGpioTestAlarmAlertAudioIndex >= 0) && !bsp_extra_player_is_active()) {
+        playHardwareGpioTestAlertSound(false);
+    }
+
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
         if (!_hardwareGpioTestAlarmArmed[index]) {
             continue;
@@ -1176,7 +1309,10 @@ void AppSettings::processHardwareGpioTestAlarms(void)
             if (applyHardwareGpioTestDrivenLevel(index, _hardwareGpioTestAlarmLevelsHigh[index])) {
                 _hardwareGpioTestAlarmActive[index] = true;
                 _hardwareGpioTestAlarmLastFireDate[index] = today_key;
-                playHardwareGpioTestAlertSound(false);
+                if (_hardwareGpioTestAlarmAlertAudioIndex < 0) {
+                    _hardwareGpioTestAlarmAlertAudioIndex = static_cast<int8_t>(index);
+                    playHardwareGpioTestAlertSound(false);
+                }
                 state_changed = true;
             }
         }
@@ -1483,8 +1619,7 @@ void AppSettings::releaseHardwareGpioTestPins(void)
     stopHardwareGpioTestWave();
     stopHardwareGpioTestPwm();
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
-        gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-        _hardwareGpioTestLevels[index] = -1;
+        (void)releaseHardwareGpioTestDrivenLevel(index);
         _hardwareGpioTestPwmValues[index] = 0;
     }
     applyHardwareGpioTestScheduledOutputs();
@@ -1704,6 +1839,13 @@ void AppSettings::onHardwareGpioTestWaveDurationEventCallback(lv_event_t *e)
         return;
     }
 
+    if ((code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
+        lv_obj_t *focus_target = lv_event_get_target(e);
+        if ((focus_target != nullptr) && lv_obj_ready(focus_target)) {
+            lv_obj_clear_state(focus_target, LV_STATE_FOCUSED);
+        }
+    }
+
     if ((code == LV_EVENT_DEFOCUSED) || (code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
         app->setHardwareGpioTestKeyboardVisible(false);
     }
@@ -1721,8 +1863,7 @@ void AppSettings::onHardwareGpioTestWaveDurationEventCallback(lv_event_t *e)
         uint16_t duration_tenths = 0;
         const bool valid = parse_hardware_gpio_test_wave_tenths(lv_textarea_get_text(target), &duration_tenths);
         if (valid) {
-            app->_hardwareGpioTestWaveDurationsTenths[index] = std::max<uint16_t>(kHardwareGpioTestWaveMinTenths,
-                                                                                  std::min<uint16_t>(kHardwareGpioTestWaveMaxTenths, duration_tenths));
+            app->_hardwareGpioTestWaveDurationsTenths[index] = std::min<uint16_t>(kHardwareGpioTestWaveMaxTenths, duration_tenths);
             if (app->_hardwareGpioTestMode == HardwareGpioTestMode::Wave) {
                 app->setHardwareGpioTestWave(index);
             }
@@ -1764,11 +1905,7 @@ void AppSettings::onHardwareGpioTestTimerDurationEventCallback(lv_event_t *e)
             if (app->_hardwareGpioTestAlarmActive[index] || app->_hardwareGpioTestAlarmArmed[index]) {
                 app->_hardwareGpioTestAlarmActive[index] = false;
                 app->_hardwareGpioTestAlarmArmed[index] = false;
-                gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-                app->_hardwareGpioTestLevels[index] = -1;
-                if (app->_hardwareGpioTestTimerRunning[index]) {
-                    (void)app->applyHardwareGpioTestDrivenLevel(index, app->_hardwareGpioTestTimerLevelsHigh[index]);
-                }
+                (void)app->releaseHardwareGpioTestDrivenLevel(index);
                 app->persistHardwareGpioTestSchedules();
                 app->refreshHardwareGpioTestUi();
             }
@@ -1839,7 +1976,7 @@ void AppSettings::onHardwareGpioTestTimerLevelChangedEventCallback(lv_event_t *e
             continue;
         }
 
-        app->_hardwareGpioTestTimerLevelsHigh[index] = lv_dropdown_get_selected(target) == 0;
+        app->_hardwareGpioTestTimerLevelsHigh[index] = lv_dropdown_get_selected(target) == 1;
         if (app->_hardwareGpioTestTimerRunning[index] || app->_hardwareGpioTestTimerAlertActive[index]) {
             app->stopHardwareGpioTestTimer(index, app->_hardwareGpioTestTimerRunning[index]);
         }
@@ -1908,16 +2045,17 @@ void AppSettings::onHardwareGpioTestAlarmTimeEventCallback(lv_event_t *e)
         }
 
         uint16_t minutes_of_day = 0;
-        const bool valid = parse_hardware_gpio_test_alarm_minutes(lv_textarea_get_text(target), &minutes_of_day);
+        const char *alarm_input = lv_textarea_get_text(target);
+        const bool valid = parse_hardware_gpio_test_alarm_minutes(alarm_input, &minutes_of_day);
         if (valid) {
             app->_hardwareGpioTestAlarmMinutesOfDay[index] = minutes_of_day;
             app->_hardwareGpioTestAlarmLastFireDate[index] = -1;
             if (app->_hardwareGpioTestAlarmActive[index]) {
-                gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-                app->_hardwareGpioTestLevels[index] = -1;
+                (void)app->applyHardwareGpioTestDrivenLevel(index, false);
                 app->_hardwareGpioTestAlarmActive[index] = false;
-                if (app->_hardwareGpioTestTimerRunning[index]) {
-                    (void)app->applyHardwareGpioTestDrivenLevel(index, app->_hardwareGpioTestTimerLevelsHigh[index]);
+                if (app->_hardwareGpioTestAlarmAlertAudioIndex == static_cast<int8_t>(index)) {
+                    app->_hardwareGpioTestAlarmAlertAudioIndex = -1;
+                    (void)bsp_extra_player_stop();
                 }
             }
             app->persistHardwareGpioTestSchedules();
@@ -1956,13 +2094,13 @@ void AppSettings::onHardwareGpioTestAlarmLevelChangedEventCallback(lv_event_t *e
             continue;
         }
 
-        app->_hardwareGpioTestAlarmLevelsHigh[index] = lv_dropdown_get_selected(target) == 0;
+        app->_hardwareGpioTestAlarmLevelsHigh[index] = lv_dropdown_get_selected(target) == 1;
         if (app->_hardwareGpioTestAlarmActive[index]) {
-            gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-            app->_hardwareGpioTestLevels[index] = -1;
+            (void)app->applyHardwareGpioTestDrivenLevel(index, false);
             app->_hardwareGpioTestAlarmActive[index] = false;
-            if (app->_hardwareGpioTestTimerRunning[index]) {
-                (void)app->applyHardwareGpioTestDrivenLevel(index, app->_hardwareGpioTestTimerLevelsHigh[index]);
+            if (app->_hardwareGpioTestAlarmAlertAudioIndex == static_cast<int8_t>(index)) {
+                app->_hardwareGpioTestAlarmAlertAudioIndex = -1;
+                (void)bsp_extra_player_stop();
             }
         }
         app->persistHardwareGpioTestSchedules();
@@ -1986,10 +2124,10 @@ void AppSettings::onHardwareGpioTestKeyboardEventCallback(lv_event_t *e)
 
     target = app->_hardwareGpioTestKeyboardTarget;
     if ((code == LV_EVENT_READY) || (code == LV_EVENT_CANCEL)) {
-        app->setHardwareGpioTestKeyboardVisible(false);
         if ((target != nullptr) && lv_obj_ready(target)) {
             lv_obj_clear_state(target, LV_STATE_FOCUSED);
         }
+        app->setHardwareGpioTestKeyboardVisible(false);
     }
 
 end:
@@ -2015,16 +2153,26 @@ void AppSettings::onHardwareGpioTestAlarmToggleClickedEventCallback(lv_event_t *
             continue;
         }
 
-        app->_hardwareGpioTestAlarmArmed[index] = !app->_hardwareGpioTestAlarmArmed[index];
-        if (!app->_hardwareGpioTestAlarmArmed[index]) {
+        if (app->_hardwareGpioTestAlarmActive[index]) {
             app->_hardwareGpioTestAlarmActive[index] = false;
-            gpio_reset_pin(static_cast<gpio_num_t>(kHardwareGpioTestPins[index]));
-            app->_hardwareGpioTestLevels[index] = -1;
-            if (app->_hardwareGpioTestTimerRunning[index]) {
-                (void)app->applyHardwareGpioTestDrivenLevel(index, app->_hardwareGpioTestTimerLevelsHigh[index]);
+            app->_hardwareGpioTestAlarmArmed[index] = false;
+            (void)app->applyHardwareGpioTestDrivenLevel(index, false);
+            if (app->_hardwareGpioTestAlarmAlertAudioIndex == static_cast<int8_t>(index)) {
+                app->_hardwareGpioTestAlarmAlertAudioIndex = -1;
+                (void)bsp_extra_player_stop();
             }
         } else {
-            app->_hardwareGpioTestAlarmLastFireDate[index] = -1;
+            app->_hardwareGpioTestAlarmArmed[index] = !app->_hardwareGpioTestAlarmArmed[index];
+            if (!app->_hardwareGpioTestAlarmArmed[index]) {
+                app->_hardwareGpioTestAlarmActive[index] = false;
+                (void)app->applyHardwareGpioTestDrivenLevel(index, false);
+                if (app->_hardwareGpioTestAlarmAlertAudioIndex == static_cast<int8_t>(index)) {
+                    app->_hardwareGpioTestAlarmAlertAudioIndex = -1;
+                    (void)bsp_extra_player_stop();
+                }
+            } else {
+                app->_hardwareGpioTestAlarmLastFireDate[index] = -1;
+            }
         }
 
         app->persistHardwareGpioTestSchedules();

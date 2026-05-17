@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -2168,7 +2169,7 @@ struct LoRaMeshApp::Impl {
             return true;
         }
 
-        const uint8_t channel = e22_channel_for_frequency(stored_state.settings.frequency_hz);
+        const E22RuntimeConfig config = build_e22_runtime_config(stored_state.settings);
         const std::array<uint8_t, 12> write_command = {
             kE22CommandWritePersistent,
             kE22RegisterStart,
@@ -2176,10 +2177,10 @@ struct LoRaMeshApp::Impl {
             0x00,
             0x00,
             0x00,
-            kE22Reg0Default,
-            kE22Reg1Default,
-            channel,
-            kE22OptionTransparentDefault,
+            config.reg0,
+            config.reg1,
+            config.channel,
+            config.option,
             0x00,
             0x00,
         };
@@ -2257,6 +2258,90 @@ struct LoRaMeshApp::Impl {
         }
 
         return true;
+    }
+
+    bool try_self_test_recover_e22_uart_pins_locked(std::string &detail)
+    {
+        if ((stored_state.settings.radio_module != RadioModule::E22_400T22S) || !uart_ready) {
+            detail = "uart_pin_autodetect_unavailable";
+            return false;
+        }
+
+        const int8_t original_tx_gpio = stored_state.settings.uart_tx_gpio;
+        const int8_t original_rx_gpio = stored_state.settings.uart_rx_gpio;
+        const std::array<std::pair<int8_t, int8_t>, 2> candidates = {{{30, 31}, {31, 30}}};
+
+        auto restore_runtime_uart = [&](int8_t tx_gpio, int8_t rx_gpio) {
+            (void)uart_set_pin(kLoRaUartPort,
+                               tx_gpio,
+                               rx_gpio,
+                               UART_PIN_NO_CHANGE,
+                               UART_PIN_NO_CHANGE);
+            (void)uart_set_baudrate(kLoRaUartPort, e22_runtime_uart_baud_rate(stored_state.settings));
+            uart_flush_input(kLoRaUartPort);
+        };
+
+        std::ostringstream failures;
+        for (const auto &candidate : candidates) {
+            const int8_t candidate_tx_gpio = candidate.first;
+            const int8_t candidate_rx_gpio = candidate.second;
+            if ((candidate_tx_gpio == original_tx_gpio) && (candidate_rx_gpio == original_rx_gpio)) {
+                continue;
+            }
+
+            esp_err_t err = uart_set_baudrate(kLoRaUartPort, kE22ProgrammingUartBaudRate);
+            if (err != ESP_OK) {
+                failures << " baud=" << esp_err_to_name(err);
+                continue;
+            }
+
+            err = uart_set_pin(kLoRaUartPort,
+                               candidate_tx_gpio,
+                               candidate_rx_gpio,
+                               UART_PIN_NO_CHANGE,
+                               UART_PIN_NO_CHANGE);
+            if (err != ESP_OK) {
+                failures << " pin(" << static_cast<int>(candidate_tx_gpio) << ',' << static_cast<int>(candidate_rx_gpio)
+                         << ")=" << esp_err_to_name(err);
+                continue;
+            }
+
+            set_uart_module_mode(true);
+            if (has_pin(RadioPinRole::Reset)) {
+                gpio_set_level(gpio_for_role(RadioPinRole::Reset), 1);
+            }
+            err = reset_radio();
+            if (err != ESP_OK) {
+                failures << " reset(" << static_cast<int>(candidate_tx_gpio) << ',' << static_cast<int>(candidate_rx_gpio)
+                         << ")=" << esp_err_to_name(err);
+                continue;
+            }
+
+            std::string probe_detail;
+            if (!probe_e22_config_link_locked(probe_detail)) {
+                failures << " probe(" << static_cast<int>(candidate_tx_gpio) << ',' << static_cast<int>(candidate_rx_gpio)
+                         << ")=" << probe_detail;
+                continue;
+            }
+
+            stored_state.settings.uart_tx_gpio = candidate_tx_gpio;
+            stored_state.settings.uart_rx_gpio = candidate_rx_gpio;
+            state_dirty = true;
+            target_list_dirty = true;
+            save_state_if_needed_locked();
+            restore_runtime_uart(candidate_tx_gpio, candidate_rx_gpio);
+
+            detail = std::string("uart_pin_autodetect_recovered tx=") + std::to_string(candidate_tx_gpio) +
+                     " rx=" + std::to_string(candidate_rx_gpio);
+            append_line_capped(log_text, std::string("Recovered E22 UART mapping: ") + detail);
+            trace_event_locked(std::string("Recovered E22 UART mapping to TX=") + std::to_string(candidate_tx_gpio) +
+                               " RX=" + std::to_string(candidate_rx_gpio));
+            return true;
+        }
+
+        restore_runtime_uart(original_tx_gpio, original_rx_gpio);
+        detail = failures.str().empty() ? "uart_pin_autodetect_failed" : failures.str();
+        return false;
     }
 
     bool run_module_command(const std::string &command_text)

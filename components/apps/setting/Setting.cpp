@@ -322,22 +322,6 @@ std::string load_peripheral_summary_text()
     return copy;
 }
 
-void load_peripheral_detection_state(bool &imu_detected, bool &lora_detected)
-{
-    imu_detected = false;
-    lora_detected = false;
-    if (!init_peripheral_summary_runtime()) {
-        return;
-    }
-    if (xSemaphoreTake(s_peripheralSummaryRuntime.mutex, pdMS_TO_TICKS(20)) != pdTRUE) {
-        return;
-    }
-
-    imu_detected = s_peripheralSummaryRuntime.imuDetected;
-    lora_detected = s_peripheralSummaryRuntime.loraDetected;
-    xSemaphoreGive(s_peripheralSummaryRuntime.mutex);
-}
-
 const char *lora_module_label(jc4880::lora_mesh::RadioModule module)
 {
     switch (module) {
@@ -422,18 +406,19 @@ std::string describe_lora_profile(AppSettings *app, bool &detected)
         return "Radio: settings unavailable";
     }
 
+    // Keep the LoRa settings entry visible even when the radio toggle is off.
+    // The saved configuration is still present and should remain configurable.
+    detected = true;
+
     LoRaMeshApp *lora_app = (app != nullptr) ? find_installed_lora_mesh_app(app->getCore()) : nullptr;
     if (lora_app != nullptr) {
         bool self_test_running = false;
         bool self_test_ran = false;
         const std::string self_test_status = lora_app->getSelfTestStatus(&self_test_running, &self_test_ran);
         if ((self_test_running || self_test_ran) && !self_test_status.empty() && (self_test_status != "Mode: idle")) {
-            detected = self_test_status.find("PASS") != std::string::npos;
             return std::string("Radio self-test: ") + self_test_status;
         }
     }
-
-    detected = state.settings.radio_enabled;
 
     std::ostringstream stream;
     stream << "Radio profile: " << lora_module_label(state.settings.radio_module)
@@ -720,8 +705,10 @@ constexpr const char *kLoraE22SubPacketOptionsText = "200 bytes\n128 bytes\n64 b
 constexpr const char *kLoraE22PowerOptionsText = "30 dBm\n27 dBm\n24 dBm\n21 dBm";
 constexpr const char *kLoraE22TransmissionOptionsText = "Transparent\nFixed";
 constexpr const char *kLoraE22RssiOptionsText = "Disabled\nEnabled";
-constexpr const char *kLoraE22DiagnosticPresetOptionsText = "Choose preset...\nRead registers\nWrite saved settings";
+constexpr const char *kLoraE22DiagnosticPresetOptionsText = "Choose preset...\nRead registers\nRead module info\nWrite current settings\nWrite saved settings\nReset radio";
+constexpr const char *kLoraE22WriteCurrentSettingsCommand = "@write_current_e22_settings";
 constexpr const char *kLoraE22WriteSavedSettingsCommand = "@write_saved_e22_settings";
+constexpr const char *kLoraE22ResetRadioCommand = "@reset_e22_radio";
 constexpr int32_t kLoraGpioOptions[] = {-1, 29, 30, 31, 33, 34, 35, 50, 51, 52};
 
 enum class LoraPinRole : uint8_t {
@@ -6174,27 +6161,15 @@ void AppSettings::refreshPeripheralMenuVisibility(void)
         return;
     }
 
-    bool imu_detected = false;
-    bool lora_detected = false;
-    load_peripheral_detection_state(imu_detected, lora_detected);
-
 #if APP_SETTINGS_FEATURE_IMU
     if (lv_obj_ready(_imuMenuItem)) {
-        if (imu_detected) {
-            lv_obj_clear_flag(_imuMenuItem, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(_imuMenuItem, LV_OBJ_FLAG_HIDDEN);
-        }
+        lv_obj_clear_flag(_imuMenuItem, LV_OBJ_FLAG_HIDDEN);
     }
 #endif
 
 #if CONFIG_JC4880_APP_LORA_MESH
     if (lv_obj_ready(_loraMenuItem)) {
-        if (lora_detected) {
-            lv_obj_clear_flag(_loraMenuItem, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(_loraMenuItem, LV_OBJ_FLAG_HIDDEN);
-        }
+        lv_obj_clear_flag(_loraMenuItem, LV_OBJ_FLAG_HIDDEN);
     }
 #endif
 }

@@ -51,9 +51,50 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+
+// ESP-IDF 5.5 hosted builds expose the slave target as CONFIG_ESP_HOSTED_CP_TARGET_*.
+// The generated wifi remote defaults still key off CONFIG_SLAVE_IDF_TARGET_* names.
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32S2) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32S2)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32S2 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C3) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32C3)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32C3 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32S3) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32S3)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32S3 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C2) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32C2)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32C2 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32C6)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32C6 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32H2) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32H2)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32H2 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32P4) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32P4)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32P4 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C5) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32C5)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32C5 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32C61) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32C61)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32C61 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32H21) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32H21)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32H21 1
+#endif
+#if defined(CONFIG_ESP_HOSTED_CP_TARGET_ESP32H4) && !defined(CONFIG_SLAVE_IDF_TARGET_ESP32H4)
+#define CONFIG_SLAVE_IDF_TARGET_ESP32H4 1
+#endif
+
 #include "esp_wifi_types.h"
 #include "esp_event.h"
 #include "esp_wifi_crypto_types.h"
+#include "esp_wifi_default_config.h"
 #include "esp_wifi_default.h"
 
 #ifdef __cplusplus

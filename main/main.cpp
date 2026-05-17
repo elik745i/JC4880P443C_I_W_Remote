@@ -43,6 +43,7 @@
 #include "esp_brookesia.hpp"
 #include "app_examples/phone/squareline/src/phone_app_squareline.hpp"
 #include "apps.h"
+#include "driver/gpio.h"
 #include "lora_mesh/LoRaMeshStorage.hpp"
 #include "LoRaPinProfile.hpp"
 #include "storage_access.h"
@@ -1887,6 +1888,16 @@ static void handle_serial_command(const std::string &raw_command)
         return;
     }
 
+    if (command == "lora.gpio.show") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] gpio %s\r\n", s_loraMeshApp->debugDescribeSavedGpioState().c_str());
+        return;
+    }
+
     static constexpr const char *kLoraPinmapSetPrefix = "lora.pinmap.set ";
     if (command.rfind(kLoraPinmapSetPrefix, 0) == 0) {
         jc4880::lora_mesh::StoredState state = {};
@@ -2006,6 +2017,31 @@ static void handle_serial_command(const std::string &raw_command)
             return;
         }
 
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if ((command == "lora.radio.on") || (command == "lora.radio.off")) {
+        jc4880::lora_mesh::StoredState state = {};
+        if (!jc4880::lora_mesh::load_stored_state(state)) {
+            printf("[lora] failed to load stored state\r\n");
+            return;
+        }
+
+        state.settings.radio_enabled = (command == "lora.radio.on");
+        if (!jc4880::lora_mesh::save_stored_state(state)) {
+            printf("[lora] failed to save radio state\r\n");
+            return;
+        }
+
+        printf("[lora] radio saved -> %s\r\n", state.settings.radio_enabled ? "on" : "off");
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        printf("[lora] apply %s\r\n", s_loraMeshApp->applyStoredSettingsFromSettings(false) ? "queued" : "failed");
+        printf("[lora] gpio %s\r\n", s_loraMeshApp->debugDescribeSavedGpioState().c_str());
         printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
         return;
     }
@@ -2185,6 +2221,7 @@ static void handle_serial_command(const std::string &raw_command)
     if ((command == "lora.status") || (command == "lora.open") || (command == "lora.targets") ||
         (command == "lora.chat.common") || (command == "lora.peers") || (command == "lora.settings") ||
         (command == "lora.selftest.start") || (command == "lora.selftest.stop") || (command == "lora.close") ||
+        (command == "lora.gpio.show") || (command == "lora.radio.on") || (command == "lora.radio.off") ||
         (command == "lora.log") || (command.rfind("lora.log ", 0) == 0) ||
         (command.rfind("lora.send.common ", 0) == 0) ||
         (command.rfind("lora.chat.peer ", 0) == 0)) {

@@ -33,6 +33,7 @@ public:
     bool debugSendCommonMessageVisible(const std::string &message);
     bool debugSendModuleCommandVisible(const std::string &command);
     std::string debugDescribeState() const;
+    std::string debugDescribeSavedGpioState() const;
     std::vector<std::string> debugListPeerSummaries() const;
     size_t debugLogLineCount() const;
     std::vector<std::string> debugLogLinesSince(size_t start_line, size_t max_lines) const;

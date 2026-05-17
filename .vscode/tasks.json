@@ -946,6 +946,121 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "build"
+		},
+		{
+			"label": "Copilot: COM10 LoRa Idle Toggle Probe",
+			"type": "shell",
+			"command": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe",
+			"args": [
+				"C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\tools\\copilot_serial_probe.py",
+				"--port",
+				"COM10",
+				"--baud",
+				"115200",
+				"--pre-read",
+				"1",
+				"--post-read",
+				"5",
+				"lora.radio.off",
+				"lora.gpio.show",
+				"lora.status",
+				"lora.radio.on",
+				"lora.gpio.show",
+				"lora.status"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 LoRa Radio Off Probe",
+			"type": "shell",
+			"command": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe",
+			"args": [
+				"C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\tools\\copilot_serial_probe.py",
+				"--port",
+				"COM10",
+				"--baud",
+				"115200",
+				"--pre-read",
+				"1",
+				"--post-read",
+				"5",
+				"lora.radio.off",
+				"lora.gpio.show",
+				"lora.status"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 LoRa Radio Off Probe 2",
+			"type": "shell",
+			"command": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe",
+			"args": [
+				"C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\tools\\copilot_serial_probe.py",
+				"--port",
+				"COM10",
+				"--baud",
+				"115200",
+				"--pre-read",
+				"1",
+				"--post-read",
+				"5",
+				"lora.status",
+				"lora.radio.off",
+				"lora.gpio.show",
+				"lora.status"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 LoRa Radio On Probe 2",
+			"type": "shell",
+			"command": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe",
+			"args": [
+				"C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\tools\\copilot_serial_probe.py",
+				"--port",
+				"COM10",
+				"--baud",
+				"115200",
+				"--pre-read",
+				"1",
+				"--post-read",
+				"5",
+				"lora.status",
+				"lora.radio.on",
+				"lora.gpio.show",
+				"lora.status"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 LoRa Log Probe",
+			"type": "shell",
+			"command": "C:\\Users\\Elik\\.espressif\\python_env\\idf5.5_py3.12_env\\Scripts\\python.exe",
+			"args": [
+				"C:\\Users\\Elik\\Documents\\Arduino\\JC4880P443C_I_W_Remote\\tools\\copilot_serial_probe.py",
+				"--port",
+				"COM10",
+				"--baud",
+				"115200",
+				"--pre-read",
+				"1",
+				"--post-read",
+				"6",
+				"lora.status",
+				"lora.gpio.show",
+				"lora.log 80"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

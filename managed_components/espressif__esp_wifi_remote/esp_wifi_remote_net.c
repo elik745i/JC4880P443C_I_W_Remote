@@ -5,6 +5,7 @@
  */
 #include <esp_private/wifi.h>
 #include "esp_err.h"
+#include "esp_netif.h"
 #include "esp_wifi_remote.h"
 #include "esp_log.h"
 
@@ -14,6 +15,30 @@
 static esp_remote_channel_tx_fn_t s_tx_cb[CHANNELS];
 static esp_remote_channel_t s_channel[CHANNELS];
 static wifi_rxcb_t s_rx_fn[CHANNELS];
+
+static const esp_netif_ip_info_t s_wifi_remote_soft_ap_ip = {
+    .ip = { .addr = ESP_IP4TOADDR(192, 168, 4, 1) },
+    .gw = { .addr = ESP_IP4TOADDR(192, 168, 4, 1) },
+    .netmask = { .addr = ESP_IP4TOADDR(255, 255, 255, 0) },
+};
+
+#ifdef CONFIG_LWIP_IPV4
+#define ESP_NETIF_IPV4_ONLY_FLAGS(flags) (flags)
+#else
+#define ESP_NETIF_IPV4_ONLY_FLAGS(flags) (0)
+#endif
+
+WEAK const esp_netif_inherent_config_t _g_esp_netif_inherent_ap_config = {
+    .flags = (esp_netif_flags_t)(ESP_NETIF_IPV4_ONLY_FLAGS(ESP_NETIF_DHCP_SERVER) | ESP_NETIF_FLAG_AUTOUP),
+    ESP_COMPILER_DESIGNATED_INIT_AGGREGATE_TYPE_EMPTY(mac)
+    .ip_info = &s_wifi_remote_soft_ap_ip,
+    .get_ip_event = 0,
+    .lost_ip_event = 0,
+    .if_key = "WIFI_AP_DEF",
+    .if_desc = "ap",
+    .route_prio = 10,
+    .bridge_info = NULL,
+};
 
 WEAK esp_err_t esp_wifi_remote_channel_rx(void *h, void *buffer, void *buff_to_free, size_t len)
 {

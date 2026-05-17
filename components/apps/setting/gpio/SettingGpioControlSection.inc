@@ -347,6 +347,73 @@ void __attribute__((noinline)) AppSettings::appendHardwareGpioTestAudioRows(lv_o
 #endif
 }
 
+namespace {
+
+bool is_active_lora_gpio(const jc4880::lora_mesh::StoredState &state, int32_t gpio)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    (void)state;
+    (void)gpio;
+    return false;
+#else
+    if (!state.settings.radio_enabled) {
+        return false;
+    }
+
+    switch (state.settings.radio_module) {
+    case jc4880::lora_mesh::RadioModule::E22_400M22S:
+        return (state.settings.spi_miso_gpio == gpio) || (state.settings.spi_mosi_gpio == gpio) ||
+               (state.settings.spi_sck_gpio == gpio) || (state.settings.spi_nss_gpio == gpio) ||
+               (state.settings.busy_gpio == gpio) || (state.settings.dio1_gpio == gpio) ||
+               (state.settings.nrst_gpio == gpio) || (state.settings.txen_gpio == gpio) ||
+               (state.settings.rxen_gpio == gpio);
+    case jc4880::lora_mesh::RadioModule::E22_400T22S:
+    case jc4880::lora_mesh::RadioModule::E220_400T22D:
+        return (state.settings.uart_tx_gpio == gpio) || (state.settings.uart_rx_gpio == gpio) ||
+               (state.settings.mode0_gpio == gpio) || (state.settings.mode1_gpio == gpio) ||
+               (state.settings.aux_gpio == gpio) || (state.settings.nrst_gpio == gpio) ||
+               (state.settings.txen_gpio == gpio) || (state.settings.rxen_gpio == gpio);
+    default:
+        return false;
+    }
+#endif
+}
+
+bool load_active_lora_gpio_guard(jc4880::lora_mesh::StoredState &state)
+{
+#if !CONFIG_JC4880_APP_LORA_MESH
+    (void)state;
+    return false;
+#else
+    return jc4880::lora_mesh::load_stored_state(state) && state.settings.radio_enabled;
+#endif
+}
+
+bool is_hardware_gpio_reserved_for_lora(size_t index, const jc4880::lora_mesh::StoredState *active_state)
+{
+    if (index >= (sizeof(kHardwareGpioTestPins) / sizeof(kHardwareGpioTestPins[0]))) {
+        return false;
+    }
+
+    if (active_state == nullptr) {
+        return false;
+    }
+
+    return is_active_lora_gpio(*active_state, kHardwareGpioTestPins[index]);
+}
+
+bool is_hardware_gpio_reserved_for_lora(size_t index)
+{
+    if (index >= (sizeof(kHardwareGpioTestPins) / sizeof(kHardwareGpioTestPins[0]))) {
+        return false;
+    }
+
+    jc4880::lora_mesh::StoredState state = {};
+    return load_active_lora_gpio_guard(state) && is_hardware_gpio_reserved_for_lora(index, &state);
+}
+
+} // namespace
+
 void AppSettings::refreshHardwareGpioTestUi(void)
 {
 #if !APP_SETTINGS_FEATURE_HARDWARE_MENU
@@ -363,13 +430,18 @@ void AppSettings::refreshHardwareGpioTestUi(void)
     const bool alarm_mode = _hardwareGpioTestMode == HardwareGpioTestMode::AlarmClock;
     bool all_low_active = true;
     bool all_high_active = true;
+    jc4880::lora_mesh::StoredState active_lora_state = {};
+    const bool lora_guard_active = load_active_lora_gpio_guard(active_lora_state);
+    const jc4880::lora_mesh::StoredState *active_lora_state_ptr = lora_guard_active ? &active_lora_state : nullptr;
 
     if (lv_obj_ready(_hardwareGpioTestModeDropdown)) {
         lv_dropdown_set_selected(_hardwareGpioTestModeDropdown, static_cast<uint16_t>(_hardwareGpioTestMode));
     }
 
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
-        if (input_mode) {
+        const bool reserved_for_lora = is_hardware_gpio_reserved_for_lora(index, active_lora_state_ptr);
+
+        if (input_mode && !reserved_for_lora) {
             gpio_config_t input_config = {};
             input_config.pin_bit_mask = (1ULL << kHardwareGpioTestPins[index]);
             input_config.mode = GPIO_MODE_INPUT;
@@ -382,7 +454,10 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestStateLabels[index])) {
-            if (output_mode) {
+            if (reserved_for_lora) {
+                lv_label_set_text(_hardwareGpioTestStateLabels[index], "Reserved for LoRa");
+                lv_obj_set_style_text_color(_hardwareGpioTestStateLabels[index], lv_color_hex(0xB45309), 0);
+            } else if (output_mode) {
                 switch (_hardwareGpioTestLevels[index]) {
                 case 0:
                     lv_label_set_text(_hardwareGpioTestStateLabels[index], "OUT LOW (0V)");
@@ -459,7 +534,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
             } else {
                 lv_obj_clear_flag(_hardwareGpioTestLowButtons[index], LV_OBJ_FLAG_HIDDEN);
             }
-            if (output_mode) {
+            if (output_mode && !reserved_for_lora) {
                 lv_obj_clear_state(_hardwareGpioTestLowButtons[index], LV_STATE_DISABLED);
             } else {
                 lv_obj_add_state(_hardwareGpioTestLowButtons[index], LV_STATE_DISABLED);
@@ -474,7 +549,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
             } else {
                 lv_obj_clear_flag(_hardwareGpioTestHighButtons[index], LV_OBJ_FLAG_HIDDEN);
             }
-            if (output_mode) {
+            if (output_mode && !reserved_for_lora) {
                 lv_obj_clear_state(_hardwareGpioTestHighButtons[index], LV_STATE_DISABLED);
             } else {
                 lv_obj_add_state(_hardwareGpioTestHighButtons[index], LV_STATE_DISABLED);
@@ -485,7 +560,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestPwmSliders[index])) {
-            if (pwm_mode) {
+            if (pwm_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestPwmSliders[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestPwmSliders[index], LV_STATE_DISABLED);
             } else {
@@ -498,7 +573,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestWaveDropdowns[index])) {
-            if (wave_mode) {
+            if (wave_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestWaveDropdowns[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestWaveDropdowns[index], LV_STATE_DISABLED);
             } else {
@@ -509,7 +584,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestWaveDurationInputs[index])) {
-            if (wave_mode) {
+            if (wave_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestWaveDurationInputs[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestWaveDurationInputs[index], LV_STATE_DISABLED);
             } else {
@@ -527,7 +602,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestTimerDurationInputs[index])) {
-            if (timer_mode) {
+            if (timer_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestTimerDurationInputs[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestTimerDurationInputs[index], LV_STATE_DISABLED);
             } else {
@@ -567,7 +642,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestTimerLevelDropdowns[index])) {
-            if (timer_mode) {
+            if (timer_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestTimerLevelDropdowns[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestTimerLevelDropdowns[index], LV_STATE_DISABLED);
             } else {
@@ -578,7 +653,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestTimerButtons[index])) {
-            if (timer_mode) {
+            if (timer_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestTimerButtons[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestTimerButtons[index], LV_STATE_DISABLED);
             } else {
@@ -598,7 +673,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestAlarmTimeInputs[index])) {
-            if (alarm_mode) {
+            if (alarm_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestAlarmTimeInputs[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestAlarmTimeInputs[index], LV_STATE_DISABLED);
             } else {
@@ -615,7 +690,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestAlarmLevelDropdowns[index])) {
-            if (alarm_mode) {
+            if (alarm_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestAlarmLevelDropdowns[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestAlarmLevelDropdowns[index], LV_STATE_DISABLED);
             } else {
@@ -626,7 +701,7 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestAlarmToggleButtons[index])) {
-            if (alarm_mode) {
+            if (alarm_mode && !reserved_for_lora) {
                 lv_obj_clear_flag(_hardwareGpioTestAlarmToggleButtons[index], LV_OBJ_FLAG_HIDDEN);
                 lv_obj_clear_state(_hardwareGpioTestAlarmToggleButtons[index], LV_STATE_DISABLED);
             } else {
@@ -647,15 +722,17 @@ void AppSettings::refreshHardwareGpioTestUi(void)
         }
 
         if (lv_obj_ready(_hardwareGpioTestStateLabels[index])) {
-            if (timer_mode || alarm_mode) {
+            if ((timer_mode || alarm_mode) && !reserved_for_lora) {
                 lv_obj_add_flag(_hardwareGpioTestStateLabels[index], LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_clear_flag(_hardwareGpioTestStateLabels[index], LV_OBJ_FLAG_HIDDEN);
             }
         }
 
-        all_low_active = all_low_active && output_mode && (_hardwareGpioTestLevels[index] == 0);
-        all_high_active = all_high_active && output_mode && (_hardwareGpioTestLevels[index] == 1);
+        if (!reserved_for_lora) {
+            all_low_active = all_low_active && output_mode && (_hardwareGpioTestLevels[index] == 0);
+            all_high_active = all_high_active && output_mode && (_hardwareGpioTestLevels[index] == 1);
+        }
     }
 
     if (lv_obj_ready(_hardwareGpioTestAllLowButton)) {
@@ -705,8 +782,19 @@ void AppSettings::setHardwareGpioTestMode(HardwareGpioTestMode mode)
 
     const HardwareGpioTestMode previous_mode = _hardwareGpioTestMode;
     _hardwareGpioTestMode = mode;
+    jc4880::lora_mesh::StoredState active_lora_state = {};
+    const bool lora_guard_active = load_active_lora_gpio_guard(active_lora_state);
+    const jc4880::lora_mesh::StoredState *active_lora_state_ptr = lora_guard_active ? &active_lora_state : nullptr;
 
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
+        if (is_hardware_gpio_reserved_for_lora(index, active_lora_state_ptr)) {
+            _hardwareGpioTestLevels[index] = -1;
+            _hardwareGpioTestPwmValues[index] = 0;
+            if (previous_mode != HardwareGpioTestMode::Timer) {
+                _hardwareGpioTestTimerRemainingSec[index] = _hardwareGpioTestTimerDurationsSec[index];
+            }
+            continue;
+        }
         if ((mode == HardwareGpioTestMode::Output) || (mode == HardwareGpioTestMode::Pwm)) {
             (void)applyHardwareGpioTestDrivenLevel(index, false);
         } else {
@@ -732,6 +820,10 @@ bool AppSettings::applyHardwareGpioTestDrivenLevel(size_t index, bool high)
     return false;
 #else
     if (index >= AppSettings::kHardwareGpioTestPinCount) {
+        return false;
+    }
+    if (is_hardware_gpio_reserved_for_lora(index)) {
+        _hardwareGpioTestLevels[index] = -1;
         return false;
     }
 
@@ -762,6 +854,10 @@ bool AppSettings::releaseHardwareGpioTestDrivenLevel(size_t index)
     if (index >= AppSettings::kHardwareGpioTestPinCount) {
         return false;
     }
+    if (is_hardware_gpio_reserved_for_lora(index)) {
+        _hardwareGpioTestLevels[index] = -1;
+        return false;
+    }
 
     gpio_config_t config = {};
     config.pin_bit_mask = (1ULL << kHardwareGpioTestPins[index]);
@@ -785,6 +881,10 @@ bool AppSettings::prepareHardwareGpioTestPeripheralOutput(size_t index)
     return false;
 #else
     if (index >= AppSettings::kHardwareGpioTestPinCount) {
+        return false;
+    }
+    if (is_hardware_gpio_reserved_for_lora(index)) {
+        _hardwareGpioTestLevels[index] = -1;
         return false;
     }
 
@@ -1618,8 +1718,27 @@ void AppSettings::releaseHardwareGpioTestPins(void)
 #else
     stopHardwareGpioTestWave();
     stopHardwareGpioTestPwm();
+    jc4880::lora_mesh::StoredState active_lora_state = {};
+    const bool lora_guard_active = load_active_lora_gpio_guard(active_lora_state);
+    const jc4880::lora_mesh::StoredState *active_lora_state_ptr = lora_guard_active ? &active_lora_state : nullptr;
     for (size_t index = 0; index < AppSettings::kHardwareGpioTestPinCount; ++index) {
-        (void)releaseHardwareGpioTestDrivenLevel(index);
+        if (is_hardware_gpio_reserved_for_lora(index, active_lora_state_ptr)) {
+            const gpio_num_t gpio_num = static_cast<gpio_num_t>(kHardwareGpioTestPins[index]);
+            (void)gpio_hold_dis(gpio_num);
+
+            gpio_config_t config = {};
+            config.pin_bit_mask = (1ULL << kHardwareGpioTestPins[index]);
+            config.intr_type = GPIO_INTR_DISABLE;
+            config.pull_up_en = GPIO_PULLUP_DISABLE;
+            config.mode = GPIO_MODE_INPUT;
+            config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+            if (gpio_config(&config) == ESP_OK) {
+                (void)gpio_input_enable(gpio_num);
+            }
+            _hardwareGpioTestLevels[index] = -1;
+        } else {
+            (void)releaseHardwareGpioTestDrivenLevel(index);
+        }
         _hardwareGpioTestPwmValues[index] = 0;
     }
     applyHardwareGpioTestScheduledOutputs();

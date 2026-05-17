@@ -597,17 +597,21 @@ bool AppSettings::persistLoRaConfigFromUi(void)
         return false;
     }
 
+    if (state.settings.radio_enabled) {
+        releaseHardwareGpioTestPins();
+    }
+
     LoRaMeshApp *lora_app = find_installed_lora_mesh_app(getCore());
-    const bool runtime_synced = (lora_app != nullptr) && lora_app->syncRuntimeStateFromStorage();
+    const bool runtime_applied = (lora_app != nullptr) && lora_app->applyStoredSettingsFromSettings(false);
 
     refreshLoRaUi();
     if ((_loraInfoLabel != nullptr) && lv_obj_ready(_loraInfoLabel)) {
         lv_label_set_text(_loraInfoLabel,
                           local_controller_active
                               ? "Saved. Local Controller is active, so the LoRa radio remains forced off."
-                              : (runtime_synced
-                                     ? "Saved. The open LoRa Mesh app picked up the new chat labels immediately."
-                                     : "Saved. Reopen the LoRa Mesh app if it is already open so the radio picks up these settings."));
+                              : (runtime_applied
+                                     ? "Saved. LoRa runtime is reapplying the updated radio settings."
+                                     : "Saved. LoRa settings were stored, but the runtime could not be restarted."));
     }
     return true;
 #endif
@@ -652,6 +656,10 @@ bool AppSettings::persistLoRaRadioEnabledFromUi(void)
         return false;
     }
 
+    if (state.settings.radio_enabled) {
+        releaseHardwareGpioTestPins();
+    }
+
     if ((_loraSelfCheckButton != nullptr) && lv_obj_ready(_loraSelfCheckButton)) {
         if (state.settings.radio_enabled) {
             lv_obj_clear_state(_loraSelfCheckButton, LV_STATE_DISABLED);
@@ -677,6 +685,9 @@ bool AppSettings::persistLoRaRadioEnabledFromUi(void)
                               "LoRa radio disabled. Other LoRa settings stay saved until you change them and press Save.");
         }
     }
+
+    LoRaMeshApp *lora_app = find_installed_lora_mesh_app(getCore());
+    (void)((lora_app != nullptr) && lora_app->applyStoredSettingsFromSettings(false));
 
     return true;
 #endif
@@ -825,7 +836,12 @@ void AppSettings::setLoRaDiagnosticLogModalVisible(bool visible)
         _loraDiagnosticLogSessionStartLine = (lora_app != nullptr) ? lora_app->debugLogLineCount() : 0;
         _loraDiagnosticLogLastRenderedLineCount = 0;
         if ((_loraDiagnosticLogLabel != nullptr) && lv_obj_ready(_loraDiagnosticLogLabel)) {
-            lv_label_set_text(_loraDiagnosticLogLabel, "No module log yet.");
+            std::string intro = "Current pinout unavailable.";
+            if (lora_app != nullptr) {
+                intro = std::string("Current pinout:\n") + lora_app->debugDescribeSavedGpioState();
+            }
+            intro += "\n\nNo module log yet.";
+            lv_label_set_text(_loraDiagnosticLogLabel, intro.c_str());
         }
         if ((_loraDiagnosticLogScroll != nullptr) && lv_obj_ready(_loraDiagnosticLogScroll)) {
             lv_obj_scroll_to_y(_loraDiagnosticLogScroll, 0, LV_ANIM_OFF);
@@ -865,6 +881,8 @@ void AppSettings::refreshLoRaDiagnosticLogModal(void)
         return;
     }
 
+    const std::string intro = std::string("Current pinout:\n") + lora_app->debugDescribeSavedGpioState();
+
     const size_t total_line_count = lora_app->debugLogLineCount();
     if (total_line_count < _loraDiagnosticLogSessionStartLine) {
         _loraDiagnosticLogSessionStartLine = total_line_count;
@@ -881,16 +899,16 @@ void AppSettings::refreshLoRaDiagnosticLogModal(void)
 
     const std::vector<std::string> lines = lora_app->debugLogLinesSince(_loraDiagnosticLogSessionStartLine, 160);
     if (lines.empty()) {
-        lv_label_set_text(_loraDiagnosticLogLabel, "No module log yet.");
+        const std::string combined = intro + "\n\nNo module log yet.";
+        lv_label_set_text(_loraDiagnosticLogLabel, combined.c_str());
         _loraDiagnosticLogLastRenderedLineCount = total_line_count;
         return;
     }
 
-    std::string combined;
+    std::string combined = intro;
     for (const std::string &line : lines) {
-        if (!combined.empty()) {
-            combined.push_back('\n');
-        }
+        combined.push_back('\n');
+        combined.push_back('\n');
         combined += line;
     }
     lv_label_set_text(_loraDiagnosticLogLabel, combined.c_str());

@@ -174,7 +174,16 @@ void AppSettings::onLoRaDiagnosticPresetChangedEventCallback(lv_event_t *e)
         command = "C1 00 09";
         break;
     case 2:
+        command = "C1 08 03";
+        break;
+    case 3:
+        command = kLoraE22WriteCurrentSettingsCommand;
+        break;
+    case 4:
         command = kLoraE22WriteSavedSettingsCommand;
+        break;
+    case 5:
+        command = kLoraE22ResetRadioCommand;
         break;
     default:
         return;

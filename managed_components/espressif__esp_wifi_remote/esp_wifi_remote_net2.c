@@ -328,10 +328,9 @@ void esp_netif_destroy_wifi_remote(void *esp_netif)
 }
 
 
-#if defined(CONFIG_WIFI_RMT_SOFTAP_SUPPORT) && !defined(CONFIG_ESP_WIFI_SOFTAP_SUPPORT)
+#ifndef ESP_NETIF_INHERENT_DEFAULT_WIFI_AP
 
-// We have to redefine all netif properties for AP, if IDF's AP definition is missing (i.e. WiFi AP is disabled)
-// (and at the same time Remote-WiFi AP is enabled, thus we know that we would need it)
+// Provide a fallback AP netif config when the local Wi-Fi SoftAP defaults are not available.
 static const esp_netif_ip_info_t s_wifi_remote_soft_ap_ip = {
         .ip = { .addr = ESP_IP4TOADDR( 192, 168, 4, 1) },
         .gw = { .addr = ESP_IP4TOADDR( 192, 168, 4, 1) },
@@ -356,6 +355,10 @@ static const esp_netif_ip_info_t s_wifi_remote_soft_ap_ip = {
         .route_prio = 10, \
         .bridge_info = NULL \
     }
+#endif
+
+#if !defined(CONFIG_ESP_WIFI_SOFTAP_SUPPORT)
+const esp_netif_inherent_config_t _g_esp_netif_inherent_ap_config = ESP_NETIF_INHERENT_DEFAULT_WIFI_AP();
 #endif
 
 /**

@@ -1,14 +1,14 @@
 # JC4880P443C_I_W_Remote
 
-Version 1.4.1 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
+Version 1.4.2 custom firmware for the JC4880P443C_I_W / ESP32-P4 Function EV Board profile.
 
 This project keeps the Espressif phone-style launcher experience, then extends it with a broader native app set, emulator support, better SD-card behavior, persistent Wi-Fi settings, timezone control, online firmware discovery, a local factory reset flow, and an external ESP32-C6 coprocessor firmware path for BLE and ZigBee features.
 
-## Recent Changes In 1.4.1
+## Recent Changes In 1.4.2
 
-- LoRa Mesh now applies E22 register writes from the active runtime config, debounces Settings-side LoRa edits before persisting them, and can recover common swapped E22 UART TX/RX mappings automatically during self-check.
-- Settings `GPIO Control` now keeps the keyboard and scrollable panel in sync, fixes timer and alarm level-selection mapping, improves armed-versus-active alarm feedback, and makes GPIO output-to-PWM handoff more reliable.
-- The shared top status-bar clock now refreshes every second, stays in 24-hour mode consistently, and is forced to remain single-line in the center area.
+- LoRa Mesh restores reliable E22-400T22S UART communication with the in-tree runtime/config path again, replacing the failed library-swap direction with corrected mode-pin handling, live config sync, and startup validation on hardware.
+- Hosted Wi-Fi and the shared audio path are brought back to the validated ESP32-C6 over SDIO configuration, fixing the recent regression where wireless startup drifted and audio behavior regressed with it.
+- The hosted Wi-Fi compatibility layer for ESP-IDF 5.5.4 now packages cleanly again for release builds, so the published firmware, OTA version, and GitHub release assets stay aligned.
 
 ## Hardware And Case Renders
 
@@ -230,7 +230,7 @@ Compared with the stock Espressif-based firmware stack used for this hardware pr
 - Partition table provides two balanced OTA app slots of `0x7D0000` each.
 - A dedicated `0x020000` flash coredump partition is reserved for post-crash diagnostics.
 - SPIFFS storage is `0x020000` to prioritize OTA update headroom while preserving the remaining onboard filesystem features.
-- Version 1.4.1 validates at `0x77CAF0` (`7,850,736` bytes), leaving `0x053510` (`341,264` bytes) free in either `0x7D0000` OTA app slot.
+- Version 1.4.2 validates at `0x77E610` (`7,857,680` bytes), leaving `0x0519F0` (`334,320` bytes) free in either `0x7D0000` OTA app slot.
 - Browser and YouTube launcher leftovers are removed from the app tree; codec support is limited to the active playback paths: MP3 radio streams plus MP3/AAC/M4A/MP4/FLAC/WAV local music.
 
 ## SD Card Layout

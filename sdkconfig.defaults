@@ -40,6 +40,7 @@ CONFIG_ESP_HOSTED_DFLT_TASK_FROM_SPIRAM=y
 # For this repo, the known-good pairing is esp32c6 over SDIO with reset GPIO 54.
 # Do not switch these root settings to H2/SPI unless coprocessor_c6 and board wiring
 # are being migrated together and both targets are rebuilt/validated in the same change.
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_CP_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_PRIV_ENABLE_WIFI_OPTIONS=y
 CONFIG_ESP_HOSTED_IDF_SLAVE_TARGET="esp32c6"

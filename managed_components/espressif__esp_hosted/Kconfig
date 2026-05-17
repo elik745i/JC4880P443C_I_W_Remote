@@ -12,6 +12,7 @@ menu "ESP-Hosted config"
 
 	choice ESP_HOSTED_CP_TARGET
 		bool "Choose the Co-processor to use"
+		default ESP_HOSTED_CP_TARGET_ESP32C6 if IDF_TARGET_ESP32P4
 
 		config ESP_HOSTED_CP_TARGET_ESP32
 			depends on SLAVE_IDF_TARGET_ESP32
@@ -34,7 +35,7 @@ menu "ESP-Hosted config"
 			bool "ESP32-C3 (fetched from Wi-Fi Remote Component)"
 
 		config ESP_HOSTED_CP_TARGET_ESP32C6
-			depends on SLAVE_IDF_TARGET_ESP32C6
+			depends on SLAVE_IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32P4
 			bool "ESP32-C6 (fetched from Wi-Fi Remote Component)"
 
 		config ESP_HOSTED_CP_TARGET_ESP32C5

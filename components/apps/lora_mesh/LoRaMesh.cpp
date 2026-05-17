@@ -87,8 +87,12 @@ constexpr uint32_t kHistoryWriteTaskStack = 4096;
 
 constexpr uint8_t kE22CommandWritePersistent = 0xC0;
 constexpr uint8_t kE22CommandReadRegisters = 0xC1;
+constexpr uint8_t kE22CommandWriteTemporary = 0xC2;
+constexpr uint8_t kE22CommandReset = 0xC4;
 constexpr uint8_t kE22RegisterStart = 0x00;
 constexpr uint8_t kE22RegisterCount = 0x09;
+constexpr uint8_t kE22PidRegisterStart = 0x08;
+constexpr uint8_t kE22PidRegisterCount = 0x03;
 constexpr uint32_t kE22BaseFrequencyHz = 410125000;
 constexpr uint32_t kE22ChannelStepHz = 1000000;
 constexpr uint8_t kE22Parity8N1Bits = 0x00;
@@ -98,7 +102,9 @@ constexpr uint8_t kE22TransmissionModeDefault = 0x00;
 constexpr uint8_t kE22BroadcastAddressByte = 0xFF;
 constexpr size_t kE22DiagnosticMaxResponseBytes = 128;
 constexpr uint32_t kE22DiagnosticIdleGapMs = 60;
+constexpr char kE22PresetWriteCurrentSettings[] = "@write_current_e22_settings";
 constexpr char kE22PresetWriteSavedSettings[] = "@write_saved_e22_settings";
+constexpr char kE22PresetResetRadio[] = "@reset_e22_radio";
 constexpr std::array<int, 8> kE22RuntimeBaudRates = {1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200};
 
 struct E22RuntimeConfig {
@@ -1331,6 +1337,115 @@ struct LoRaMeshApp::Impl {
         }
     }
 
+    void configure_role_output_if_present(RadioPinRole role, int level) const
+    {
+        if (!has_pin(role)) {
+            return;
+        }
+
+        gpio_config_t config = {};
+        config.pin_bit_mask = (1ULL << gpio_for_role(role));
+        config.mode = GPIO_MODE_OUTPUT;
+        config.pull_up_en = GPIO_PULLUP_DISABLE;
+        config.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        config.intr_type = GPIO_INTR_DISABLE;
+        if (gpio_config(&config) == ESP_OK) {
+            (void)gpio_set_level(gpio_for_role(role), level != 0 ? 1 : 0);
+        }
+    }
+
+    void configure_role_input_if_present(RadioPinRole role, bool pull_down) const
+    {
+        if (!has_pin(role)) {
+            return;
+        }
+
+        gpio_config_t config = {};
+        config.pin_bit_mask = (1ULL << gpio_for_role(role));
+        config.mode = GPIO_MODE_INPUT;
+        config.pull_up_en = GPIO_PULLUP_DISABLE;
+        config.pull_down_en = pull_down ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE;
+        config.intr_type = GPIO_INTR_DISABLE;
+        if (gpio_config(&config) == ESP_OK) {
+            (void)gpio_input_enable(gpio_for_role(role));
+        }
+    }
+
+    void apply_saved_gpio_owner_state(bool radio_enabled)
+    {
+        reset_active_radio_gpios();
+
+        if (radio_module_uses_spi(stored_state.settings.radio_module)) {
+            if (radio_enabled) {
+                suspend_conflicting_neopixel_if_needed();
+            } else {
+                resume_suspended_neopixel_if_needed();
+            }
+            return;
+        }
+
+        if (radio_enabled) {
+            suspend_conflicting_neopixel_if_needed();
+            configure_role_output_if_present(RadioPinRole::UartTx, 1);
+            configure_role_input_if_present(RadioPinRole::UartRx, false);
+            configure_role_output_if_present(RadioPinRole::Mode0, 0);
+            configure_role_output_if_present(RadioPinRole::Mode1, 0);
+            configure_role_output_if_present(RadioPinRole::Reset, 1);
+            configure_role_output_if_present(RadioPinRole::TxEnable, 0);
+            configure_role_output_if_present(RadioPinRole::RxEnable, 0);
+            configure_role_input_if_present(RadioPinRole::Aux, false);
+        } else {
+            for (size_t role_index = 0; role_index < kRadioPinRoleCount; ++role_index) {
+                const auto role = static_cast<RadioPinRole>(role_index);
+                if (!module_uses_role(stored_state.settings.radio_module, role)) {
+                    continue;
+                }
+                configure_role_output_if_present(role, 0);
+            }
+            resume_suspended_neopixel_if_needed();
+        }
+
+        ESP_LOGI(kTag,
+                 "LoRa saved GPIO owner state applied: radio=%s module=%s tx=%d/%d rx=%d/%d m0=%d/%d m1=%d/%d aux=%d/%d",
+                 radio_enabled ? "on" : "off",
+                 radio_module_name(stored_state.settings.radio_module),
+                 has_pin(RadioPinRole::UartTx) ? gpio_for_role(RadioPinRole::UartTx) : -1,
+                 has_pin(RadioPinRole::UartTx) ? gpio_get_level(gpio_for_role(RadioPinRole::UartTx)) : -1,
+                 has_pin(RadioPinRole::UartRx) ? gpio_for_role(RadioPinRole::UartRx) : -1,
+                 has_pin(RadioPinRole::UartRx) ? gpio_get_level(gpio_for_role(RadioPinRole::UartRx)) : -1,
+                 has_pin(RadioPinRole::Mode0) ? gpio_for_role(RadioPinRole::Mode0) : -1,
+                 has_pin(RadioPinRole::Mode0) ? gpio_get_level(gpio_for_role(RadioPinRole::Mode0)) : -1,
+                 has_pin(RadioPinRole::Mode1) ? gpio_for_role(RadioPinRole::Mode1) : -1,
+                 has_pin(RadioPinRole::Mode1) ? gpio_get_level(gpio_for_role(RadioPinRole::Mode1)) : -1,
+                 has_pin(RadioPinRole::Aux) ? gpio_for_role(RadioPinRole::Aux) : -1,
+                 has_pin(RadioPinRole::Aux) ? gpio_get_level(gpio_for_role(RadioPinRole::Aux)) : -1);
+    }
+
+    std::string describe_saved_gpio_state() const
+    {
+        std::ostringstream stream;
+        stream << "module=" << radio_module_name(stored_state.settings.radio_module)
+               << " radio=" << (stored_state.settings.radio_enabled ? "on" : "off");
+
+        auto append_pin = [&](const char *label, RadioPinRole role) {
+            stream << ' ' << label << '=';
+            if (!has_pin(role)) {
+                stream << "na";
+                return;
+            }
+
+            stream << static_cast<int>(gpio_for_role(role)) << '/' << gpio_get_level(gpio_for_role(role));
+        };
+
+        append_pin("tx", RadioPinRole::UartTx);
+        append_pin("rx", RadioPinRole::UartRx);
+        append_pin("m0", RadioPinRole::Mode0);
+        append_pin("m1", RadioPinRole::Mode1);
+        append_pin("aux", RadioPinRole::Aux);
+        append_pin("nrst", RadioPinRole::Reset);
+        return stream.str();
+    }
+
     void suspend_conflicting_neopixel_if_needed()
     {
         if (suspended_neopixel_gpio >= 0) {
@@ -1470,14 +1585,15 @@ struct LoRaMeshApp::Impl {
                 impl->startup_complete = false;
                 impl->startup_ok = false;
                 const bool runtime_active = (impl->root != nullptr) && (impl->ui_timer != nullptr) && !impl->ui_paused;
+                const bool radio_enabled = impl->stored_state.settings.radio_enabled;
                 bool start_self_test = false;
                 if (run_self_test) {
                     impl->status_text = "LoRa self-test: starting";
                     impl->trace_event_locked("Settings requested background self-test");
                     start_self_test = true;
-                } else if (runtime_active && impl->stored_state.settings.radio_enabled) {
+                } else if (radio_enabled) {
                     impl->start_startup_task();
-                } else if (!impl->stored_state.settings.radio_enabled) {
+                } else {
                     impl->status_text = "Device disabled. Please enable radio in Device Settings.";
                 }
                 const bool request_refresh = runtime_active;
@@ -1943,14 +2059,15 @@ struct LoRaMeshApp::Impl {
 
     void set_uart_module_mode(bool normal_mode) const
     {
-        const int mode_level = normal_mode ? 0 : 1;
         if (has_pin(RadioPinRole::Mode0)) {
-            gpio_set_level(gpio_for_role(RadioPinRole::Mode0), mode_level);
+            gpio_set_level(gpio_for_role(RadioPinRole::Mode0), 0);
         }
         if (has_pin(RadioPinRole::Mode1)) {
-            gpio_set_level(gpio_for_role(RadioPinRole::Mode1), mode_level);
+            gpio_set_level(gpio_for_role(RadioPinRole::Mode1), normal_mode ? 0 : 1);
         }
-        esp_rom_delay_us(2000);
+        // E22 config commands require MODE_2 (M0=0, M1=1), and the upstream
+        // library leaves a wider settle margin than the 2 ms datasheet minimum.
+        esp_rom_delay_us(40000);
     }
 
     uint8_t e22_channel_for_frequency(uint32_t frequency_hz) const
@@ -2363,10 +2480,13 @@ struct LoRaMeshApp::Impl {
         std::vector<uint8_t> command;
         std::string parse_error;
         std::string log_description;
-        if (command_text == kE22PresetWriteSavedSettings) {
+        if ((command_text == kE22PresetWriteCurrentSettings) || (command_text == kE22PresetWriteSavedSettings)) {
             const E22RuntimeConfig config = build_e22_runtime_config(state_snapshot.settings);
+            const uint8_t write_command = (command_text == kE22PresetWriteSavedSettings)
+                                             ? kE22CommandWritePersistent
+                                             : kE22CommandWriteTemporary;
             command = {
-                kE22CommandWritePersistent,
+                write_command,
                 kE22RegisterStart,
                 kE22RegisterCount,
                 config.addh,
@@ -2379,7 +2499,13 @@ struct LoRaMeshApp::Impl {
                 0x00,
                 0x00,
             };
-            log_description = std::string("saved settings ") + describe_e22_runtime_config(config);
+            log_description = std::string((command_text == kE22PresetWriteSavedSettings)
+                                              ? "saved settings "
+                                              : "current settings ") +
+                              describe_e22_runtime_config(config);
+        } else if (command_text == kE22PresetResetRadio) {
+            command = {kE22CommandReset, kE22CommandReset, kE22CommandReset};
+            log_description = "module reset";
         } else {
             if (!parse_hex_command_bytes(command_text, command, parse_error)) {
                 set_status(parse_error.c_str());
@@ -5463,6 +5589,7 @@ bool LoRaMeshApp::init()
              "Identity %s (%s)",
              _impl->stored_state.identity.display_name.c_str(),
              _impl->stored_state.identity.device_id.c_str());
+    _impl->apply_saved_gpio_owner_state(_impl->stored_state.settings.radio_enabled);
     return true;
 }
 
@@ -5565,13 +5692,22 @@ bool LoRaMeshApp::applyStoredSettingsFromSettings(bool run_self_test)
     _impl->pending_self_test_on_next_open = false;
     _impl->trace_event_locked(run_self_test ? "Settings applied; restarting runtime for self-test"
                                             : "Settings applied; refreshing runtime");
-    if (!runtime_active && !run_self_test) {
-        _impl->unlock();
-        return true;
-    }
+    _impl->apply_saved_gpio_owner_state(_impl->stored_state.settings.radio_enabled);
     const bool started = _impl->start_settings_apply_task_locked(run_self_test);
     _impl->unlock();
     return started;
+}
+
+std::string LoRaMeshApp::debugDescribeSavedGpioState() const
+{
+    if (_impl == nullptr) {
+        return "app=null";
+    }
+
+    _impl->lock();
+    const std::string state = _impl->describe_saved_gpio_state();
+    _impl->unlock();
+    return state;
 }
 
 bool LoRaMeshApp::startSelfTestFromSettings()

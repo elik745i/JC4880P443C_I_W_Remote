@@ -1,0 +1,3 @@
+lora.open
+lora.send.common COPILOT_20260515_C10_TO_C11_LIVE
+lora.log 80

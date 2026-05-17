@@ -95,9 +95,9 @@ void AppSettings::refreshBluetoothUi(void)
             for (size_t index = 0; index < s_bleScanResults.size(); ++index) {
                 const auto &entry = s_bleScanResults[index];
                 results += std::to_string(index + 1) + ". ";
-                results += entry.name.empty() ? std::string("Unnamed device") : entry.name;
+                results += entry.name.empty() ? std::string("Unnamed device") : std::string(entry.name.c_str());
                 results += "\n";
-                results += entry.address + "  RSSI " + std::to_string(entry.rssi) + " dBm";
+                results += std::string(entry.address.c_str()) + "  RSSI " + std::to_string(entry.rssi) + " dBm";
                 if ((index + 1) < s_bleScanResults.size()) {
                     results += "\n\n";
                 }

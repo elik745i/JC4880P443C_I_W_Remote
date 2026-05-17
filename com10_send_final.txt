@@ -1,0 +1,405 @@
+ESP-ROM:esp32p4-eco2-20240710
+Build:Jul 10 2024
+rst:0x17 (CHIP_USB_UART_RESET),boot:0x31c (SPI_FAST_FLASH_BOOT)
+Core0 Saved PC:0x4ff113ce
+Core1 Saved PC:0x4ff113ce
+SPI mode:DIO, clock div:1
+load:0x4ff33ce0,len:0x173c
+load:0x4ff29ed0,len:0xff0
+load:0x4ff2cbd0,len:0x368c
+entry 0x4ff29eda
+I (27) boot: ESP-IDF v5.5.4 2nd stage bootloader
+I (28) boot: compile time May 12 2026 21:15:30
+I (28) boot: Multicore bootloader
+I (30) boot: chip revision: v1.3
+I (31) boot: efuse block revision: v0.3
+I (34) qio_mode: Enabling default flash chip QIO
+I (39) boot.esp32p4: SPI Speed      : 80MHz
+I (42) boot.esp32p4: SPI Mode       : QIO
+I (46) boot.esp32p4: SPI Flash Size : 16MB
+I (50) boot: Enabling RNG early entropy source...
+I (55) boot: Partition Table:
+I (57) boot: ## Label            Usage          Type ST Offset   Length
+I (63) boot:  0 nvs              WiFi data        01 02 00009000 00006000
+I (70) boot:  1 otadata          OTA data         01 00 0000f000 00002000
+I (76) boot:  2 phy_init         RF data          01 01 00011000 00001000
+I (83) boot:  3 ota_0            OTA app          00 10 00020000 007c0000
+I (89) boot:  4 ota_1            OTA app          00 11 007e0000 007c0000
+I (96) boot:  5 coredump         Unknown data     01 03 00fa0000 00020000
+I (102) boot:  6 storage          Unknown data     01 82 00fc0000 00040000
+I (110) boot: End of partition table
+I (113) esp_image: segment 0: paddr=00020020 vaddr=48320020 size=423ee8h (4341480) map
+I (605) esp_image: segment 1: paddr=00443f10 vaddr=30100000 size=00b3ch (  2876) load
+I (607) esp_image: segment 2: paddr=00444a54 vaddr=30100b40 size=0006ch (   108) load
+I (610) esp_image: segment 3: paddr=00444ac8 vaddr=4ff00000 size=0b550h ( 46416) load
+I (623) esp_image: segment 4: paddr=00450020 vaddr=48000020 size=31c260h (3261024) map
+I (989) esp_image: segment 5: paddr=0076c288 vaddr=4ff0b550 size=1d6c8h (120520) load
+I (1007) esp_image: segment 6: paddr=00789958 vaddr=4ff28c80 size=014a8h (  5288) load
+I (1009) esp_image: segment 7: paddr=0078ae08 vaddr=4ff40000 size=04654h ( 18004) load
+I (1014) esp_image: segment 8: paddr=0078f464 vaddr=50108080 size=00020h (    32) load
+I (1028) boot: Loaded app from partition at offset 0x20000
+I (1028) boot: Disabling RNG early entropy source...
+I (1042) hex_psram: vendor id    : 0x0d (AP)
+I (1042) hex_psram: Latency      : 0x01 (Fixed)
+I (1043) hex_psram: DriveStr.    : 0x00 (25 Ohm)
+I (1043) hex_psram: dev id       : 0x03 (generation 4)
+I (1048) hex_psram: density      : 0x07 (256 Mbit)
+I (1053) hex_psram: good-die     : 0x06 (Pass)
+I (1057) hex_psram: SRF          : 0x02 (Slow Refresh)
+I (1062) hex_psram: BurstType    : 0x00 ( Wrap)
+I (1066) hex_psram: BurstLen     : 0x03 (2048 Byte)
+I (1071) hex_psram: BitMode      : 0x01 (X16 Mode)
+I (1075) hex_psram: Readlatency  : 0x04 (14 cycles@Fixed)
+I (1080) hex_psram: DriveStrength: 0x00 (1/1)
+I (1084) MSPI Timing: Enter psram timing tuning
+I esp_psram: Found 32MB PSRAM device
+I esp_psram: Speed: 200MHz
+I (1463) mmu_psram: .rodata xip on psram
+I (1617) mmu_psram: .text xip on psram
+I (1618) hex_psram: psram CS IO is dedicated
+I (1618) cpu_start: Multicore app
+I (1988) esp_psram: SPI SRAM memory test OK
+I (1999) cpu_start: GPIO 38 and 37 are used as console UART I/O pins
+I (2000) cpu_start: Pro cpu start user code
+I (2000) cpu_start: cpu freq: 360000000 Hz
+I (2002) app_init: Application information:
+I (2006) app_init: Project name:     ESP32P4_Remote
+I (2010) app_init: App version:      1.3.10
+I (2014) app_init: Compile time:     May 13 2026 18:38:49
+I (2019) app_init: ELF file SHA256:  46eb4996e...
+I (2024) app_init: ESP-IDF:          v5.5.4
+I (2028) efuse_init: Min chip rev:     v1.0
+I (2031) efuse_init: Max chip rev:     v1.99 
+I (2036) efuse_init: Chip rev:         v1.3
+I (2039) heap_init: Initializing. RAM available for dynamic allocation:
+I (2046) heap_init: At 4FF2A130 len 00010E90 (67 KiB): RETENT_RAM
+I (2052) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+I (2057) heap_init: At 4FF4E000 len 00032000 (200 KiB): RAM
+I (2062) heap_init: At 501080A0 len 00007F60 (31 KiB): RTCRAM
+I (2068) heap_init: At 30100BAC len 00001454 (5 KiB): TCM
+I (2073) esp_psram: Adding pool of 25133K of PSRAM memory to heap allocator
+I (2079) esp_psram: Adding pool of 15K of PSRAM memory gap generated due to end address alignment of irom to the heap allocator
+I (2091) esp_psram: Adding pool of 48K of PSRAM memory gap generated due to end address alignment of drom to the heap allocator
+W (2102) spi_flash: Detected boya flash chip but using generic driver. For optimal functionality, enable `SPI_FLASH_SUPPORT_BOYA_CHIP` in menuconfig
+I (2115) spi_flash: detected chip: generic
+I (2119) spi_flash: flash io: qio
+I (2140) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+I (2145) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+I (2176) esp_core_dump_flash: Init core dump to flash
+I (2181) esp_core_dump_flash: Found partition 'coredump' @ fa0000 131072 bytes
+I (2199) H_SDIO_DRV: sdio_data_to_rx_buf_task started
+I (2199) main_task: Started on CPU0
+I (2200) esp_psram: Reserving pool of 128K of internal memory for DMA/internal allocations
+I (2204) main_task: Calling app_main()
+I (2214) pm: Frequency switching config: CPU_MAX: 360, APB_MAX: 90, APB_MIN: 40, Light sleep: ENABLED
+I (2217) main: Power management enabled: max=360 MHz min=40 MHz light_sleep=on
+I (2224) main: Startup display orientation preference=0; applying live rotation after display init
+I (2241) ESP32_P4_EV: Partition size: total: 233681, used: 0
+I (2241) main: SPIFFS mount successfully
+I (2241) LVGL: Starting LVGL task
+W (2244) ledc: GPIO 23 is not usable, maybe conflict with others
+I (2250) ESP32_P4_EV: MIPI DSI PHY Powered on
+I (2255) ESP32_P4_EV: Install MIPI DSI LCD control panel
+I (2259) ESP32_P4_EV: Install EK79007 LCD control panel
+I (2264) st7701: version: 1.1.3
+I (2406) st7701_mipi: LCD ID: FF FF FF
+I (2406) st7701_mipi:  st7701->madctl_val: 0x0, st7701->colmod_val: 0x55
+I (2547) ESP32_P4_EV: Display initialized
+E (2548) lcd_panel: esp_lcd_panel_swap_xy(50): swap_xy is not supported by this panel
+W (2548) i2c.master: Please check pull-up resistances whether be connected properly. Otherwise unexpected behavior would happen. For more detailed information, please read docs
+I (2562) GT911: I2C address initialization procedure skipped - using default GT9xx setup
+I (2571) GT911: TouchPad_ID:0x39,0x31,0x31
+I (2574) GT911: TouchPad_Config_Version:250
+I (2578) ESP32_P4_EV: Setting LCD backlight: 100%
+[WARN] [esp_brookesia_core.cpp:46](getDisplaySize): Display is not set, use default display
+[INFO] [esp_brookesia_core.cpp:204](beginCore): Library version: 0.4.1
+[WARN] [esp_brookesia_phone_manager.cpp:303](begin): No touch device is set, try to use default touch device
+[WARN] [esp_brookesia_phone_manager.cpp:307](begin): Using default touch device(@0x0x4874d834)
+I (2653) adc_battery_estimation: Use internal ADC unit
+I (2654) temperature_sensor: Range [-10°C ~ 80°C], error < 1°C
+I (2656) JoypadTransport: Initializing joypad transport
+I (2657) JoypadTransport: Joypad transport task started
+I (2658) main: LORA_MISO GPIO33
+I (2662) JoypadTransport: Registered joypad report callback
+I (2665) main: LORA_MOSI GPIO31
+I (2673) main: LORA_SCK GPIO30
+I (2676) main: LORA_NSS GPIO29
+I (2679) main: LORA_DIO1 GPIO50
+I (2682) main: LORA_BUSY GPIO51
+I (2684) main: LORA_NRST GPIO52
+I (2687) main: LORA_TXEN GPIO35
+I (2690) main: LORA_RXEN GPIO34
+I (2693) main: LoRa profile guard USE_ETHERNET_RMII=0 USE_CSI_CAMERA=0
+I (2701) main: Installed phone app squareline (internal delta: 908 bytes, psram delta: 480 bytes, internal free: 242 KB, psram free: 23367 KB)
+I (2712) main: Installed calculator (internal delta: 872 bytes, psram delta: 416 bytes, internal free: 241 KB, psram free: 23366 KB)
+I (2724) EUI_Setting: Load ble_en: 0
+I (2727) EUI_Setting: Load brightness: 95
+I (2731) EUI_Setting: Load disp_adapt: 1
+I (2734) EUI_Setting: Load disp_auto_imu: 0
+I (2738) EUI_Setting: Load disp_auto_rot: 0
+I (2742) EUI_Setting: Load disp_auto_scl: -1
+I (2746) EUI_Setting: Load disp_auto_sda: -1
+I (2750) EUI_Setting: Load disp_off_g: 0
+I (2754) EUI_Setting: Load disp_off_sec: 15
+I (2758) EUI_Setting: Load disp_rot: 0
+I (2761) EUI_Setting: Load disp_saver: 0
+I (2765) EUI_Setting: Load disp_sleep: 0
+I (2768) EUI_Setting: Load disp_tz_auto: 0
+I (2772) EUI_Setting: Load disp_tz_min: 480
+I (2776) EUI_Setting: Load haptic_fb: 1
+I (2780) EUI_Setting: Load haptic_gpio: 49
+I (2783) EUI_Setting: Load haptic_lvl: 2
+I (2787) EUI_Setting: Load neo_bri: 60
+I (2790) EUI_Setting: Load neo_en: 0
+I (2794) EUI_Setting: Load neo_fx: 0
+I (2797) EUI_Setting: Load neo_gpio: -1
+I (2801) EUI_Setting: Load neo_pal: 0
+I (2804) EUI_Setting: Load ota_auto: 1
+I (2808) EUI_Setting: Load ota_res_at: 0
+I (2811) EUI_Setting: Load sys_volume: 49
+I (2815) EUI_Setting: Load tap_sound: 1
+I (2818) EUI_Setting: Load volume: 49
+I (2822) EUI_Setting: Load wifi_ap_en: 0
+I (2825) EUI_Setting: Load wifi_en: 1
+I (2829) EUI_Setting: Load zb_ch: 13
+I (2832) EUI_Setting: Load zb_en: 0
+I (2835) EUI_Setting: Load zb_join: 180
+I (2839) sntp: Timezone set to UTC-8
+I (2842) ESP32_P4_EV: Setting LCD backlight: 95%
+I (2847) bsp_extra_board: Started display_idle with a PSRAM-backed stack
+E (2854) H_API: ESP-Hosted link not yet up
+I (2857) transport: Attempt connection with slave: retry[0]
+I (2860) main: Installed settings (internal delta: 16696 bytes, psram delta: 25476 bytes, internal free: 225 KB, psram free: 23338 KB)
+W (2862) H_SDIO_DRV: Reset slave using GPIO[54]
+I (2877) main: Installed sega emulator (internal delta: 852 bytes, psram delta: 424 bytes, internal free: 225 KB, psram free: 23337 KB)
+I (2878) os_wrapper_esp: GPIO [54] configured
+I (2891) main: Installed image viewer (internal delta: 856 bytes, psram delta: 424 bytes, internal free: 224 KB, psram free: 23336 KB)
+I (2908) main: Installed file manager (internal delta: 864 bytes, psram delta: 424 bytes, internal free: 223 KB, psram free: 23335 KB)
+I (2919) main: Installed web server (internal delta: 860 bytes, psram delta: 424 bytes, internal free: 222 KB, psram free: 23334 KB)
+I (2930) main: Installed music player (internal delta: 860 bytes, psram delta: 424 bytes, internal free: 221 KB, psram free: 23333 KB)
+I (2944) main: Installed recorder (internal delta: 940 bytes, psram delta: 424 bytes, internal free: 220 KB, psram free: 23332 KB)
+I (2955) main: Installed rs485 (internal delta: 1140 bytes, psram delta: 58844 bytes, internal free: 219 KB, psram free: 23273 KB)
+E (2964) system_api: 0 mac type is incorrect (not found)
+I (2969) LoRaMesh: Prepared LoRa mesh app for node 99BCB746
+I (2976) LoRaMesh: Identity COM10 (3CE08F75)
+I (2980) main: Installed lora mesh (internal delta: 1104 bytes, psram delta: 620 bytes, internal free: 218 KB, psram free: 23271 KB)
+[WARN] [esp_brookesia_phone_home.cpp:119](processAppInstall): No launcher icon provided, use default icon
+I (3000) main: Installed labyrinth (internal delta: 1052 bytes, psram delta: 472 bytes, internal free: 217 KB, psram free: 23270 KB)
+I (3013) main: Installed internet radio (internal delta: 856 bytes, psram delta: 424 bytes, internal free: 216 KB, psram free: 23269 KB)
+I (3025) main: Installed e-reader (internal delta: 812 bytes, psram delta: 544 bytes, internal free: 215 KB, psram free: 23268 KB)
+I (3036) main: Installed mqtt (internal delta: 872 bytes, psram delta: 424 bytes, internal free: 214 KB, psram free: 23267 KB)
+I (3046) main: Free sram size: 214 KB, total sram size: 451 KB, free psram size: 23267 KB, total psram size: 25197 KB
+I (3056) main: Free sram size: 214 KB, total sram size: 451 KB, free psram size: 23267 KB, total psram size: 25197 KB
+I (3066) main: setup done
+[serial] USB serial radio debug ready
+[serial] Commands:
+[serial]   help
+[serial]   app.list
+[serial]   app.start <app name>
+[serial]   display.status
+[serial]   display.rotate 0|90|180|270
+[serial]   image.status
+[serial]   image.list
+[serial]   image.find <text>
+[serial]   image.open <index>
+[serial]   image.openname <text>
+[serial]   web.status
+[serial]   web.start
+[serial]   web.stop
+[serial]   web.toggle
+[serial]   radio.status
+[serial]   radio.open
+[serial]   radio.openstation Country|Station
+[serial]   radio.openplay Country|Station
+[serial]   radio.stop
+[serial]   radio.play Country|Station
+[serial] Example: radio.play Azerbaijan|AVTO FM
+[serial]   recorder.status
+[serial]   recorder.open
+[serial]   recorder.start
+[serial]   recorder.stop
+[serial]   recorder.list
+[serial]   recorder.playlatest
+[serial]   recorder.play <index>
+[serial]   rs485.status
+[serial]   rs485.open
+[serial]   rs485.scan.start
+[serial]   rs485.scan.stop
+[serial]   rs485.sendascii <text>
+[serial]   rs485.sendhex <AA BB CC>
+[serial]   rs485.exportlog
+[serial]   rs485.close
+[serial]   lora.status
+[serial]   lora.open
+[serial]   lora.targets
+[serial]   lora.chat.common
+[serial]   lora.chat.peer <device_id>
+[serial]   lora.peers
+[serial]   lora.settings
+[serial]   lora.selftest.start
+[serial]   lora.selftest.stop
+[serial]   lora.send.common <text>
+[serial]   lora.log [count]
+[serial]   lora.close
+> I (3273) main: Started serial_cmd with a PSRAM-backed stack
+E (3280) gdma: sleep_gdma_channel_retention_init(28): Failed to create sleep retention linked list for GDMA pair (0, 0) retention
+W (3290) gdma: Failed to allocate sleep retention linked list for GDMA retention
+I (3302) ES8311: Work in Slave mode
+I (3310) ES8311: Work in Slave mode
+I (3313) bsp_extra_board: rate = 44100bits_cfg = 16
+I (3313) I2S_IF: channel mode 0 bits:16/16 channel:2 mask:3
+I (3314) I2S_IF: STD Mode 1 bits:16/16 channel:2 sample_rate:44100 mask:3
+I (3320) I2S_IF: channel mode 0 bits:16/16 channel:2 mask:3
+I (3325) I2S_IF: STD Mode 0 bits:16/16 channel:2 sample_rate:44100 mask:3
+I (3347) ESP32_P4_EV: Setting LCD backlight: 95%
+I (3347) Adev_Codec: Open codec device OK
+I (3348) I2S_IF: channel mode 0 bits:16/16 channel:2 mask:3
+I (3350) I2S_IF: STD Mode 0 bits:16/16 channel:2 sample_rate:44100 mask:3
+I (3371) Adev_Codec: Open codec device OK
+I (3371) bsp_extra_board: ret = 0x0 , Success
+I (3372) bsp_extra_board: Skipping play codec reconfigure for unchanged format rate=44100 bits=16 ch=2
+I (3379) main_task: Returned from app_main()
+I (4414) sdio_wrapper: SDIO master: Slot 1, Data-Lines: 4-bit Freq(KHz)[40000 KHz]
+I (4415) sdio_wrapper: GPIOs: CLK[18] CMD[19] D0[14] D1[15] D2[16] D3[17] Slave_Reset[54]
+I (4419) sdio_wrapper: Queues: Tx[20] Rx[20] SDIO-Rx-Mode[1]
+I (4459) sdio_wrapper: Function 0 Blocksize: 512
+I (4459) sdio_wrapper: Function 1 Blocksize: 512
+I (4560) H_SDIO_DRV: Card init success, TRANSPORT_RX_ACTIVE
+I (4560) transport: set_transport_state: 1
+I (4561) transport: Waiting for esp_hosted slave to be ready
+I (4599) H_SDIO_DRV: SDIO Host operating in STREAMING MODE
+I (4599) H_SDIO_DRV: Starting SDIO process rx task
+I (4599) H_SDIO_DRV: Open data path at slave
+I (4630) H_SDIO_DRV: Received ESP_PRIV_IF type message
+I (4630) transport: Received INIT event from ESP32 peripheral
+I (4631) transport: EVENT: 12
+I (4632) transport: Identified slave [esp32c6]
+I (4636) transport: SDIO mode: slave: streaming, host: streaming
+I (4642) transport: EVENT: 11
+I (4644) transport: capabilities: 0xd
+I (4648) transport: Features supported are:
+I (4652) transport: 	 * WLAN
+I (4654) transport: 	   - HCI over SDIO
+I (4658) transport: 	   - BLE only
+I (4661) transport: EVENT: 13
+I (4664) transport: ESP board type is : 13 
+
+I (4668) transport: Base transport is set-up, TRANSPORT_TX_ACTIVE
+I (4674) H_API: Transport active
+I (4676) transport: Slave chip Id[12]
+I (4680) transport: raw_tp_dir[-], flow_ctrl: low[60] high[80]
+I (4686) transport: transport_delayed_init
+I (4689) esp_cli: Registering command: crash
+I (4693) esp_cli: Registering command: reboot
+I (4697) esp_cli: Registering command: mem-dump
+I (4702) esp_cli: Registering command: task-dump
+I (4706) esp_cli: Registering command: cpu-dump
+I (4710) esp_cli: Registering command: heap-trace
+I (4715) esp_cli: Registering command: sock-dump
+I (4719) esp_cli: Registering command: host-power-save
+I (4724) hci_stub_drv: Host BT Support: Disabled
+I (4728) H_SDIO_DRV: Received INIT event
+I (4732) H_SDIO_DRV: Event type: 0x22
+I (4735) H_SDIO_DRV: Write thread started
+I (5199) RPC_WRAP: Coprocessor Boot-up
+I (5379) rpc_req: Scan start Req
+
+W (5402) rpc_rsp: Hosted RPC_Resp [0x21e], uid [3], resp code [12290]
+W (5404) EUI_Setting: Startup Wi-Fi scan failed, falling back to latest saved SSID:Beowolf1 (ESP_ERR_WIFI_NOT_STARTED)
+I (5438) EUI_Setting: Restored Wi-Fi credentials for SSID: Beowolf1
+I (5439) EUI_Setting: Stop Wi-Fi scan
+W (5459) rpc_rsp: Hosted RPC_Resp [0x21f], uid [5], resp code [12290]
+W (5482) rpc_rsp: Hosted RPC_Resp [0x21b], uid [6], resp code [12290]
+I (5625) H_API: esp_wifi_remote_connect
+I (5633) RPC_WRAP: ESP Event: wifi station started
+I (5660) EUI_Setting: Queued Wi-Fi connect (saved credentials) for SSID:Beowolf1
+I (5660) EUI_Setting: wifi_init done
+I (5688) RPC_WRAP: ESP Event: wifi station started
+I (6670) JoypadTransport: Observed hosted transport state: up
+I (6671) JoypadTransport: Sending joypad config: backend=0 ble=0 discovery=0 addr=unsaved
+W (6677) rpc_rsp: Hosted RPC_Resp [0x226], uid [14], resp code [12303]
+I (6964) JoypadTransport: BLE report: connected=0 scanning=0 raw=0x00000000 axes=(0,0,0,0) pedals=(0,0) device=unnamed addr=unsaved
+W (7143) rpc_rsp: Hosted RPC_Resp [0x226], uid [16], resp code [12303]
+
+>>> lora.open
+[serial] cmd=lora.open
+[lora] opening app on screen
+I (7552) LoRaMesh: App run requested
+I (7570) LoRaMesh: Startup task requested
+I (7571) LoRaMesh: LoRa UART pin map TX=30 RX=31 AUX=33 M0=51 M1=29 NRST=52 module=Ebyte E22-400T22S
+[app] start name="lora mesh" id=12 queued
+[lora] open queued
+> W (7700) rpc_rsp: Hosted RPC_Resp [0x226], uid [17], resp code [12303]
+E (8137) LoRaMesh: sync_e22_400t22s_config_locked(1762): e22 config response timeout
+W (8137) LoRaMesh: E22 config sync failed on configured UART pair TX=30 RX=31 err=ESP_ERR_TIMEOUT; retrying swapped pair
+I (8144) LoRaMesh: LoRa UART pin map TX=31 RX=30 AUX=33 M0=51 M1=29 NRST=52 module=Ebyte E22-400T22S
+W (8723) rpc_rsp: Hosted RPC_Resp [0x226], uid [18], resp code [12303]
+E (8753) LoRaMesh: sync_e22_400t22s_config_locked(1762): e22 config response timeout
+W (8753) LoRaMesh: E22 swapped UART pair TX=31 RX=30 also failed err=ESP_ERR_TIMEOUT
+W (8757) LoRaMesh: E22 config sync unavailable on UART; continuing with existing pin map TX=30 RX=31
+I (8766) LoRaMesh: E22 config sync unavailable; using existing UART settings
+W (9165) rpc_rsp: Hosted RPC_Resp [0x226], uid [19], resp code [12303]
+W (9744) rpc_rsp: Hosted RPC_Resp [0x226], uid [20], resp code [12303]
+I (11035) LoRaMesh: Startup task completed successfully
+I (11495) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (11496) EUI_Setting: Disconnected from AP SSID:Beowolf1
+W (11529) rpc_rsp: Hosted RPC_Resp [0x226], uid [22], resp code [12303]
+I (11530) H_API: esp_wifi_remote_connect
+I (11554) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+W (11773) rpc_rsp: Hosted RPC_Resp [0x226], uid [24], resp code [12303]
+W (11970) rpc_rsp: Hosted RPC_Resp [0x226], uid [25], resp code [12303]
+W (12796) rpc_rsp: Hosted RPC_Resp [0x226], uid [26], resp code [12303]
+W (13818) rpc_rsp: Hosted RPC_Resp [0x226], uid [27], resp code [12303]
+W (13992) rpc_rsp: Hosted RPC_Resp [0x226], uid [28], resp code [12303]
+W (14840) rpc_rsp: Hosted RPC_Resp [0x226], uid [29], resp code [12303]
+W (15862) rpc_rsp: Hosted RPC_Resp [0x226], uid [30], resp code [12303]
+W (16014) rpc_rsp: Hosted RPC_Resp [0x226], uid [31], resp code [12303]
+I (16369) RPC_WRAP: ESP Event: Station mode: Disconnected
+I (16370) EUI_Setting: Disconnected from AP SSID:Beowolf1
+W (16403) rpc_rsp: Hosted RPC_Resp [0x226], uid [32], resp code [12303]
+I (16404) H_API: esp_wifi_remote_connect
+I (16431) EUI_Setting: Queued Wi-Fi connect (disconnect recovery) for SSID:Beowolf1
+W (16884) rpc_rsp: Hosted RPC_Resp [0x226], uid [34], resp code [12303]
+I (17449) ESP32_P4_EV: Setting LCD backlight: 0%
+W (17906) rpc_rsp: Hosted RPC_Resp [0x226], uid [35], resp code [12303]
+W (18036) rpc_rsp: Hosted RPC_Resp [0x226], uid [36], resp code [12303]
+W (18928) rpc_rsp: Hosted RPC_Resp [0x226], uid [37], resp code [12303]
+
+>>> lora.send.common COPILOT_COM10_TO_COM11_FINAL
+[serial] cmd=lora.send.common COPILOT_COM10_TO_COM11_FINAL
+[lora] send.common queued
+[lora] view=targets root=yes startup_started=yes startup_complete=yes startup_ok=yes radio_ready=yes rx_task=set self_test_runniW (19570) ldo: The voltage value 0 is out of the recommended range [500, 2700]
+ng=no self_test_ran=yes self_test_ok=yes peers=1 pending_pairs=0 conversation=0 selected_chat="common" selected_peer="" status="LoRa mesh ready" self_test="Mode: idle"
+> I (19601) ESP32_P4_EV: Trying SD mount profile '4bit-20mhz-ldo' (width=4 freq=20000kHz ldo=on)
+I (19816) LoRaMesh: Serial debug sending common message: COPILOT_COM10_TO_COM11_FINAL
+W (19968) rpc_rsp: Hosted RPC_Resp [0x226], uid [38], resp code [12303]
+W (20058) rpc_rsp: Hosted RPC_Resp [0x226], uid [39], resp code [12303]
+W (20992) rpc_rsp: Hosted RPC_Resp [0x226], uid [40], resp code [12303]
+I (21075) bsp_extra_board: Skipping play codec reconfigure for unchanged format rate=44100 bits=16 ch=2
+I (21462) RPC_WRAP: ESP Event: Station mode: Connected
+I (21463) esp_wifi_remote: esp_wifi_internal_reg_rxcb: sta: 0x482a6aae
+I (21464) EUI_Setting: Connected to AP SSID:Beowolf1
+I (24736) esp_netif_handlers: sta ip: 192.168.1.168, mask: 255.255.255.0, gw: 192.168.1.1
+I (24762) sntp: The current local date/time is: Thu May 14 04:06:40 2026
+E (24965) gdma: sleep_gdma_channel_retention_init(28): Failed to create sleep retention linked list for GDMA pair (1, 0) retention
+W (24966) gdma: Failed to allocate sleep retention linked list for GDMA retention
+I (25674) esp-x509-crt-bundle: Certificate validated
+
+>>> lora.log 120
+[serial] cmd=lora.log 120
+[lora] log_count=14
+[lora]   LoRa mesh app prepared for node 99BCB746
+[lora]   Identity COM10 (3CE08F75)
+[lora]   App run requested
+[lora]   Startup task requested
+[lora]   E22 config sync unavailable; using existing UART settings
+[lora]   TX frame bytes=165 header=4D 48 01 04 00 00 99 BC B7 46 99 BC B7 46 00 00 00 93
+[lora]   TX packet kind=presence msg=3CE08F75-1 target=broadcast
+[lora]   Radio ready; listening for mesh traffic
+[lora]   TX frame bytes=162 header=4D 48 01 04 00 00 99 BC B7 46 99 BC B7 46 00 00 00 90
+[lora]   TX packet kind=hello msg=3CE08F75-2 target=broadcast
+[lora]   Startup task completed successfully
+[lora]   Serial debug sending common message: COPILOT_COM10_TO_COM11_FINAL
+[lora]   TX frame bytes=164 header=4D 48 01 04 00 00 99 BC B7 46 99 BC B7 46 00 00 00 92
+[lora]   TX packet kind=public_chat msg=3CE08F75-3 target=broadcast
+> 

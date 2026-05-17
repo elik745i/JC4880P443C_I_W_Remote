@@ -1,0 +1,3 @@
+lora.open
+lora.send.common COPILOT_COM10_TO_COM11_FILE
+lora.log 120

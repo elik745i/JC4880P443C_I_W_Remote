@@ -1,0 +1,3 @@
+lora.open
+lora.selftest.start
+lora.log 160

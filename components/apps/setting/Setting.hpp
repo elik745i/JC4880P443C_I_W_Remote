@@ -201,12 +201,12 @@ private:
 #define APP_SETTINGS_FIRMWARE_METHOD_DECLS
 #include "firmware/SettingFirmwarePrivate.hpp"
 #undef APP_SETTINGS_FIRMWARE_METHOD_DECLS
-    void refreshHardwareMonitorUi(void);
+#define APP_SETTINGS_HARDWARE_METHOD_DECLS
+#include "hardware/SettingHardwarePrivate.hpp"
+#undef APP_SETTINGS_HARDWARE_METHOD_DECLS
 #define APP_SETTINGS_GPIO_METHOD_DECLS
 #include "gpio/SettingGpioControlPrivate.hpp"
 #undef APP_SETTINGS_GPIO_METHOD_DECLS
-    void setBatteryHistoryExpanded(bool expanded, bool animate);
-    void setHardwareTrendExpanded(HardwareTrendCardIndex index, bool expanded, bool animate);
     void initializeDefaultNvsParams(void);
     bool factoryResetPreferences(void);
     void setWifiKeyboardVisible(bool visible);
@@ -216,7 +216,6 @@ private:
 #define APP_SETTINGS_AUDIO_METHOD_DECLS
 #include "audio/SettingAudioPrivate.hpp"
 #undef APP_SETTINGS_AUDIO_METHOD_DECLS
-    void ensureHardwareScreen(void);
     void ensureZigbeeScreen(void);
     void ensureSecurityScreen(void);
     bool isUiActive(void) const;
@@ -301,8 +300,9 @@ private:
 #include "security/SettingSecurityPrivate.hpp"
 #undef APP_SETTINGS_SECURITY_CALLBACK_DECLS
     static void onMainMenuItemClickedEventCallback(lv_event_t *e);
-    static void onHardwareBatteryCardClickedEventCallback(lv_event_t *e);
-    static void onHardwareTrendCardClickedEventCallback(lv_event_t *e);
+#define APP_SETTINGS_HARDWARE_CALLBACK_DECLS
+#include "hardware/SettingHardwarePrivate.hpp"
+#undef APP_SETTINGS_HARDWARE_CALLBACK_DECLS
 #define APP_SETTINGS_GPIO_CALLBACK_DECLS
 #include "gpio/SettingGpioControlPrivate.hpp"
 #undef APP_SETTINGS_GPIO_CALLBACK_DECLS
@@ -386,7 +386,9 @@ private:
 #define APP_SETTINGS_GPIO_MENU_STATE
 #include "gpio/SettingGpioControlPrivate.hpp"
 #undef APP_SETTINGS_GPIO_MENU_STATE
-    lv_obj_t *_hardwareMenuItem;
+#define APP_SETTINGS_HARDWARE_MENU_STATE
+#include "hardware/SettingHardwarePrivate.hpp"
+#undef APP_SETTINGS_HARDWARE_MENU_STATE
 #define APP_SETTINGS_SECURITY_MENU_STATE
 #include "security/SettingSecurityPrivate.hpp"
 #undef APP_SETTINGS_SECURITY_MENU_STATE
@@ -430,44 +432,14 @@ private:
 #define APP_SETTINGS_FIRMWARE_SCREEN_STATE
 #include "firmware/SettingFirmwarePrivate.hpp"
 #undef APP_SETTINGS_FIRMWARE_SCREEN_STATE
-    lv_obj_t *_hardwareScreen;
+#define APP_SETTINGS_HARDWARE_SCREEN_STATE
+#include "hardware/SettingHardwarePrivate.hpp"
+#undef APP_SETTINGS_HARDWARE_SCREEN_STATE
     lv_obj_t *_securityScreen;
     lv_obj_t *_zigbeeScreen;
-    lv_obj_t *_hardwareCpuSpeedValueLabel;
-    lv_obj_t *_hardwareCpuSpeedDetailLabel;
-    lv_obj_t *_hardwareCpuSpeedBar;
-    lv_obj_t *_hardwareBatteryCard;
-    lv_obj_t *_hardwareBatteryValueLabel;
-    lv_obj_t *_hardwareBatteryDetailLabel;
-    lv_obj_t *_hardwareBatteryBar;
-    lv_obj_t *_hardwareBatteryExpandedArea;
-    lv_obj_t *_hardwareBatteryExpandLabel;
-    lv_obj_t *_hardwareBatteryHistoryTitleLabel;
-    lv_obj_t *_hardwareBatteryHistorySummaryLabel;
-    lv_obj_t *_hardwareBatteryHistoryChart;
-    lv_chart_series_t *_hardwareBatteryHistorySeries;
-    lv_obj_t *_hardwareBatteryHistoryLeftLabel;
-    lv_obj_t *_hardwareBatteryHistoryRightLabel;
-    lv_obj_t *_hardwareBatteryHistoryFooterLabel;
-    bool _hardwareBatteryExpanded;
-    std::array<HardwareTrendUi, HARDWARE_TREND_CARD_COUNT> _hardwareTrendUi;
-    uint8_t *_hardwareFastHistoryScratch;
-    uint8_t *_hardwareSlowHistoryScratch;
-    lv_obj_t *_hardwareCpuTempValueLabel;
-    lv_obj_t *_hardwareCpuTempDetailLabel;
-    lv_obj_t *_hardwareCpuTempBar;
-    lv_obj_t *_hardwareSramValueLabel;
-    lv_obj_t *_hardwareSramDetailLabel;
-    lv_obj_t *_hardwareSramBar;
-    lv_obj_t *_hardwarePsramValueLabel;
-    lv_obj_t *_hardwarePsramDetailLabel;
-    lv_obj_t *_hardwarePsramBar;
-    lv_obj_t *_hardwareSdValueLabel;
-    lv_obj_t *_hardwareSdDetailLabel;
-    lv_obj_t *_hardwareSdBar;
-    lv_obj_t *_hardwareWifiValueLabel;
-    lv_obj_t *_hardwareWifiDetailLabel;
-    lv_obj_t *_hardwareWifiBar;
+#define APP_SETTINGS_HARDWARE_UI_STATE
+#include "hardware/SettingHardwarePrivate.hpp"
+#undef APP_SETTINGS_HARDWARE_UI_STATE
 #define APP_SETTINGS_FIRMWARE_UI_STATE
 #include "firmware/SettingFirmwarePrivate.hpp"
 #undef APP_SETTINGS_FIRMWARE_UI_STATE

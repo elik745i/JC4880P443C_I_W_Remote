@@ -1,0 +1,18 @@
+usage: copilot_serial_probe.py [-h] --port PORT [--baud BAUD]
+                               [--pre-read PRE_READ] [--post-read POST_READ]
+                               [--settle SETTLE] [--command COMMAND]
+                               [--command-file COMMAND_FILE]
+                               [commands ...]
+
+positional arguments:
+  commands
+
+options:
+  -h, --help            show this help message and exit
+  --port PORT
+  --baud BAUD
+  --pre-read PRE_READ
+  --post-read POST_READ
+  --settle SETTLE
+  --command COMMAND
+  --command-file COMMAND_FILE

@@ -49,6 +49,7 @@ bool encode_mesh_packet(const MeshPacket &packet, std::string &encoded)
     add_string(root, "sid", packet.sender_id);
     add_string(root, "sn", packet.sender_name);
     add_string(root, "tid", packet.target_id);
+    add_string(root, "pid", packet.pair_id);
     add_string(root, "m", packet.msg_id);
     cJSON_AddNumberToObject(root, "ts", static_cast<double>(packet.timestamp_ms));
     cJSON_AddNumberToObject(root, "t", packet.ttl);
@@ -57,7 +58,7 @@ bool encode_mesh_packet(const MeshPacket &packet, std::string &encoded)
     add_string(root, "n", packet.nonce_hex);
     add_string(root, "a", packet.auth_hex);
     add_string(root, "pk", packet.public_key_hex);
-    add_string(root, "ps", packet.pair_secret_hex);
+    add_string(root, "tpk", packet.target_public_key_hex);
 
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
@@ -104,12 +105,13 @@ bool decode_mesh_packet(const std::string &encoded, MeshPacket &packet)
     packet.sender_id = read_string_alias(root, "sid", "sender_id");
     packet.sender_name = read_string_alias(root, "sn", "sender_name");
     packet.target_id = read_string_alias(root, "tid", "target_id");
+    packet.pair_id = read_string_alias(root, "pid", "pair_id");
     packet.msg_id = read_string_alias(root, "m", "msg_id");
     packet.payload = read_string_alias(root, "p", "payload");
     packet.nonce_hex = read_string_alias(root, "n", "nonce");
     packet.auth_hex = read_string_alias(root, "a", "auth");
     packet.public_key_hex = read_string_alias(root, "pk", "public_key");
-    packet.pair_secret_hex = read_string_alias(root, "ps", "pair_secret");
+    packet.target_public_key_hex = read_string_alias(root, "tpk", "target_public_key");
 
     const cJSON *timestamp = get_item_alias(root, "ts", "timestamp");
     if (cJSON_IsNumber(timestamp)) {

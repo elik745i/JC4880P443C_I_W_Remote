@@ -1,0 +1,4 @@
+lora.settings
+lora.open
+lora.module.command C1 00 08
+lora.log 120

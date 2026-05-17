@@ -34,6 +34,19 @@ enum class PeerPresence : uint8_t {
     Online,
 };
 
+enum class PairingState : uint8_t {
+    Idle = 0,
+    PairRequestSent,
+    WaitingForAccept,
+    PairRequestReceived,
+    WaitingUserInput,
+    AcceptSentWaitingConfirm,
+    Paired,
+    Rejected,
+    Failed,
+    Timeout,
+};
+
 enum class RadioModule : uint8_t {
     E22_400M22S = 0,
     E22_400T22S,
@@ -51,7 +64,8 @@ struct PeerInfo {
     std::string device_id;
     std::string display_name;
     std::string public_key_hex;
-    std::string pair_secret_hex;
+    bool trusted = false;
+    int64_t paired_ms = 0;
     int64_t last_seen_ms = 0;
     int last_rssi = 0;
     int last_snr = 0;
@@ -59,11 +73,16 @@ struct PeerInfo {
 };
 
 struct PendingPairRequest {
+    std::string pair_id;
     std::string device_id;
     std::string display_name;
     std::string public_key_hex;
+    std::string target_public_key_hex;
+    PairingState state = PairingState::Idle;
     std::string msg_id;
+    std::string nonce_hex;
     int64_t received_ms = 0;
+    int64_t expires_ms = 0;
     int last_rssi = 0;
     int last_snr = 0;
 };
@@ -126,6 +145,7 @@ struct MeshPacket {
     std::string sender_id;
     std::string sender_name;
     std::string target_id = kBroadcastTargetId;
+    std::string pair_id;
     std::string msg_id;
     int64_t timestamp_ms = 0;
     uint8_t ttl = 0;
@@ -134,7 +154,7 @@ struct MeshPacket {
     std::string nonce_hex;
     std::string auth_hex;
     std::string public_key_hex;
-    std::string pair_secret_hex;
+    std::string target_public_key_hex;
 };
 
 struct StoredState {
@@ -157,5 +177,6 @@ struct ChatTargetSummary {
 
 const char *packet_kind_name(PacketKind kind);
 const char *presence_name(PeerPresence presence);
+const char *pairing_state_name(PairingState state);
 
 } // namespace jc4880::lora_mesh

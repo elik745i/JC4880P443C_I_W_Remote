@@ -303,7 +303,7 @@ bool save_state_json(const std::string &json)
 bool sanitize_state(StoredState &state)
 {
     bool changed = false;
-    if (state.identity.public_key_hex.empty() || state.identity.private_key_hex.empty() || state.identity.device_id.empty()) {
+    if (!cryptoIdentityLooksValid(state.identity)) {
         state.identity = cryptoGenerateIdentity();
         changed = true;
     }
@@ -358,6 +358,12 @@ bool sanitize_state(StoredState &state)
     if (state.settings.public_group_key_hex.empty()) {
         state.settings.public_group_key_hex = cryptoGenerateSharedSecretHex();
         changed = true;
+    }
+    for (PeerInfo &peer : state.peers) {
+        if (!peer.public_key_hex.empty() && (peer.paired_ms == 0) && peer.trusted) {
+            peer.paired_ms = peer.last_seen_ms;
+            changed = true;
+        }
     }
     return changed;
 }
@@ -436,7 +442,9 @@ bool load_stored_state(StoredState &state)
             }
             entry.display_name = read_string(peer, "display_name");
             entry.public_key_hex = read_string(peer, "public_key");
-            entry.pair_secret_hex = read_string(peer, "pair_secret");
+            const std::string legacy_pair_secret = read_string(peer, "pair_secret");
+            entry.trusted = read_bool(peer, "trusted", !entry.public_key_hex.empty() && !legacy_pair_secret.empty());
+            entry.paired_ms = static_cast<int64_t>(read_int(peer, "paired_ms", 0));
             entry.last_seen_ms = static_cast<int64_t>(read_int(peer, "last_seen_ms", 0));
             entry.last_rssi = read_int(peer, "last_rssi", 0);
             entry.last_snr = read_int(peer, "last_snr", 0);
@@ -509,7 +517,8 @@ bool save_stored_state(const StoredState &state)
         add_string(entry, "device_id", peer.device_id);
         add_string(entry, "display_name", peer.display_name);
         add_string(entry, "public_key", peer.public_key_hex);
-        add_string(entry, "pair_secret", peer.pair_secret_hex);
+        cJSON_AddBoolToObject(entry, "trusted", peer.trusted);
+        cJSON_AddNumberToObject(entry, "paired_ms", static_cast<double>(peer.paired_ms));
         cJSON_AddNumberToObject(entry, "last_seen_ms", static_cast<double>(peer.last_seen_ms));
         cJSON_AddNumberToObject(entry, "last_rssi", peer.last_rssi);
         cJSON_AddNumberToObject(entry, "last_snr", peer.last_snr);

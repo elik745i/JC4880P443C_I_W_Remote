@@ -51,9 +51,12 @@ static constexpr const char *kNvsKeyDisplayAutorotateImu = "disp_auto_imu";
 #endif
 
 static ESP_Brookesia_StatusBar *s_statusBar = nullptr;
+static lv_obj_t *s_statusBarRightIndicators = nullptr;
+static lv_obj_t *s_loraUnreadLabel = nullptr;
 static std::atomic<bool> s_initialized{false};
 static std::atomic<bool> s_wifiConnected{false};
 static std::atomic<int> s_wifiSignalLevel{0};
+static std::atomic<bool> s_loraUnread{false};
 static nvs_handle_t s_settingsNvsHandle = 0;
 #if CONFIG_JC4880_FEATURE_IMU
 static int32_t s_imuAutorotateAppliedOrientation = 0;
@@ -304,6 +307,75 @@ static void update_status_bar_clock_and_wifi(void)
     bsp_display_unlock();
 }
 
+static void update_lora_unread_indicator(void)
+{
+    if (s_loraUnreadLabel == nullptr) {
+        return;
+    }
+
+    bsp_display_lock(0);
+    if (s_loraUnread.load()) {
+        lv_obj_clear_flag(s_loraUnreadLabel, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_loraUnreadLabel, LV_OBJ_FLAG_HIDDEN);
+    }
+    bsp_display_unlock();
+}
+
+static lv_obj_t *get_status_bar_right_area(lv_obj_t *status_bar_main)
+{
+    if (status_bar_main == nullptr) {
+        return nullptr;
+    }
+
+    const uint32_t child_count = lv_obj_get_child_cnt(status_bar_main);
+    if (child_count == 0U) {
+        return nullptr;
+    }
+
+    return lv_obj_get_child(status_bar_main, static_cast<int32_t>(child_count - 1U));
+}
+
+static void init_status_bar_right_indicators(lv_obj_t *status_bar_main)
+{
+    lv_obj_t *right_area = get_status_bar_right_area(status_bar_main);
+    if (right_area == nullptr) {
+        return;
+    }
+
+    const uint32_t existing_child_count = lv_obj_get_child_cnt(right_area);
+    lv_obj_t *wifi_icon = nullptr;
+    if (existing_child_count > 0U) {
+        wifi_icon = lv_obj_get_child(right_area, static_cast<int32_t>(existing_child_count - 1U));
+    }
+
+    s_statusBarRightIndicators = lv_obj_create(right_area);
+    if (s_statusBarRightIndicators == nullptr) {
+        return;
+    }
+
+    lv_obj_remove_style_all(s_statusBarRightIndicators);
+    lv_obj_set_size(s_statusBarRightIndicators, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_statusBarRightIndicators, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(s_statusBarRightIndicators, 4, 0);
+    lv_obj_set_style_pad_all(s_statusBarRightIndicators, 0, 0);
+    lv_obj_clear_flag(s_statusBarRightIndicators, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_to_index(s_statusBarRightIndicators, 0);
+    if (wifi_icon != nullptr) {
+        lv_obj_move_to_index(wifi_icon, 1);
+    }
+
+    s_loraUnreadLabel = lv_label_create(s_statusBarRightIndicators);
+    if (s_loraUnreadLabel == nullptr) {
+        return;
+    }
+
+    lv_label_set_text(s_loraUnreadLabel, LV_SYMBOL_ENVELOPE);
+    lv_obj_set_style_text_color(s_loraUnreadLabel, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_text_font(s_loraUnreadLabel, &lv_font_montserrat_16, 0);
+    lv_obj_add_flag(s_loraUnreadLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void status_refresh_task(void *arg)
 {
     (void)arg;
@@ -398,6 +470,11 @@ bool initialize(ESP_Brookesia_Phone &phone)
         return false;
     }
     s_statusBar->setClockFormat(ESP_Brookesia_StatusBar::ClockFormat::FORMAT_24H);
+    s_statusBar->hideBatteryPercent();
+
+    if (lv_obj_t *status_bar_main = s_statusBar->getMainObject(); status_bar_main != nullptr) {
+        init_status_bar_right_indicators(status_bar_main);
+    }
 
 #if CONFIG_JC4880_FEATURE_BATTERY
     jc4880_joypad_config_t joypadConfig = {};
@@ -450,6 +527,7 @@ bool initialize(ESP_Brookesia_Phone &phone)
 
     s_initialized.store(true);
     update_status_bar_clock_and_wifi();
+    update_lora_unread_indicator();
 
     return true;
 }
@@ -467,6 +545,12 @@ void refresh_wifi_from_driver(void)
 {
     get_wifi_level_from_driver(nullptr);
     update_status_bar_clock_and_wifi();
+}
+
+void set_lora_unread(bool unread)
+{
+    s_loraUnread.store(unread);
+    update_lora_unread_indicator();
 }
 
 } // namespace system_ui_service

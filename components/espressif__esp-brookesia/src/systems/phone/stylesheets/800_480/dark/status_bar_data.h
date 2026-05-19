@@ -74,7 +74,7 @@ extern "C" {
         .flags = {                                                                                        \
             .enable_battery_icon = 1,                                                                     \
             .enable_battery_icon_common_size = 1,                                                         \
-            .enable_battery_label = 1,                                                                    \
+            .enable_battery_label = 0,                                                                    \
             .enable_wifi_icon = 1,                                                                        \
             .enable_wifi_icon_common_size = 1,                                                            \
             .enable_clock = 1,                                                                            \

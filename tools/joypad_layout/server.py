@@ -27,11 +27,11 @@ TOOL_DIR = ROOT / "tools" / "joypad_layout"
 BLE_LAYOUT_PATH = TOOL_DIR / "joypad_layout.json"
 LOCAL_LAYOUT_PATH = TOOL_DIR / "joypad_layout.local.json"
 HEADER_PATH = ROOT / "components" / "apps" / "setting" / "joypad" / "SettingJoypadLayout.hpp"
-BLE_DEFAULT_CONTROLLER_IMAGE = ROOT / "3D" / "map" / "controller.png"
-BLE_CONTROLLER_OVERRIDE_IMAGE = ROOT / "3D" / "BleController.png"
-LOCAL_DEFAULT_CONTROLLER_IMAGE = ROOT / "3D" / "LocalController.png"
-LOCAL_CONTROLLER_OVERRIDE_IMAGE = ROOT / "3D" / "LocalController.override.png"
-LOCAL_CONTROLLER_PREVIEW_IMAGE = ROOT / "3D" / "LocalController.preview.png"
+BLE_DEFAULT_CONTROLLER_IMAGE = ROOT / "icons" / "joypad" / "controller.png"
+BLE_CONTROLLER_OVERRIDE_IMAGE = ROOT / "icons" / "joypad" / "BleController.png"
+LOCAL_DEFAULT_CONTROLLER_IMAGE = ROOT / "icons" / "joypad" / "LocalController.png"
+LOCAL_CONTROLLER_OVERRIDE_IMAGE = ROOT / "icons" / "joypad" / "LocalController.override.png"
+LOCAL_CONTROLLER_PREVIEW_IMAGE = ROOT / "icons" / "joypad" / "LocalController.preview.png"
 BLE_CONTROLLER_IMAGE_ASSET = ROOT / "components" / "apps" / "setting" / "ui" / "images" / "ui_img_controller_png.c"
 LOCAL_CONTROLLER_IMAGE_ASSET = ROOT / "components" / "apps" / "setting" / "ui" / "images" / "ui_img_local_controller_png.c"
 IDF_EXPORT_BAT = Path(r"C:\Espressif\frameworks\esp-idf-v5.5.4\export.bat")
@@ -104,17 +104,7 @@ def _ensure_local_preview_image() -> Path:
     source_path = _local_source_image()
     with Image.open(source_path) as source_image:
         source_image.load()
-        original_width, original_height = source_image.size
-        if (original_width, original_height) != (800, 600):
-            resized_image = source_image.convert("RGBA")
-            resized_image.thumbnail((800, 600), Image.Resampling.LANCZOS)
-            canvas = Image.new("RGBA", (800, 600), (0, 0, 0, 0))
-            offset_x = (800 - resized_image.width) // 2
-            offset_y = (600 - resized_image.height) // 2
-            canvas.paste(resized_image, (offset_x, offset_y))
-            canvas.save(LOCAL_CONTROLLER_PREVIEW_IMAGE, format="PNG", optimize=True)
-        elif source_path != LOCAL_CONTROLLER_PREVIEW_IMAGE or not LOCAL_CONTROLLER_PREVIEW_IMAGE.is_file():
-            source_image.save(LOCAL_CONTROLLER_PREVIEW_IMAGE, format="PNG", optimize=True)
+        source_image.convert("RGBA").save(LOCAL_CONTROLLER_PREVIEW_IMAGE, format="PNG", optimize=True)
     return LOCAL_CONTROLLER_PREVIEW_IMAGE
 
 

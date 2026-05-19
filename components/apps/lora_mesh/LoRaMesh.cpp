@@ -26,11 +26,13 @@
 #include "LoRaPinProfile.hpp"
 #include "LoRaMeshStorage.hpp"
 #include "LoRaMeshTypes.hpp"
+#include "LoRaMeshUiHelpers.hpp"
 #include "assets/esp_brookesia_assets.h"
 #include "bsp/esp-bsp.h"
 #include "bsp_board_extra.h"
 #include "neopixel_runtime.h"
 #include "storage_access.h"
+#include "system_ui_service.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "driver/uart.h"
@@ -657,6 +659,7 @@ struct LoRaMeshApp::Impl {
     uint64_t next_pending_message_token = 1;
     int suspended_neopixel_gpio = -1;
     std::vector<uint8_t> uart_rx_bytes;
+    std::unordered_map<std::string, bool> unread_conversations;
     ViewMode view_mode = ViewMode::Targets;
     std::string selected_conversation_id = jc4880::lora_mesh::kCommonConversationId;
     std::string selected_peer_id;
@@ -1094,7 +1097,6 @@ struct LoRaMeshApp::Impl {
         }
         if (jc4880::lora_mesh::save_stored_state(stored_state)) {
             state_dirty = false;
-            target_list_dirty = true;
         } else {
             append_line_capped(log_text, "Failed to persist LoRa mesh settings");
         }
@@ -1123,8 +1125,10 @@ struct LoRaMeshApp::Impl {
         view_mode = ViewMode::Chat;
         selected_conversation_id = jc4880::lora_mesh::kCommonConversationId;
         selected_peer_id.clear();
+        unread_conversations.erase(selected_conversation_id);
         load_conversation_history_locked(selected_conversation_id);
         conversation_dirty = true;
+        system_ui_service::set_lora_unread(!unread_conversations.empty());
     }
 
     void show_peer_chat_locked(const std::string &peer_id)
@@ -1132,8 +1136,29 @@ struct LoRaMeshApp::Impl {
         view_mode = ViewMode::Chat;
         selected_conversation_id = peer_id;
         selected_peer_id = peer_id;
+        unread_conversations.erase(selected_conversation_id);
         load_conversation_history_locked(selected_conversation_id);
         conversation_dirty = true;
+        system_ui_service::set_lora_unread(!unread_conversations.empty());
+    }
+
+    bool is_conversation_visible_locked(const std::string &conversation_id) const
+    {
+        return (root != nullptr) &&
+               (ui_timer != nullptr) &&
+               !ui_paused &&
+               (view_mode == ViewMode::Chat) &&
+               (selected_conversation_id == conversation_id);
+    }
+
+    void mark_conversation_unread_locked(const std::string &conversation_id)
+    {
+        if (conversation_id.empty()) {
+            return;
+        }
+        unread_conversations[conversation_id] = true;
+        target_list_dirty = true;
+        system_ui_service::set_lora_unread(true);
     }
 
     void ensure_saved_mapping_self_test_for_chat_locked()
@@ -1870,27 +1895,24 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_flex_align(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
         lv_obj_t *title = lv_label_create(title_row);
-        lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
         lv_obj_set_style_text_color(title, lv_color_hex(0x111B21), 0);
         lv_label_set_text(title, "Pair device");
         create_modal_close_button(title_row, this);
-
         lv_obj_t *body = lv_label_create(card);
         lv_obj_set_width(body, LV_PCT(100));
         lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(body, lv_color_hex(0x475467), 0);
-        lv_label_set_text(body, "Enter the target device and the shared 8-character pair key. The key is only used to verify pairing.");
 
         create_setting_field(card, "Target device name or ID", &pair_request_target_input, "COM11 or P4-ABCD", this);
         create_setting_field(card, "Shared pair key", &pair_request_code_input, "XXXX-XXXX", this);
         if (pair_request_code_input != nullptr) {
-            lv_textarea_set_text(pair_request_code_input, generated_pair_code.c_str());
+        lv_obj_add_flag(chat_panel, LV_OBJ_FLAG_SCROLLABLE);
         }
 
         lv_obj_t *code_wrap = lv_obj_create(card);
         lv_obj_set_width(code_wrap, LV_PCT(100));
         lv_obj_set_height(code_wrap, LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(code_wrap, lv_color_hex(0xF8FAFC), 0);
+        lv_obj_add_flag(composer, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_style_border_width(code_wrap, 0, 0);
         lv_obj_set_style_radius(code_wrap, 16, 0);
         lv_obj_set_style_pad_all(code_wrap, 12, 0);
@@ -1898,7 +1920,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_style_pad_row(code_wrap, 4, 0);
 
         lv_obj_t *code_label = lv_label_create(code_wrap);
-        lv_obj_set_style_text_font(code_label, &lv_font_montserrat_12, 0);
+            jc4880::lora_mesh::scroll_chat_to_latest(message_list, composer, false);
         lv_obj_set_style_text_color(code_label, lv_color_hex(0x667085), 0);
         lv_label_set_text(code_label, "Suggested format");
 
@@ -2925,20 +2947,30 @@ struct LoRaMeshApp::Impl {
             return;
         }
 
-        if (!display_name.empty()) {
+        bool peer_changed = false;
+        if (!display_name.empty() && (peer->display_name != display_name)) {
             peer->display_name = display_name;
+            peer_changed = true;
         }
         if (!public_key_hex.empty() && (!peer->trusted || peer->public_key_hex.empty())) {
-            peer->public_key_hex = public_key_hex;
+            if (peer->public_key_hex != public_key_hex) {
+                peer->public_key_hex = public_key_hex;
+                peer_changed = true;
+            }
         } else if (!public_key_hex.empty() && peer->trusted && !peer->public_key_hex.empty() && (peer->public_key_hex != public_key_hex)) {
             append_line_capped(log_text, std::string("Ignored public key drift for trusted peer ") + device_id);
         }
         peer->last_seen_ms = esp_timer_get_time() / 1000;
         peer->last_rssi = last_rssi;
         peer->last_snr = last_snr;
+        if (peer->presence != jc4880::lora_mesh::PeerPresence::Online) {
+            peer_changed = true;
+        }
         peer->presence = jc4880::lora_mesh::PeerPresence::Online;
-        state_dirty = true;
-        target_list_dirty = true;
+        if (peer_changed) {
+            state_dirty = true;
+            target_list_dirty = true;
+        }
     }
 
     bool send_packet_locked(MeshPacket &packet, const std::string *bubble_text, const std::string &bubble_meta)
@@ -4217,6 +4249,9 @@ struct LoRaMeshApp::Impl {
         trim_conversation_locked();
         conversation_dirty = true;
         target_list_dirty = true;
+        if (!outgoing && !is_conversation_visible_locked(conversation_id)) {
+            mark_conversation_unread_locked(conversation_id);
+        }
         if (persist_history) {
             append_conversation_history_locked(conversation_id, text, meta, outgoing);
         }
@@ -5932,6 +5967,7 @@ struct LoRaMeshApp::Impl {
         std::vector<ConversationEntry> conversation_copy;
         std::vector<PeerInfo> peers_copy;
         std::vector<PendingPairRequest> pending_requests_copy;
+        std::unordered_map<std::string, bool> unread_conversations_copy;
         bool conversation_dirty_copy = false;
         bool target_list_dirty_copy = false;
         bool pending_pair_modal_open_copy = false;
@@ -5955,6 +5991,7 @@ struct LoRaMeshApp::Impl {
         target_list_dirty_copy = target_list_dirty;
         if (target_list_dirty_copy) {
             peers_copy = stored_state.peers;
+            unread_conversations_copy = unread_conversations;
             target_list_dirty = false;
         }
         if (target_list_dirty_copy) {
@@ -6039,16 +6076,34 @@ struct LoRaMeshApp::Impl {
             lv_obj_set_flex_align(common_button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_add_event_cb(common_button, on_open_common_chat, LV_EVENT_CLICKED, this);
 
-            lv_obj_t *common_title = lv_label_create(common_button);
-            lv_obj_set_width(common_title, LV_PCT(100));
+            lv_obj_t *common_row = lv_obj_create(common_button);
+            lv_obj_set_width(common_row, LV_PCT(100));
+            lv_obj_set_height(common_row, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(common_row, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(common_row, 0, 0);
+            lv_obj_set_style_pad_all(common_row, 0, 0);
+            lv_obj_set_style_pad_column(common_row, 8, 0);
+            lv_obj_set_flex_flow(common_row, LV_FLEX_FLOW_ROW);
+            lv_obj_set_flex_align(common_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+            lv_obj_t *common_title = lv_label_create(common_row);
+            lv_obj_set_flex_grow(common_title, 1);
             lv_obj_set_style_text_color(common_title, lv_color_hex(0x111B21), 0);
             lv_obj_set_style_text_font(common_title, &lv_font_montserrat_18, 0);
             lv_label_set_long_mode(common_title, LV_LABEL_LONG_DOT);
-            lv_label_set_text(common_title, (stored_state.settings.common_chat_name.empty() ? "Common Mesh Chat" : stored_state.settings.common_chat_name).c_str());
+            lv_label_set_text(common_title,
+                              stored_state.settings.common_chat_name.empty()
+                                      ? "Common Mesh Chat"
+                                      : stored_state.settings.common_chat_name.c_str());
+            if (unread_conversations_copy.count(jc4880::lora_mesh::kCommonConversationId) > 0U) {
+                lv_obj_t *common_unread = lv_label_create(common_row);
+                lv_obj_set_style_text_font(common_unread, &lv_font_montserrat_16, 0);
+                lv_obj_set_style_text_color(common_unread, lv_color_hex(0x0C8A6A), 0);
+                lv_label_set_text(common_unread, LV_SYMBOL_ENVELOPE);
+            }
 
             if (!pending_requests_copy.empty()) {
                 lv_obj_t *section_label = lv_label_create(target_list);
-                lv_obj_set_style_text_font(section_label, &lv_font_montserrat_14, 0);
                 lv_obj_set_style_text_color(section_label, lv_color_hex(0x475467), 0);
                 lv_label_set_text(section_label, "Pending pair requests");
 
@@ -6103,7 +6158,7 @@ struct LoRaMeshApp::Impl {
                 lv_obj_set_style_radius(button, 18, 0);
                 lv_obj_set_style_pad_all(button, 14, 0);
                 lv_obj_set_style_border_width(button, 0, 0);
-                lv_obj_add_event_cb(button, on_open_peer_chat, LV_EVENT_CLICKED, this);
+                lv_obj_set_style_bg_color(button, lv_color_hex(0xFFFFFF), 0);
 
                 lv_obj_t *col = lv_obj_create(button);
                 lv_obj_set_width(col, LV_PCT(100));
@@ -6112,10 +6167,27 @@ struct LoRaMeshApp::Impl {
                 lv_obj_set_style_pad_all(col, 0, 0);
                 lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
                 lv_obj_set_style_pad_row(col, 4, 0);
-                lv_obj_t *title = lv_label_create(col);
+                lv_obj_t *title_row = lv_obj_create(col);
+                lv_obj_set_width(title_row, LV_PCT(100));
+                lv_obj_set_height(title_row, LV_SIZE_CONTENT);
+                lv_obj_set_style_bg_opa(title_row, LV_OPA_TRANSP, 0);
+                lv_obj_set_style_border_width(title_row, 0, 0);
+                lv_obj_set_style_pad_all(title_row, 0, 0);
+                lv_obj_set_style_pad_column(title_row, 8, 0);
+                lv_obj_set_flex_flow(title_row, LV_FLEX_FLOW_ROW);
+                lv_obj_set_flex_align(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+                lv_obj_t *title = lv_label_create(title_row);
+                lv_obj_set_flex_grow(title, 1);
                 lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
                 lv_obj_set_style_text_color(title, lv_color_hex(0x111B21), 0);
                 lv_label_set_text(title, peer_label(peer).c_str());
+                if (unread_conversations_copy.count(peer.device_id) > 0U) {
+                    lv_obj_t *unread_label = lv_label_create(title_row);
+                    lv_obj_set_style_text_font(unread_label, &lv_font_montserrat_16, 0);
+                    lv_obj_set_style_text_color(unread_label, lv_color_hex(0x0C8A6A), 0);
+                    lv_label_set_text(unread_label, LV_SYMBOL_ENVELOPE);
+                }
                 lv_obj_t *subtitle = lv_label_create(col);
                 lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_12, 0);
                 lv_obj_set_style_text_color(subtitle, lv_color_hex(0x667085), 0);
@@ -6189,13 +6261,6 @@ struct LoRaMeshApp::Impl {
                 }
             }
 
-            if (lv_obj_get_child_cnt(message_list) > 0) {
-                lv_obj_t *last_row = lv_obj_get_child(message_list, lv_obj_get_child_cnt(message_list) - 1);
-                if (last_row != nullptr) {
-                    lv_obj_scroll_to_view(last_row, LV_ANIM_OFF);
-                }
-            }
-
             if (!has_visible_messages) {
                 lv_obj_t *empty_row = lv_obj_create(message_list);
                 lv_obj_set_width(empty_row, LV_PCT(100));
@@ -6214,6 +6279,10 @@ struct LoRaMeshApp::Impl {
                 lv_obj_set_style_text_color(empty_label, lv_color_hex(0x667781), 0);
                 lv_label_set_text(empty_label, "No messages yet. Incoming mesh messages will appear here.");
             }
+
+            jc4880::lora_mesh::scroll_chat_to_latest(message_list,
+                                                     composer,
+                                                     (keyboard != nullptr) && !lv_obj_has_flag(keyboard, LV_OBJ_FLAG_HIDDEN));
         }
     }
 
@@ -6237,18 +6306,21 @@ struct LoRaMeshApp::Impl {
                     lv_obj_scroll_to_view(active_text_input, LV_ANIM_OFF);
                 }
             }
-            if (composer != nullptr) {
-                lv_obj_scroll_to_view(composer, LV_ANIM_OFF);
-            }
+            jc4880::lora_mesh::scroll_chat_to_latest(message_list, composer, true);
         } else {
             lv_keyboard_set_textarea(keyboard, nullptr);
             lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
             if (chat_panel != nullptr) {
                 lv_obj_set_style_pad_bottom(chat_panel, 0, 0);
+                lv_obj_update_layout(chat_panel);
+            }
+            if (root != nullptr) {
+                lv_obj_update_layout(root);
             }
             if (chat_action_card != nullptr) {
                 lv_obj_align(chat_action_card, LV_ALIGN_CENTER, 0, 0);
             }
+            jc4880::lora_mesh::scroll_chat_to_latest(message_list, composer, false);
             active_text_input = nullptr;
         }
     }
@@ -6263,9 +6335,7 @@ struct LoRaMeshApp::Impl {
         set_keyboard_visible(true, input);
         lv_obj_add_state(input, LV_STATE_FOCUSED);
         lv_event_send(input, LV_EVENT_FOCUSED, nullptr);
-        if (composer != nullptr) {
-            lv_obj_scroll_to_view(composer, LV_ANIM_OFF);
-        }
+        jc4880::lora_mesh::scroll_chat_to_latest(message_list, composer, true);
     }
 
     static void on_ui_timer(lv_timer_t *timer)
@@ -6317,23 +6387,10 @@ struct LoRaMeshApp::Impl {
         if (button == nullptr) {
             return;
         }
-        lv_obj_t *col = lv_obj_get_child(button, 0);
-        lv_obj_t *meta_label = nullptr;
-        if (col != nullptr) {
-            const uint32_t child_count = lv_obj_get_child_cnt(col);
-            meta_label = (child_count >= 3U) ? lv_obj_get_child(col, 2) : lv_obj_get_child(col, child_count > 1U ? 1U : 0U);
-        }
-        const char *meta_text = (meta_label == nullptr) ? nullptr : lv_label_get_text(meta_label);
-        if (meta_text == nullptr) {
+        std::string peer_id;
+        if (!jc4880::lora_mesh::extract_peer_id_from_target_button(button, peer_id)) {
             return;
         }
-        const char *id_marker = std::strstr(meta_text, "ID ");
-        if (id_marker == nullptr) {
-            return;
-        }
-        id_marker += 3;
-        const char *id_end = std::strchr(id_marker, ' ');
-        const std::string peer_id = id_end == nullptr ? std::string(id_marker) : std::string(id_marker, id_end - id_marker);
         impl->lock();
         impl->trace_event_locked(std::string("UI opened peer chat ") + peer_id);
         impl->show_peer_chat_locked(peer_id);
@@ -6669,6 +6726,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_style_radius(root, 0, 0);
         lv_obj_set_style_bg_color(root, lv_color_hex(0xEFEAE2), 0);
         lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *header = lv_obj_create(root);
         lv_obj_set_width(header, LV_PCT(100));
@@ -6681,6 +6739,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_style_pad_bottom(header, 10, 0);
         lv_obj_set_style_bg_opa(header, LV_OPA_TRANSP, 0);
         lv_obj_set_flex_flow(header, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(header, LV_OBJ_FLAG_SCROLLABLE);
 
         lv_obj_t *header_row = lv_obj_create(header);
         lv_obj_set_width(header_row, LV_PCT(100));
@@ -6690,6 +6749,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_style_pad_all(header_row, 0, 0);
         lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
         lv_obj_set_style_pad_column(header_row, 8, 0);
+        lv_obj_clear_flag(header_row, LV_OBJ_FLAG_SCROLLABLE);
 
         header_title = lv_label_create(header_row);
         lv_obj_set_style_text_font(header_title, &lv_font_montserrat_28, 0);
@@ -6724,6 +6784,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_style_pad_all(chat_panel, 0, 0);
         lv_obj_set_style_pad_row(chat_panel, 8, 0);
         lv_obj_set_flex_flow(chat_panel, LV_FLEX_FLOW_COLUMN);
+        lv_obj_clear_flag(chat_panel, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(chat_panel, LV_OBJ_FLAG_HIDDEN);
 
         chat_title_label = lv_label_create(chat_panel);
@@ -6757,6 +6818,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_style_pad_all(composer, 8, 0);
         lv_obj_set_style_pad_column(composer, 8, 0);
         lv_obj_set_flex_flow(composer, LV_FLEX_FLOW_ROW);
+        lv_obj_clear_flag(composer, LV_OBJ_FLAG_SCROLLABLE);
 
         input = lv_textarea_create(composer);
         lv_obj_set_flex_grow(input, 1);
@@ -6906,12 +6968,27 @@ bool LoRaMeshApp::run()
     _impl->trace_event_locked("App run requested");
     _impl->show_targets_locked();
     const bool radio_enabled = _impl->stored_state.settings.radio_enabled;
-    _impl->startup_started = !radio_enabled;
-    _impl->startup_complete = !radio_enabled;
-    _impl->startup_ok = false;
-    _impl->status_text = radio_enabled
-                             ? "Opening LoRa mesh..."
-                             : "Device disabled. Please enable radio in Device Settings.";
+    if (!radio_enabled) {
+        _impl->startup_started = false;
+        _impl->startup_complete = true;
+        _impl->startup_ok = false;
+        _impl->status_text = "Device disabled. Please enable radio in Device Settings.";
+    } else if (_impl->radio_ready) {
+        _impl->startup_started = true;
+        _impl->startup_complete = true;
+        _impl->startup_ok = true;
+        _impl->status_text = "LoRa mesh ready";
+    } else if (_impl->startup_task != nullptr) {
+        _impl->startup_started = true;
+        _impl->startup_complete = false;
+        _impl->startup_ok = false;
+        _impl->status_text = "Opening LoRa mesh...";
+    } else {
+        _impl->startup_started = false;
+        _impl->startup_complete = false;
+        _impl->startup_ok = false;
+        _impl->status_text = "Opening LoRa mesh...";
+    }
     _impl->unlock();
 
     const bool ui_ok = _impl->build_ui();
@@ -6921,10 +6998,32 @@ bool LoRaMeshApp::run()
         lv_timer_del(_impl->ui_timer);
     }
     _impl->ui_timer = lv_timer_create(Impl::on_ui_timer, kUiTickMs, _impl);
-    if (radio_enabled) {
+    if (radio_enabled && !_impl->radio_ready && (_impl->startup_task == nullptr)) {
         _impl->start_startup_task();
     }
     return ui_ok && (_impl->ui_timer != nullptr);
+}
+
+bool LoRaMeshApp::startBackgroundIfEnabled()
+{
+    if (_impl == nullptr) {
+        return false;
+    }
+
+    StoredState loaded_state = {};
+    if (!jc4880::lora_mesh::load_stored_state(loaded_state)) {
+        return false;
+    }
+
+    _impl->lock();
+    _impl->stored_state = loaded_state;
+    const bool should_start = _impl->stored_state.settings.radio_enabled && !_impl->radio_ready && (_impl->startup_task == nullptr);
+    if (should_start) {
+        _impl->trace_event_locked("Boot requested background LoRa startup");
+        _impl->start_startup_task();
+    }
+    _impl->unlock();
+    return should_start;
 }
 
 void LoRaMeshApp::requestSelfTestOnNextOpen()
@@ -7118,21 +7217,27 @@ bool LoRaMeshApp::close()
         return true;
     }
 
+    bool keep_background_running = false;
     _impl->lock();
     _impl->trace_event_locked("App close requested");
+    keep_background_running = _impl->stored_state.settings.radio_enabled;
     _impl->request_self_test_stop_locked("app closing");
-    _impl->history_write_stop = true;
+    if (!keep_background_running) {
+        _impl->history_write_stop = true;
+    }
     TaskHandle_t history_write_task = _impl->history_write_task;
     _impl->unlock();
-    if (history_write_task != nullptr) {
+    if (!keep_background_running && (history_write_task != nullptr)) {
         xTaskNotifyGive(history_write_task);
     }
-    _impl->rx_task_stop = true;
-    while (_impl->rx_task != nullptr) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    while (_impl->startup_task != nullptr) {
-        vTaskDelay(pdMS_TO_TICKS(20));
+    if (!keep_background_running) {
+        _impl->rx_task_stop = true;
+        while (_impl->rx_task != nullptr) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        while (_impl->startup_task != nullptr) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
     }
     while (_impl->self_test_task != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -7140,7 +7245,7 @@ bool LoRaMeshApp::close()
     while (_impl->settings_apply_task != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    while (_impl->history_write_task != nullptr) {
+    while (!keep_background_running && (_impl->history_write_task != nullptr)) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
@@ -7150,19 +7255,23 @@ bool LoRaMeshApp::close()
     }
 
     _impl->lock();
-    _impl->deinit_radio_locked();
-    _impl->conversation.clear();
-    _impl->log_text.clear();
-    _impl->conversation_dirty = true;
+    if (!keep_background_running) {
+        _impl->deinit_radio_locked();
+        _impl->conversation.clear();
+        _impl->log_text.clear();
+        _impl->conversation_dirty = true;
+    }
     _impl->target_list_dirty = true;
     _impl->self_test_ran = false;
     _impl->self_test_ok = false;
     _impl->self_test_running = false;
     _impl->self_test_stop_requested = false;
     _impl->self_test_summary = "Mode: idle";
-    _impl->startup_started = false;
-    _impl->startup_complete = false;
-    _impl->startup_ok = false;
+    if (!keep_background_running) {
+        _impl->startup_started = false;
+        _impl->startup_complete = false;
+        _impl->startup_ok = false;
+    }
     _impl->self_test_task = nullptr;
     _impl->ui_paused = false;
     _impl->view_mode = ViewMode::Targets;

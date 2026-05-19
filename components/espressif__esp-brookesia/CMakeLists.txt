@@ -24,8 +24,7 @@ file(GLOB_RECURSE PHONE_SRCS_CPP ${PHONE_SRC_DIR}/*.cpp)
 list(APPEND SRCS_C ${PHONE_SRCS_C})
 list(APPEND SRCS_CPP ${PHONE_SRCS_CPP})
 
-set(ICON_SRC_DIR ${CMAKE_CURRENT_LIST_DIR}/../icons)
-set(ICON_ALT_SRC_DIR ${PROJECT_DIR}/3D)
+set(ICON_SRC_DIR ${PROJECT_DIR}/icons)
 set(GENERATED_ICON_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated_icons)
 set(ICON_GENERATOR ${CMAKE_CURRENT_LIST_DIR}/../../tools/png_to_lvgl_c.py)
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
@@ -89,10 +88,10 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
     add_custom_command(
         OUTPUT ${GENERATED_ICON_DIR}/rs485_png.c
         COMMAND ${python} ${ICON_GENERATOR}
-                --input ${ICON_ALT_SRC_DIR}/rs485.png
+            --input ${ICON_SRC_DIR}/rs485.png
                 --output ${GENERATED_ICON_DIR}/rs485_png.c
                 --symbol rs485_png
-        DEPENDS ${ICON_ALT_SRC_DIR}/rs485.png ${ICON_GENERATOR}
+        DEPENDS ${ICON_SRC_DIR}/rs485.png ${ICON_GENERATOR}
         VERBATIM)
 
     list(APPEND SRCS_C

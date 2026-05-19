@@ -139,8 +139,8 @@ LV_IMG_DECLARE( ui_img_sound_png);   // assets/Sound.png
 LV_IMG_DECLARE( ui_img_light_png);   // assets/Light.png
 LV_IMG_DECLARE( ui_img_about_png);   // assets/About.png
 LV_IMG_DECLARE( ui_img_return_png);   // assets/return.png
-LV_IMG_DECLARE( ui_img_controller_png);   // 3D/map/controller.png
-LV_IMG_DECLARE( ui_img_local_controller_png);   // 3D/LocalController.png or override
+LV_IMG_DECLARE( ui_img_controller_png);   // icons/joypad/controller.png
+LV_IMG_DECLARE( ui_img_local_controller_png);   // icons/joypad/LocalController.png or override
 
 void ui_setting_init(void);
 

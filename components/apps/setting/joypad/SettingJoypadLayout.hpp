@@ -66,8 +66,8 @@ inline constexpr Layout kBleCalibrationLayout = {
     480,
     800,
     {40, 254, 400, 293},
-    671,
-    491,
+    400,
+    293,
     {
         {-24, 5, 150, 120},
         {521, -15, 150, 120},
@@ -460,8 +460,8 @@ inline constexpr Layout kLocalControllerLayout = {
     480,
     800,
     {40, 254, 400, 293},
-    800,
-    600,
+    400,
+    300,
     {
         {75, 301, 38, 38},
         {141, 298, 38, 38},

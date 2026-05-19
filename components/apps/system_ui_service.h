@@ -11,6 +11,7 @@ namespace system_ui_service {
 bool initialize(ESP_Brookesia_Phone &phone);
 void set_wifi_connected(bool connected);
 void refresh_wifi_from_driver(void);
+void set_lora_unread(bool unread);
 
 } // namespace system_ui_service
 

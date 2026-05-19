@@ -17,6 +17,7 @@ public:
     bool resume() override;
     bool back() override;
     bool close() override;
+    bool startBackgroundIfEnabled();
     void requestSelfTestOnNextOpen();
     bool applyStoredSettingsFromSettings(bool run_self_test);
     bool syncRuntimeStateFromStorage();

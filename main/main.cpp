@@ -2961,6 +2961,9 @@ extern "C" void app_main(void)
 
 #if CONFIG_JC4880_APP_LORA_MESH
     s_loraMeshApp = install_app_or_delete(*phone, new LoRaMeshApp(), "lora mesh");
+    if ((s_loraMeshApp != nullptr) && !s_loraMeshApp->startBackgroundIfEnabled()) {
+        ESP_LOGI(TAG, "LoRa background startup not requested at boot");
+    }
 #endif
 
 #if CONFIG_JC4880_APP_LABYRINTH

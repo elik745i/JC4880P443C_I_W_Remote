@@ -660,7 +660,7 @@ def read_lvgl_png_asset(asset_path: Path) -> bytes:
 def write_lvgl_png_asset(
     image_path: Path,
     asset_path: Path,
-    source_label: str = "3D/map/controller.png",
+    source_label: str = "icons/joypad/controller.png",
     symbol: str = "ui_img_controller_png",
 ) -> None:
     image_bytes = image_path.read_bytes()
@@ -706,7 +706,7 @@ if __name__ == "__main__":
     root = Path(__file__).resolve().parents[2]
     layout_path = root / "tools" / "joypad_layout" / "joypad_layout.json"
     header_path = root / "components" / "apps" / "setting" / "joypad" / "SettingJoypadLayout.hpp"
-    image_path = root / "3D" / "map" / "controller.png"
+    image_path = root / "icons" / "joypad" / "controller.png"
     asset_path = root / "components" / "apps" / "setting" / "ui" / "images" / "ui_img_controller_png.c"
     write_header(layout_path, header_path)
     write_lvgl_png_asset(image_path, asset_path)

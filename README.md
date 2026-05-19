@@ -556,7 +556,7 @@ The configurator also lets you replace the default controller background PNG.
 
 When you choose a PNG and press `Replace Background PNG`, the tool updates:
 
-- `3D/map/controller.png` for the web preview.
+- `icons/joypad/controller.png` for the web preview.
 - `components/apps/setting/ui/images/ui_img_controller_png.c` for the firmware image asset.
 
 That means the next firmware build and flash will use the same background artwork that the configurator preview is showing.

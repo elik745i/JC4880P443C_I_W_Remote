@@ -88,7 +88,9 @@ constexpr uint32_t kUartTxCompleteTimeoutMs = 1500;
 // E22-400T22S drops AUX within a couple of milliseconds of receiving UART data.
 // We give it generous margin to cope with FreeRTOS scheduling jitter.
 constexpr uint32_t kUartAuxBusyTimeoutMs = 150;
-constexpr uint32_t kHistoryWriteTaskStack = 4096;
+// History writes use std::string moves plus filesystem calls; 4 KB is too tight
+// on the receiver path and can overflow when common-chat messages are persisted.
+constexpr uint32_t kHistoryWriteTaskStack = 6144;
 constexpr int64_t kPairSessionTimeoutMs = 90000;
 constexpr int64_t kRecentPairRetentionMs = 180000;
 constexpr int64_t kRecentPrivateMessageRetentionMs = 180000;
@@ -7239,6 +7241,9 @@ struct LoRaMeshApp::Impl {
 
             for (size_t index = 0; index < peers_copy.size(); ++index) {
                 const PeerInfo &peer = peers_copy[index];
+                if (!peer.trusted) {
+                    continue;
+                }
                 PeerDeleteUiContext *delete_context = new (std::nothrow) PeerDeleteUiContext{this,
                                                                                               peer.device_id,
                                                                                               peer_label(peer)};

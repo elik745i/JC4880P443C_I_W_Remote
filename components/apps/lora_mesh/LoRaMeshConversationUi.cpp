@@ -8,6 +8,11 @@ const char *safe_text(const char *text)
     return text == nullptr ? "" : text;
 }
 
+bool has_text(const char *text)
+{
+    return (text != nullptr) && (text[0] != '\0');
+}
+
 const char *delivery_status_symbol(const ConversationRowConfig &config)
 {
     if (!config.outgoing) {
@@ -60,6 +65,38 @@ lv_obj_t *create_conversation_row(const ConversationRowConfig &config)
                               config.outgoing ? lv_color_hex(0xD9FDD3) : lv_color_hex(0xFFFFFF),
                               0);
     lv_obj_set_align(bubble, config.outgoing ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_LEFT);
+    if ((config.click_cb != nullptr) || (config.cleanup_cb != nullptr)) {
+        lv_obj_add_flag(bubble, LV_OBJ_FLAG_CLICKABLE);
+        if (config.click_cb != nullptr) {
+            lv_obj_add_event_cb(bubble, config.click_cb, LV_EVENT_CLICKED, config.click_user_data);
+        }
+        if (config.cleanup_cb != nullptr) {
+            lv_obj_add_event_cb(bubble, config.cleanup_cb, LV_EVENT_DELETE, config.cleanup_user_data);
+        }
+    }
+
+    if (has_text(config.quoted_text)) {
+        lv_obj_t *quote_box = lv_obj_create(bubble);
+        lv_obj_set_width(quote_box, LV_PCT(100));
+        lv_obj_set_height(quote_box, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(quote_box, config.outgoing ? lv_color_hex(0xC4EAD0) : lv_color_hex(0xF2F4F7), 0);
+        lv_obj_set_style_bg_opa(quote_box, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(quote_box, 0, 0);
+        lv_obj_set_style_radius(quote_box, 12, 0);
+        lv_obj_set_style_pad_left(quote_box, 10, 0);
+        lv_obj_set_style_pad_right(quote_box, 10, 0);
+        lv_obj_set_style_pad_top(quote_box, 8, 0);
+        lv_obj_set_style_pad_bottom(quote_box, 8, 0);
+        lv_obj_clear_flag(quote_box, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(quote_box, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *quote_label = lv_label_create(quote_box);
+        lv_obj_set_width(quote_label, LV_PCT(100));
+        lv_label_set_long_mode(quote_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(quote_label, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(quote_label, lv_color_hex(0x475467), 0);
+        lv_label_set_text(quote_label, safe_text(config.quoted_text));
+    }
 
     lv_obj_t *message_label = lv_label_create(bubble);
     lv_obj_set_width(message_label, LV_PCT(100));

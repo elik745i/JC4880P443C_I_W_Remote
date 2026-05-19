@@ -226,8 +226,14 @@ struct RecentFrame {
 
 struct ConversationEntry {
     std::string conversation_id;
+    std::string message_id;
     std::string text;
     std::string meta;
+    std::string author_id;
+    std::string author_name;
+    std::string quoted_message_id;
+    std::string quoted_preview;
+    std::string history_timestamp;
     bool outgoing = false;
     uint64_t pending_token = 0;
     bool transmit_pending = false;
@@ -246,6 +252,17 @@ enum class DebugUiAction : uint8_t {
     StartSelfTest,
     StopSelfTest,
     SendCommonMessage,
+};
+
+enum class ChatActionOverlayMode : uint8_t {
+    None = 0,
+    ChatMenu,
+    TargetsMenu,
+    ClearChatConfirm,
+    DeletePeerConfirm,
+    PairRequest,
+    PairAccept,
+    MessageMenu,
 };
 
 using HeapBuffer = std::unique_ptr<uint8_t, decltype(&heap_caps_free)>;
@@ -628,6 +645,7 @@ struct LoRaMeshApp::Impl {
     lv_obj_t *pair_request_code_input = nullptr;
     lv_obj_t *pair_accept_code_input = nullptr;
     lv_obj_t *active_text_input = nullptr;
+    ChatActionOverlayMode chat_action_overlay_mode = ChatActionOverlayMode::None;
     uint32_t node_id = 0;
     uint32_t next_sequence = 1;
     uint32_t tx_count = 0;
@@ -710,6 +728,12 @@ struct LoRaMeshApp::Impl {
         std::string peer_name;
     };
 
+    struct MessageActionUiContext {
+        Impl *impl = nullptr;
+        std::string conversation_id;
+        std::string message_id;
+    };
+
     std::vector<PendingPairRequest> pending_pair_requests;
     std::vector<PendingPairConfirmation> pending_pair_confirmations;
     std::vector<ConversationEntry> conversation;
@@ -723,6 +747,19 @@ struct LoRaMeshApp::Impl {
     std::string pair_modal_display_name;
     std::string delete_peer_id;
     std::string delete_peer_name;
+    std::string message_action_conversation_id;
+    std::string message_action_message_id;
+    std::string message_action_author_id;
+    std::string message_action_author_name;
+    std::string message_action_text;
+    bool message_action_can_edit = false;
+    std::string pending_reply_message_id;
+    std::string pending_reply_preview;
+    std::string pending_reply_author_id;
+    std::string pending_edit_conversation_id;
+    std::string pending_edit_message_id;
+    std::string pending_edit_quoted_message_id;
+    std::string pending_edit_quoted_preview;
     std::string generated_pair_code;
     bool pending_pair_modal_open = false;
 
@@ -731,9 +768,14 @@ struct LoRaMeshApp::Impl {
         std::string conversation_id;
         std::string peer_id;
         std::string payload;
+        std::string message_id;
+        std::string edited_message_id;
+        std::string quoted_message_id;
+        std::string quoted_preview;
         std::string bubble_text;
         std::string bubble_meta;
         bool beacon = false;
+        bool edit_existing = false;
         uint64_t pending_token = 0;
     };
 
@@ -1218,6 +1260,8 @@ struct LoRaMeshApp::Impl {
     void show_targets_locked()
     {
         view_mode = ViewMode::Targets;
+        clear_pending_reply_locked();
+        clear_pending_edit_locked();
         target_list_dirty = true;
         conversation_dirty = true;
     }
@@ -1227,6 +1271,8 @@ struct LoRaMeshApp::Impl {
         view_mode = ViewMode::Chat;
         selected_conversation_id = jc4880::lora_mesh::kCommonConversationId;
         selected_peer_id.clear();
+        clear_pending_reply_locked();
+        clear_pending_edit_locked();
         unread_conversations.erase(selected_conversation_id);
         load_conversation_history_locked(selected_conversation_id);
         conversation_dirty = true;
@@ -1238,10 +1284,97 @@ struct LoRaMeshApp::Impl {
         view_mode = ViewMode::Chat;
         selected_conversation_id = peer_id;
         selected_peer_id = peer_id;
+        clear_pending_reply_locked();
+        clear_pending_edit_locked();
         unread_conversations.erase(selected_conversation_id);
         load_conversation_history_locked(selected_conversation_id);
         conversation_dirty = true;
         system_ui_service::set_lora_unread(!unread_conversations.empty());
+    }
+
+    void clear_pending_reply_locked()
+    {
+        pending_reply_message_id.clear();
+        pending_reply_preview.clear();
+        pending_reply_author_id.clear();
+    }
+
+    void clear_pending_edit_locked()
+    {
+        pending_edit_conversation_id.clear();
+        pending_edit_message_id.clear();
+        pending_edit_quoted_message_id.clear();
+        pending_edit_quoted_preview.clear();
+    }
+
+    static std::string shorten_reply_preview(const std::string &text)
+    {
+        std::string single_line;
+        single_line.reserve(text.size());
+        for (char character : text) {
+            if ((character == '\r') || (character == '\n') || (character == '\t')) {
+                if (single_line.empty() || (single_line.back() != ' ')) {
+                    single_line.push_back(' ');
+                }
+            } else {
+                single_line.push_back(character);
+            }
+        }
+
+        while (!single_line.empty() && std::isspace(static_cast<unsigned char>(single_line.front()))) {
+            single_line.erase(single_line.begin());
+        }
+        while (!single_line.empty() && std::isspace(static_cast<unsigned char>(single_line.back()))) {
+            single_line.pop_back();
+        }
+
+        constexpr size_t kReplyPreviewLimit = 56;
+        if (single_line.size() > kReplyPreviewLimit) {
+            single_line.resize(kReplyPreviewLimit - 3);
+            single_line += "...";
+        }
+        return single_line;
+    }
+
+    static std::string build_reply_input_prefix(const std::string &preview)
+    {
+        return preview.empty() ? std::string() : (std::string("[") + preview + "] ");
+    }
+
+    static std::string strip_private_display_prefix(const std::string &text)
+    {
+        static constexpr const char *kPrivatePrefix = "[private] ";
+        return (text.rfind(kPrivatePrefix, 0) == 0) ? text.substr(std::strlen(kPrivatePrefix)) : text;
+    }
+
+    ConversationEntry *find_conversation_entry_locked(const std::string &conversation_id, const std::string &message_id)
+    {
+        auto iterator = std::find_if(conversation.rbegin(), conversation.rend(),
+                                     [&conversation_id, &message_id](const ConversationEntry &entry) {
+                                         return (entry.conversation_id == conversation_id) && (entry.message_id == message_id);
+                                     });
+        return iterator == conversation.rend() ? nullptr : &(*iterator);
+    }
+
+    const ConversationEntry *find_conversation_entry_locked(const std::string &conversation_id, const std::string &message_id) const
+    {
+        auto iterator = std::find_if(conversation.rbegin(), conversation.rend(),
+                                     [&conversation_id, &message_id](const ConversationEntry &entry) {
+                                         return (entry.conversation_id == conversation_id) && (entry.message_id == message_id);
+                                     });
+        return iterator == conversation.rend() ? nullptr : &(*iterator);
+    }
+
+    std::string resolve_reply_preview_locked(const std::string &conversation_id,
+                                             const std::string &quoted_message_id,
+                                             const std::string &fallback_preview) const
+    {
+        if (!quoted_message_id.empty()) {
+            if (const ConversationEntry *quoted = find_conversation_entry_locked(conversation_id, quoted_message_id); quoted != nullptr) {
+                return shorten_reply_preview(quoted->text);
+            }
+        }
+        return shorten_reply_preview(fallback_preview);
     }
 
     bool is_conversation_visible_locked(const std::string &conversation_id) const
@@ -1363,6 +1496,94 @@ struct LoRaMeshApp::Impl {
         return peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared || had_unread || was_selected;
     }
 
+    bool delete_conversation_message_locked(const std::string &conversation_id, const std::string &message_id)
+    {
+        if (conversation_id.empty() || message_id.empty()) {
+            return false;
+        }
+
+        const size_t message_count_before = conversation.size();
+        conversation.erase(std::remove_if(conversation.begin(),
+                                          conversation.end(),
+                                          [&conversation_id, &message_id](const ConversationEntry &entry) {
+                                              return (entry.conversation_id == conversation_id) && (entry.message_id == message_id);
+                                          }),
+                           conversation.end());
+        if (conversation.size() == message_count_before) {
+            return false;
+        }
+
+        if (pending_reply_message_id == message_id) {
+            clear_pending_reply_locked();
+        }
+        if (pending_edit_message_id == message_id) {
+            clear_pending_edit_locked();
+        }
+
+        conversation_dirty = true;
+        target_list_dirty = true;
+        if (!rewrite_conversation_history_locked(conversation_id)) {
+            append_line_capped(log_text, std::string("Failed to rewrite chat history for ") + conversation_id);
+        }
+        return true;
+    }
+
+    bool update_conversation_message_locked(const std::string &conversation_id,
+                                           const std::string &message_id,
+                                           const std::string &text,
+                                           const std::string &quoted_message_id,
+                                           const std::string &quoted_preview,
+                                           const std::string &expected_author_id = std::string(),
+                                           bool rewrite_history = true)
+    {
+        ConversationEntry *entry = find_conversation_entry_locked(conversation_id, message_id);
+        if (entry == nullptr) {
+            return false;
+        }
+        if (!expected_author_id.empty() && (entry->author_id != expected_author_id)) {
+            return false;
+        }
+
+        entry->text = text;
+        entry->quoted_message_id = quoted_message_id;
+        entry->quoted_preview = shorten_reply_preview(quoted_preview);
+        conversation_dirty = true;
+        target_list_dirty = true;
+        if (rewrite_history && !rewrite_conversation_history_locked(conversation_id)) {
+            append_line_capped(log_text, std::string("Failed to rewrite chat history for ") + conversation_id);
+        }
+        return true;
+    }
+
+    uint64_t stage_pending_message_edit_locked(const std::string &conversation_id,
+                                               const std::string &message_id,
+                                               const std::string &text,
+                                               const std::string &quoted_message_id,
+                                               const std::string &quoted_preview)
+    {
+        ConversationEntry *entry = find_conversation_entry_locked(conversation_id, message_id);
+        if ((entry == nullptr) || !entry->outgoing || (entry->author_id != stored_state.identity.device_id)) {
+            return 0;
+        }
+
+        if (!update_conversation_message_locked(conversation_id,
+                                                message_id,
+                                                text,
+                                                quoted_message_id,
+                                                quoted_preview,
+                                                stored_state.identity.device_id,
+                                                false)) {
+            return 0;
+        }
+
+        const uint64_t token = next_pending_message_token_locked();
+        entry->pending_token = token;
+        entry->transmit_pending = true;
+        entry->transmit_failed = false;
+        status_text = "Sending mesh message...";
+        return token;
+    }
+
     static void play_chat_feedback_sound(bsp_extra_audio_system_sound_t sound)
     {
         if (jc_ui_tap_sound_is_enabled()) {
@@ -1377,10 +1598,26 @@ struct LoRaMeshApp::Impl {
 
     uint64_t append_pending_outgoing_message_locked(const std::string &conversation_id,
                                                     const std::string &text,
-                                                    const std::string &meta)
+                                                    const std::string &meta,
+                                                    const std::string &message_id,
+                                                    const std::string &quoted_message_id,
+                                                    const std::string &quoted_preview)
     {
         const uint64_t token = next_pending_message_token_locked();
-        push_conversation_entry_locked(conversation_id, text, meta, true, false, token, true, false);
+        push_conversation_entry_locked(conversation_id,
+                                       text,
+                                       meta,
+                                       true,
+                                       false,
+                                       token,
+                                       true,
+                                       false,
+                                       message_id,
+                                       stored_state.identity.device_id,
+                                       stored_state.identity.display_name.empty() ? stored_state.identity.device_id
+                                                                                  : stored_state.identity.display_name,
+                                       quoted_message_id,
+                                       quoted_preview);
         status_text = "Sending mesh message...";
         return token;
     }
@@ -1389,7 +1626,11 @@ struct LoRaMeshApp::Impl {
                                                 const std::string &conversation_id,
                                                 const std::string &text,
                                                 const std::string &meta,
-                                                bool ok)
+                                                const std::string &message_id,
+                                                const std::string &quoted_message_id,
+                                                const std::string &quoted_preview,
+                                                bool ok,
+                                                bool edit_existing = false)
     {
         auto entry = std::find_if(conversation.rbegin(), conversation.rend(),
                                   [pending_token, &conversation_id](const ConversationEntry &candidate) {
@@ -1398,8 +1639,21 @@ struct LoRaMeshApp::Impl {
                                   });
 
         if (entry == conversation.rend()) {
-            if (ok) {
-                push_conversation_entry_locked(conversation_id, text, meta, true, true);
+            if (ok && !edit_existing) {
+                push_conversation_entry_locked(conversation_id,
+                                               text,
+                                               meta,
+                                               true,
+                                               true,
+                                               0,
+                                               false,
+                                               false,
+                                               message_id,
+                                               stored_state.identity.device_id,
+                                               stored_state.identity.display_name.empty() ? stored_state.identity.device_id
+                                                                                          : stored_state.identity.display_name,
+                                               quoted_message_id,
+                                               quoted_preview);
             }
             return;
         }
@@ -1408,9 +1662,16 @@ struct LoRaMeshApp::Impl {
         entry->transmit_failed = !ok;
         entry->pending_token = 0;
         conversation_dirty = true;
+        target_list_dirty = true;
 
         if (ok) {
-            append_conversation_history_locked(conversation_id, text, meta, true);
+            if (edit_existing) {
+                if (!rewrite_conversation_history_locked(conversation_id)) {
+                    append_line_capped(log_text, std::string("Failed to rewrite chat history for ") + conversation_id);
+                }
+            } else {
+                append_conversation_history_locked(*entry);
+            }
         }
     }
 
@@ -1679,6 +1940,237 @@ struct LoRaMeshApp::Impl {
             return;
         }
         context->impl->open_delete_peer_confirmation_overlay(context->peer_id, context->peer_name);
+    }
+
+    static void on_message_action_button_deleted(lv_event_t *event)
+    {
+        auto *context = static_cast<MessageActionUiContext *>(lv_event_get_user_data(event));
+        delete context;
+    }
+
+    static void on_message_pair_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl == nullptr) {
+            return;
+        }
+
+        const std::string author_id = impl->message_action_author_id;
+        const std::string author_name = impl->message_action_author_name;
+        impl->close_chat_action_overlay();
+
+        if (author_id.empty() || (author_id == impl->stored_state.identity.device_id)) {
+            impl->set_status("Pair is available on received mesh messages");
+            return;
+        }
+
+        impl->open_pair_request_overlay(author_id.empty() ? author_name : author_id);
+    }
+
+    static void on_message_reply_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if ((impl == nullptr) || (impl->input == nullptr)) {
+            return;
+        }
+
+        std::string message_id;
+        std::string quote_preview;
+        std::string previous_prefix;
+        impl->lock();
+        message_id = impl->message_action_message_id;
+        previous_prefix = Impl::build_reply_input_prefix(impl->pending_reply_preview);
+        quote_preview = Impl::shorten_reply_preview(impl->message_action_text);
+        impl->clear_pending_edit_locked();
+        impl->pending_reply_message_id = message_id;
+        impl->pending_reply_preview = quote_preview;
+        impl->pending_reply_author_id = impl->message_action_author_id;
+        impl->unlock();
+
+        std::string input_text = lv_textarea_get_text(impl->input);
+        if (!previous_prefix.empty() && (input_text.rfind(previous_prefix, 0) == 0)) {
+            input_text.erase(0, previous_prefix.size());
+        }
+        const std::string new_prefix = Impl::build_reply_input_prefix(quote_preview);
+        lv_textarea_set_text(impl->input, (new_prefix + input_text).c_str());
+        impl->close_chat_action_overlay();
+        impl->focus_input();
+    }
+
+    static void on_message_edit_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if ((impl == nullptr) || (impl->input == nullptr)) {
+            return;
+        }
+
+        std::string conversation_id;
+        std::string message_id;
+        std::string input_text;
+        std::string previous_reply_prefix;
+        impl->lock();
+        conversation_id = impl->message_action_conversation_id;
+        message_id = impl->message_action_message_id;
+        previous_reply_prefix = Impl::build_reply_input_prefix(impl->pending_reply_preview);
+        const ConversationEntry *entry = impl->find_conversation_entry_locked(conversation_id, message_id);
+        if ((entry == nullptr) || !entry->outgoing || (entry->author_id != impl->stored_state.identity.device_id)) {
+            impl->unlock();
+            impl->close_chat_action_overlay();
+            impl->set_status("Edit is available on your sent messages");
+            return;
+        }
+        input_text = Impl::strip_private_display_prefix(entry->text);
+        impl->clear_pending_reply_locked();
+        impl->pending_edit_conversation_id = conversation_id;
+        impl->pending_edit_message_id = message_id;
+        impl->pending_edit_quoted_message_id = entry->quoted_message_id;
+        impl->pending_edit_quoted_preview = entry->quoted_preview;
+        impl->unlock();
+
+        std::string current_input = lv_textarea_get_text(impl->input);
+        if (!previous_reply_prefix.empty() && (current_input.rfind(previous_reply_prefix, 0) == 0)) {
+            current_input.erase(0, previous_reply_prefix.size());
+        }
+        lv_textarea_set_text(impl->input, input_text.c_str());
+        impl->close_chat_action_overlay();
+        impl->focus_input();
+    }
+
+    static void on_message_delete_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl == nullptr) {
+            return;
+        }
+
+        const std::string conversation_id = impl->message_action_conversation_id;
+        const std::string message_id = impl->message_action_message_id;
+        impl->close_chat_action_overlay();
+
+        impl->lock();
+        const bool removed = impl->delete_conversation_message_locked(conversation_id, message_id);
+        impl->unlock();
+        impl->set_status(removed ? "Message deleted" : "Unable to delete that message");
+        impl->refresh_ui();
+    }
+
+    void open_message_action_overlay(lv_obj_t *anchor,
+                                     const std::string &conversation_id,
+                                     const std::string &message_id)
+    {
+        if ((root == nullptr) || (anchor == nullptr) || conversation_id.empty() || message_id.empty()) {
+            return;
+        }
+
+        std::string author_id;
+        std::string author_name;
+        std::string message_text;
+
+        lock();
+        const ConversationEntry *entry = find_conversation_entry_locked(conversation_id, message_id);
+        if (entry == nullptr) {
+            unlock();
+            return;
+        }
+        message_action_conversation_id = conversation_id;
+        message_action_message_id = message_id;
+        message_action_author_id = entry->author_id;
+        message_action_author_name = entry->author_name;
+        message_action_text = entry->text;
+        message_action_can_edit = entry->outgoing && (entry->author_id == stored_state.identity.device_id);
+        author_id = entry->author_id;
+        author_name = entry->author_name;
+        message_text = entry->text;
+        unlock();
+
+        close_chat_action_overlay();
+
+        chat_action_overlay = lv_obj_create(root);
+        chat_action_overlay_mode = ChatActionOverlayMode::MessageMenu;
+        lv_obj_set_size(chat_action_overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_add_flag(chat_action_overlay, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_style_bg_opa(chat_action_overlay, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(chat_action_overlay, 0, 0);
+        lv_obj_set_style_radius(chat_action_overlay, 0, 0);
+        lv_obj_set_style_pad_all(chat_action_overlay, 0, 0);
+        lv_obj_clear_flag(chat_action_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(chat_action_overlay, on_chat_overlay_dismiss, LV_EVENT_CLICKED, this);
+
+        const lv_coord_t root_width = lv_obj_get_width(root);
+
+        lv_obj_t *card = lv_obj_create(chat_action_overlay);
+        chat_action_card = card;
+        const lv_coord_t preferred_card_width = 336;
+        const lv_coord_t available_card_width = (root_width > 24) ? static_cast<lv_coord_t>(root_width - 16) : preferred_card_width;
+        lv_obj_set_width(card, available_card_width < preferred_card_width ? available_card_width : preferred_card_width);
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_set_style_radius(card, 18, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 8, 0);
+        lv_obj_set_style_pad_column(card, 8, 0);
+        lv_obj_set_style_pad_row(card, 8, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_style_shadow_width(card, 18, 0);
+        lv_obj_set_style_shadow_opa(card, LV_OPA_20, 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(card, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+
+        const bool can_pair = !author_id.empty() && (author_id != stored_state.identity.device_id);
+        const bool can_edit = message_action_can_edit;
+
+        auto create_action_button = [&](const char *label_text, lv_color_t bg, lv_color_t fg, lv_event_cb_t callback, bool enabled) {
+            lv_obj_t *button = lv_btn_create(card);
+            lv_obj_set_size(button, 72, 52);
+            lv_obj_set_style_radius(button, 14, 0);
+            lv_obj_set_style_bg_color(button, enabled ? bg : lv_color_hex(0xF2F4F7), 0);
+            lv_obj_set_style_border_width(button, 0, 0);
+            lv_obj_set_style_shadow_width(button, 0, 0);
+            if (enabled) {
+                lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, this);
+            } else {
+                lv_obj_add_state(button, LV_STATE_DISABLED);
+            }
+            lv_obj_t *label = lv_label_create(button);
+            lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_color(label, enabled ? fg : lv_color_hex(0x98A2B3), 0);
+            lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+            lv_label_set_text(label, label_text);
+            lv_obj_center(label);
+            return button;
+        };
+
+        create_action_button(LV_SYMBOL_PLUS "\nPair", lv_color_hex(0xECFDF3), lv_color_hex(0x027A48), on_message_pair_clicked, can_pair);
+        create_action_button(LV_SYMBOL_UPLOAD "\nReply", lv_color_hex(0xEEF4FF), lv_color_hex(0x175CD3), on_message_reply_clicked, true);
+        create_action_button(LV_SYMBOL_EDIT "\nEdit", lv_color_hex(0xFFFAEB), lv_color_hex(0xB54708), on_message_edit_clicked, can_edit);
+        create_action_button(LV_SYMBOL_TRASH "\nDelete", lv_color_hex(0xFEF3F2), lv_color_hex(0xD92D20), on_message_delete_clicked, true);
+
+        lv_obj_update_layout(card);
+        lv_area_t anchor_area = {};
+        lv_obj_get_coords(anchor, &anchor_area);
+        const lv_coord_t card_width = lv_obj_get_width(card);
+        const lv_coord_t card_height = lv_obj_get_height(card);
+        lv_coord_t x = static_cast<lv_coord_t>(((anchor_area.x1 + anchor_area.x2) / 2) - (card_width / 2));
+        lv_coord_t y = static_cast<lv_coord_t>(anchor_area.y1 - card_height - 8);
+        if (x < 8) {
+            x = 8;
+        }
+        if ((x + card_width) > (root_width - 8)) {
+            x = root_width - card_width - 8;
+        }
+        if (y < 8) {
+            y = anchor_area.y2 + 8;
+        }
+        lv_obj_set_pos(card, x, y);
+    }
+
+    static void on_message_bubble_clicked(lv_event_t *event)
+    {
+        auto *context = static_cast<MessageActionUiContext *>(lv_event_get_user_data(event));
+        if ((context == nullptr) || (context->impl == nullptr)) {
+            return;
+        }
+        context->impl->open_message_action_overlay(lv_event_get_current_target(event), context->conversation_id, context->message_id);
     }
 
     void open_chat_action_overlay()
@@ -2122,7 +2614,7 @@ struct LoRaMeshApp::Impl {
         return button;
     }
 
-    void open_pair_request_overlay()
+    void open_pair_request_overlay(const std::string &target_name = std::string())
     {
         if ((root == nullptr) || (chat_action_overlay != nullptr)) {
             return;
@@ -2172,6 +2664,9 @@ struct LoRaMeshApp::Impl {
 
         create_setting_field(card, "Target device name or ID", &pair_request_target_input, "COM11 or P4-ABCD", this);
         create_setting_field(card, "Shared pair key", &pair_request_code_input, "XXXX-XXXX", this);
+        if ((pair_request_target_input != nullptr) && !target_name.empty()) {
+            lv_textarea_set_text(pair_request_target_input, target_name.c_str());
+        }
         if (pair_request_code_input != nullptr) {
         lv_obj_add_flag(chat_panel, LV_OBJ_FLAG_SCROLLABLE);
         }
@@ -3011,10 +3506,15 @@ struct LoRaMeshApp::Impl {
         const bool ok = impl->send_user_message(request->conversation_id,
                                                 request->peer_id,
                                                 request->payload,
+                                                request->message_id,
+                                                request->edited_message_id,
+                                                request->quoted_message_id,
+                                                request->quoted_preview,
                                                 request->beacon,
                                                 request->pending_token,
                                                 request->bubble_text,
-                                                request->bubble_meta);
+                                                request->bubble_meta,
+                                                request->edit_existing);
 
         bsp_display_lock(0);
         (void)lv_async_call(&Impl::refresh_ui_async, impl);
@@ -3035,18 +3535,28 @@ struct LoRaMeshApp::Impl {
     bool start_send_task(const std::string &conversation_id,
                          const std::string &peer_id,
                          const std::string &payload,
+                         const std::string &message_id,
+                         const std::string &edited_message_id,
+                         const std::string &quoted_message_id,
+                         const std::string &quoted_preview,
                          bool beacon,
                          uint64_t pending_token,
                          const std::string &bubble_text,
-                         const std::string &bubble_meta)
+                         const std::string &bubble_meta,
+                         bool edit_existing = false)
     {
         auto *context = new PendingSendContext{.impl = this,
                                                .conversation_id = conversation_id,
                                                .peer_id = peer_id,
                                                .payload = payload,
+                                               .message_id = message_id,
+                                               .edited_message_id = edited_message_id,
+                                               .quoted_message_id = quoted_message_id,
+                                               .quoted_preview = quoted_preview,
                                                .bubble_text = bubble_text,
                                                .bubble_meta = bubble_meta,
                                                .beacon = beacon,
+                                               .edit_existing = edit_existing,
                                                .pending_token = pending_token};
         if (context == nullptr) {
             set_status("Failed to allocate LoRa send task");
@@ -3142,9 +3652,48 @@ struct LoRaMeshApp::Impl {
         return stream.str();
     }
 
+    bool encode_chat_payload(const std::string &text,
+                             const std::string &quoted_message_id,
+                             const std::string &quoted_preview,
+                             const std::string &edited_message_id,
+                             std::string &encoded) const
+    {
+        if (quoted_message_id.empty() && quoted_preview.empty() && edited_message_id.empty()) {
+            encoded = text;
+            return true;
+        }
+
+        cJSON *root = cJSON_CreateObject();
+        if (root == nullptr) {
+            return false;
+        }
+        cJSON_AddStringToObject(root, "kind", "chat");
+        cJSON_AddStringToObject(root, "text", text.c_str());
+        if (!quoted_message_id.empty()) {
+            cJSON_AddStringToObject(root, "rid", quoted_message_id.c_str());
+        }
+        if (!quoted_preview.empty()) {
+            cJSON_AddStringToObject(root, "rp", shorten_reply_preview(quoted_preview).c_str());
+        }
+        if (!edited_message_id.empty()) {
+            cJSON_AddStringToObject(root, "eid", edited_message_id.c_str());
+        }
+        char *json = cJSON_PrintUnformatted(root);
+        cJSON_Delete(root);
+        if (json == nullptr) {
+            return false;
+        }
+        encoded.assign(json);
+        cJSON_free(json);
+        return true;
+    }
+
     bool encode_private_chat_payload(const std::string &text,
                                      int64_t timestamp_ms,
                                      const std::string &msg_id,
+                                     const std::string &quoted_message_id,
+                                     const std::string &quoted_preview,
+                                     const std::string &edited_message_id,
                                      std::string &encoded) const
     {
         cJSON *root = cJSON_CreateObject();
@@ -3155,6 +3704,15 @@ struct LoRaMeshApp::Impl {
         cJSON_AddStringToObject(root, "text", text.c_str());
         cJSON_AddNumberToObject(root, "ts", static_cast<double>(timestamp_ms));
         cJSON_AddStringToObject(root, "seq", msg_id.c_str());
+        if (!quoted_message_id.empty()) {
+            cJSON_AddStringToObject(root, "rid", quoted_message_id.c_str());
+        }
+        if (!quoted_preview.empty()) {
+            cJSON_AddStringToObject(root, "rp", shorten_reply_preview(quoted_preview).c_str());
+        }
+        if (!edited_message_id.empty()) {
+            cJSON_AddStringToObject(root, "eid", edited_message_id.c_str());
+        }
         char *json = cJSON_PrintUnformatted(root);
         cJSON_Delete(root);
         if (json == nullptr) {
@@ -3168,33 +3726,56 @@ struct LoRaMeshApp::Impl {
     bool decode_private_chat_payload(const std::string &payload,
                                      std::string &text,
                                      int64_t &timestamp_ms,
-                                     std::string &msg_id) const
+                                     std::string &msg_id,
+                                     std::string &quoted_message_id,
+                                     std::string &quoted_preview,
+                                     std::string &edited_message_id) const
     {
         cJSON *root = cJSON_Parse(payload.c_str());
         if (root == nullptr) {
             text = payload;
             timestamp_ms = 0;
             msg_id.clear();
+            quoted_message_id.clear();
+            quoted_preview.clear();
+            edited_message_id.clear();
             return true;
         }
         const cJSON *kind = cJSON_GetObjectItemCaseSensitive(root, "kind");
         const cJSON *text_item = cJSON_GetObjectItemCaseSensitive(root, "text");
         const cJSON *ts_item = cJSON_GetObjectItemCaseSensitive(root, "ts");
         const cJSON *seq_item = cJSON_GetObjectItemCaseSensitive(root, "seq");
-        const bool ok = cJSON_IsString(kind) && (std::string(kind->valuestring) == "private_chat") &&
+        const cJSON *reply_id_item = cJSON_GetObjectItemCaseSensitive(root, "rid");
+        const cJSON *reply_preview_item = cJSON_GetObjectItemCaseSensitive(root, "rp");
+        const cJSON *edit_id_item = cJSON_GetObjectItemCaseSensitive(root, "eid");
+        const std::string kind_value = cJSON_IsString(kind) && (kind->valuestring != nullptr) ? std::string(kind->valuestring) : std::string();
+        const bool ok = ((kind_value == "private_chat") || (kind_value == "chat")) &&
                         cJSON_IsString(text_item) && (text_item->valuestring != nullptr);
         if (ok) {
             text = text_item->valuestring;
             timestamp_ms = cJSON_IsNumber(ts_item) ? static_cast<int64_t>(ts_item->valuedouble) : 0;
             msg_id = cJSON_IsString(seq_item) && (seq_item->valuestring != nullptr) ? std::string(seq_item->valuestring) : std::string();
+            quoted_message_id = cJSON_IsString(reply_id_item) && (reply_id_item->valuestring != nullptr)
+                                    ? std::string(reply_id_item->valuestring)
+                                    : std::string();
+            quoted_preview = cJSON_IsString(reply_preview_item) && (reply_preview_item->valuestring != nullptr)
+                                 ? std::string(reply_preview_item->valuestring)
+                                 : std::string();
+            edited_message_id = cJSON_IsString(edit_id_item) && (edit_id_item->valuestring != nullptr)
+                                    ? std::string(edit_id_item->valuestring)
+                                    : std::string();
         }
         cJSON_Delete(root);
+        if (!ok) {
+            edited_message_id.clear();
+        }
         return ok;
     }
 
     void remember_peer_activity_locked(const std::string &device_id,
                                        const std::string &display_name,
-                                       const std::string &public_key_hex)
+                                       const std::string &public_key_hex,
+                                       bool allow_create = true)
     {
         if (device_id.empty() || (device_id == stored_state.identity.device_id)) {
             return;
@@ -3202,6 +3783,9 @@ struct LoRaMeshApp::Impl {
 
         PeerInfo *peer = find_peer_locked(device_id);
         if (peer == nullptr) {
+            if (!allow_create) {
+                return;
+            }
             stored_state.peers.push_back(PeerInfo{.device_id = device_id,
                                                   .display_name = display_name.empty() ? device_id : display_name,
                                                   .public_key_hex = public_key_hex,
@@ -4308,16 +4892,22 @@ struct LoRaMeshApp::Impl {
         return sanitized;
     }
 
-    std::string build_conversation_history_line_locked(const std::string &text,
-                                                       const std::string &meta,
-                                                       bool outgoing) const
+    std::string build_conversation_history_line_locked(const ConversationEntry &entry) const
     {
-        const std::string timestamp = sanitize_chat_history_field(current_timestamp_text());
-         const std::string direction = outgoing ? "out" : "in";
-        const std::string author = sanitize_chat_history_field(conversation_author_from_meta_locked(meta, outgoing));
-         return timestamp + kChatHistoryFieldSeparator + direction + kChatHistoryFieldSeparator +
-             author + kChatHistoryFieldSeparator +
-               sanitize_chat_history_field(text) + "\n";
+        const std::string timestamp = sanitize_chat_history_field(entry.history_timestamp.empty()
+                                                                          ? current_timestamp_text()
+                                                                          : entry.history_timestamp);
+        const std::string direction = entry.outgoing ? "out" : "in";
+        const std::string author = sanitize_chat_history_field(entry.author_name.empty()
+                                                                       ? conversation_author_from_meta_locked(entry.meta, entry.outgoing)
+                                                                       : entry.author_name);
+        return timestamp + kChatHistoryFieldSeparator + direction + kChatHistoryFieldSeparator +
+               author + kChatHistoryFieldSeparator +
+               sanitize_chat_history_field(entry.message_id) + kChatHistoryFieldSeparator +
+               sanitize_chat_history_field(entry.author_id) + kChatHistoryFieldSeparator +
+               sanitize_chat_history_field(entry.quoted_message_id) + kChatHistoryFieldSeparator +
+               sanitize_chat_history_field(entry.quoted_preview) + kChatHistoryFieldSeparator +
+               sanitize_chat_history_field(entry.text) + "\n";
     }
 
     std::string current_timestamp_text() const
@@ -4458,17 +5048,14 @@ struct LoRaMeshApp::Impl {
         return true;
     }
 
-    void append_conversation_history_deferred_locked(const std::string &conversation_id,
-                                                     const std::string &text,
-                                                     const std::string &meta,
-                                                     bool outgoing)
+    void append_conversation_history_deferred_locked(const ConversationEntry &entry)
     {
         if (!ensure_history_write_task_locked()) {
             return;
         }
 
-        pending_history_writes.emplace_back(conversation_history_path(conversation_id),
-                                            build_conversation_history_line_locked(text, meta, outgoing));
+        pending_history_writes.emplace_back(conversation_history_path(entry.conversation_id),
+                                            build_conversation_history_line_locked(entry));
         xTaskNotifyGive(history_write_task);
     }
 
@@ -4485,16 +5072,44 @@ struct LoRaMeshApp::Impl {
         return meta;
     }
 
-    void append_conversation_history_locked(const std::string &conversation_id,
-                                            const std::string &text,
-                                            const std::string &meta,
-                                            bool outgoing)
+    void append_conversation_history_locked(const ConversationEntry &entry)
     {
-        if (conversation_id.empty()) {
+        if (entry.conversation_id.empty()) {
             return;
         }
 
-        append_conversation_history_deferred_locked(conversation_id, text, meta, outgoing);
+        append_conversation_history_deferred_locked(entry);
+    }
+
+    bool rewrite_conversation_history_locked(const std::string &conversation_id)
+    {
+        if (conversation_id.empty() || !ensure_chat_history_directory()) {
+            return false;
+        }
+
+        const std::string path = conversation_history_path(conversation_id);
+        pending_history_writes.erase(std::remove_if(pending_history_writes.begin(),
+                                                    pending_history_writes.end(),
+                                                    [&path](const std::pair<std::string, std::string> &write_request) {
+                                                        return write_request.first == path;
+                                                    }),
+                                     pending_history_writes.end());
+
+        FILE *file = std::fopen(path.c_str(), "wb");
+        if (file == nullptr) {
+            return false;
+        }
+
+        for (const ConversationEntry &entry : conversation) {
+            if (entry.conversation_id != conversation_id) {
+                continue;
+            }
+            const std::string line = build_conversation_history_line_locked(entry);
+            (void)std::fwrite(line.data(), 1, line.size(), file);
+        }
+
+        std::fclose(file);
+        return true;
     }
 
     void push_conversation_entry_locked(const std::string &conversation_id,
@@ -4504,15 +5119,30 @@ struct LoRaMeshApp::Impl {
                                         bool persist_history,
                                         uint64_t pending_token = 0,
                                         bool transmit_pending = false,
-                                        bool transmit_failed = false)
+                                        bool transmit_failed = false,
+                                        const std::string &message_id = std::string(),
+                                        const std::string &author_id = std::string(),
+                                        const std::string &author_name = std::string(),
+                                        const std::string &quoted_message_id = std::string(),
+                                        const std::string &quoted_preview = std::string(),
+                                        const std::string &history_timestamp = std::string())
     {
-        conversation.push_back(ConversationEntry{.conversation_id = conversation_id,
-                                                 .text = text,
-                                                 .meta = meta,
-                                                 .outgoing = outgoing,
-                                                 .pending_token = pending_token,
-                                                 .transmit_pending = transmit_pending,
-                                                 .transmit_failed = transmit_failed});
+        ConversationEntry entry = {};
+        entry.conversation_id = conversation_id;
+        entry.message_id = message_id.empty() ? jc4880::lora_mesh::cryptoGenerateNonceHex(8) : message_id;
+        entry.text = text;
+        entry.meta = meta;
+        entry.author_id = author_id.empty() && outgoing ? stored_state.identity.device_id : author_id;
+        entry.author_name = author_name.empty() ? conversation_author_from_meta_locked(meta, outgoing) : author_name;
+        entry.quoted_message_id = quoted_message_id;
+        entry.quoted_preview = shorten_reply_preview(quoted_preview);
+        entry.history_timestamp = history_timestamp.empty() ? current_timestamp_text() : history_timestamp;
+        entry.outgoing = outgoing;
+        entry.pending_token = pending_token;
+        entry.transmit_pending = transmit_pending;
+        entry.transmit_failed = transmit_failed;
+
+        conversation.push_back(entry);
         trim_conversation_locked();
         conversation_dirty = true;
         target_list_dirty = true;
@@ -4520,7 +5150,7 @@ struct LoRaMeshApp::Impl {
             mark_conversation_unread_locked(conversation_id);
         }
         if (persist_history) {
-            append_conversation_history_locked(conversation_id, text, meta, outgoing);
+            append_conversation_history_locked(conversation.back());
         }
     }
 
@@ -4537,6 +5167,7 @@ struct LoRaMeshApp::Impl {
         }
 
         std::vector<ConversationEntry> loaded_entries;
+        size_t loaded_index = 0;
         char line[kChatHistoryLineBytes] = {};
         while (std::fgets(line, sizeof(line), file) != nullptr) {
             std::string record(line);
@@ -4547,40 +5178,64 @@ struct LoRaMeshApp::Impl {
                 continue;
             }
 
-            const size_t first_sep = record.find(kChatHistoryFieldSeparator);
-            if (first_sep == std::string::npos) {
-                continue;
+            std::vector<std::string> fields;
+            size_t field_start = 0;
+            while (true) {
+                const size_t separator = record.find(kChatHistoryFieldSeparator, field_start);
+                if (separator == std::string::npos) {
+                    fields.push_back(record.substr(field_start));
+                    break;
+                }
+                fields.push_back(record.substr(field_start, separator - field_start));
+                field_start = separator + std::strlen(kChatHistoryFieldSeparator);
             }
-            const size_t second_sep = record.find(kChatHistoryFieldSeparator,
-                                                  first_sep + std::strlen(kChatHistoryFieldSeparator));
-            if (second_sep == std::string::npos) {
+            if (fields.size() < 3) {
                 continue;
             }
 
-            const std::string timestamp = record.substr(0, first_sep);
-            const size_t third_sep = record.find(kChatHistoryFieldSeparator,
-                                                 second_sep + std::strlen(kChatHistoryFieldSeparator));
-
+            const std::string timestamp = fields[0];
+            std::string direction;
             std::string author;
+            std::string message_id;
+            std::string author_id;
+            std::string quoted_message_id;
+            std::string quoted_preview;
             std::string text;
             bool outgoing = false;
-            if (third_sep != std::string::npos) {
-                const std::string direction = record.substr(first_sep + std::strlen(kChatHistoryFieldSeparator),
-                                                            second_sep - first_sep - std::strlen(kChatHistoryFieldSeparator));
-                author = record.substr(second_sep + std::strlen(kChatHistoryFieldSeparator),
-                                       third_sep - second_sep - std::strlen(kChatHistoryFieldSeparator));
-                text = record.substr(third_sep + std::strlen(kChatHistoryFieldSeparator));
+
+            if (fields.size() >= 8) {
+                direction = fields[1];
+                author = fields[2];
+                message_id = fields[3];
+                author_id = fields[4];
+                quoted_message_id = fields[5];
+                quoted_preview = fields[6];
+                text = fields[7];
+                outgoing = (direction == "out");
+            } else if (fields.size() >= 4) {
+                direction = fields[1];
+                author = fields[2];
+                text = fields[3];
                 outgoing = (direction == "out");
             } else {
-                author = record.substr(first_sep + std::strlen(kChatHistoryFieldSeparator),
-                                       second_sep - first_sep - std::strlen(kChatHistoryFieldSeparator));
-                text = record.substr(second_sep + std::strlen(kChatHistoryFieldSeparator));
+                author = fields[1];
+                text = fields[2];
                 outgoing = (author == stored_state.identity.display_name) || (author == stored_state.identity.device_id);
             }
 
+            if (message_id.empty()) {
+                message_id = std::string("hist-") + conversation_id + "-" + std::to_string(++loaded_index);
+            }
+
             loaded_entries.push_back(ConversationEntry{.conversation_id = conversation_id,
+                                                       .message_id = message_id,
                                                        .text = text,
                                                        .meta = author + "  " + timestamp,
+                                                       .author_id = author_id,
+                                                       .author_name = author,
+                                                       .quoted_message_id = quoted_message_id,
+                                                       .quoted_preview = shorten_reply_preview(quoted_preview),
+                                                       .history_timestamp = timestamp,
                                                        .outgoing = outgoing});
         }
         std::fclose(file);
@@ -4611,9 +5266,14 @@ struct LoRaMeshApp::Impl {
         std::string payload(raw_text);
         std::string conversation_id;
         std::string peer_id;
+        std::string message_id;
+        std::string edited_message_id;
+        std::string quoted_message_id;
+        std::string quoted_preview;
         std::string bubble_text;
         std::string bubble_meta;
         uint64_t pending_token = 0;
+        bool edit_existing = false;
 
         lock();
         if (send_task != nullptr) {
@@ -4625,16 +5285,88 @@ struct LoRaMeshApp::Impl {
 
         conversation_id = selected_conversation_id;
         peer_id = selected_peer_id;
-        bubble_text = (conversation_id == jc4880::lora_mesh::kCommonConversationId) ? payload : std::string("[private] ") + payload;
-        bubble_meta = stored_state.identity.display_name.empty() ? stored_state.identity.device_id : stored_state.identity.display_name;
-        pending_token = append_pending_outgoing_message_locked(conversation_id, bubble_text, bubble_meta);
+        if (!pending_edit_message_id.empty()) {
+            if (pending_edit_conversation_id != conversation_id) {
+                clear_pending_edit_locked();
+                status_text = "Select the original conversation before editing";
+                unlock();
+                refresh_ui();
+                return false;
+            }
+            edited_message_id = pending_edit_message_id;
+            quoted_message_id = pending_edit_quoted_message_id;
+            quoted_preview = pending_edit_quoted_preview;
+            message_id = jc4880::lora_mesh::cryptoGenerateNonceHex(8);
+            bubble_text = (conversation_id == jc4880::lora_mesh::kCommonConversationId) ? payload : std::string("[private] ") + payload;
+            bubble_meta = stored_state.identity.display_name.empty() ? stored_state.identity.device_id : stored_state.identity.display_name;
+            pending_token = stage_pending_message_edit_locked(conversation_id,
+                                                              edited_message_id,
+                                                              bubble_text,
+                                                              quoted_message_id,
+                                                              quoted_preview);
+            if (pending_token == 0) {
+                status_text = "Unable to edit that message";
+                unlock();
+                refresh_ui();
+                return false;
+            }
+            clear_pending_edit_locked();
+            edit_existing = true;
+        } else if (!pending_reply_message_id.empty()) {
+            quoted_message_id = pending_reply_message_id;
+            quoted_preview = pending_reply_preview;
+            const std::string reply_prefix = build_reply_input_prefix(quoted_preview);
+            if (!reply_prefix.empty() && (payload.rfind(reply_prefix, 0) == 0)) {
+                payload.erase(0, reply_prefix.size());
+            }
+            while (!payload.empty() && std::isspace(static_cast<unsigned char>(payload.front()))) {
+                payload.erase(payload.begin());
+            }
+            if (payload.empty()) {
+                status_text = "Enter a reply after the quote";
+                unlock();
+                refresh_ui();
+                return false;
+            }
+        }
+        if (!edit_existing) {
+            message_id = jc4880::lora_mesh::cryptoGenerateNonceHex(8);
+            bubble_text = (conversation_id == jc4880::lora_mesh::kCommonConversationId) ? payload : std::string("[private] ") + payload;
+            bubble_meta = stored_state.identity.display_name.empty() ? stored_state.identity.device_id : stored_state.identity.display_name;
+            pending_token = append_pending_outgoing_message_locked(conversation_id,
+                                                                   bubble_text,
+                                                                   bubble_meta,
+                                                                   message_id,
+                                                                   quoted_message_id,
+                                                                   quoted_preview);
+            clear_pending_reply_locked();
+        }
         unlock();
 
         finish_send_ui(this);
 
-        if (!start_send_task(conversation_id, peer_id, payload, false, pending_token, bubble_text, bubble_meta)) {
+        if (!start_send_task(conversation_id,
+                             peer_id,
+                             payload,
+                             message_id,
+                             edited_message_id,
+                             quoted_message_id,
+                             quoted_preview,
+                             false,
+                             pending_token,
+                             bubble_text,
+                             bubble_meta,
+                             edit_existing)) {
             lock();
-            settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
+            settle_pending_outgoing_message_locked(pending_token,
+                                                   conversation_id,
+                                                   bubble_text,
+                                                   bubble_meta,
+                                                   message_id,
+                                                   quoted_message_id,
+                                                   quoted_preview,
+                                                   false,
+                                                   edit_existing);
             status_text = "Failed to start LoRa send task";
             unlock();
             refresh_ui();
@@ -4653,9 +5385,26 @@ struct LoRaMeshApp::Impl {
     void push_conversation_locked(const std::string &conversation_id,
                                   const std::string &text,
                                   const std::string &meta,
-                                  bool outgoing)
+                                  bool outgoing,
+                                  const std::string &message_id = std::string(),
+                                  const std::string &author_id = std::string(),
+                                  const std::string &author_name = std::string(),
+                                  const std::string &quoted_message_id = std::string(),
+                                  const std::string &quoted_preview = std::string())
     {
-        push_conversation_entry_locked(conversation_id, text, meta, outgoing, true);
+        push_conversation_entry_locked(conversation_id,
+                                       text,
+                                       meta,
+                                       outgoing,
+                                       true,
+                                       0,
+                                       false,
+                                       false,
+                                       message_id,
+                                       author_id,
+                                       author_name,
+                                       quoted_message_id,
+                                       quoted_preview);
     }
 
     bool send_uart_self_test_probe_locked(std::string &failure_reason)
@@ -5702,10 +6451,15 @@ struct LoRaMeshApp::Impl {
     bool send_user_message(const std::string &conversation_id,
                            const std::string &peer_id,
                            const std::string &payload,
+                           const std::string &message_id,
+                           const std::string &edited_message_id,
+                           const std::string &quoted_message_id,
+                           const std::string &quoted_preview,
                            bool beacon,
                            uint64_t pending_token,
                            const std::string &bubble_text,
-                           const std::string &bubble_meta)
+                           const std::string &bubble_meta,
+                           bool edit_existing)
     {
         if (payload.empty()) {
             set_status("Enter a message before sending");
@@ -5750,18 +6504,43 @@ struct LoRaMeshApp::Impl {
         }
 
         MeshPacket packet = {};
+        std::string encoded_public_payload = payload;
         packet.sender_id = stored_state.identity.device_id;
         packet.sender_name = stored_state.identity.display_name;
         packet.timestamp_ms = esp_timer_get_time() / 1000;
         packet.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
-        packet.msg_id = jc4880::lora_mesh::cryptoGenerateNonceHex(8);
+        packet.msg_id = message_id.empty() ? jc4880::lora_mesh::cryptoGenerateNonceHex(8) : message_id;
         if (conversation_id == jc4880::lora_mesh::kCommonConversationId) {
             packet.kind = PacketKind::PublicChat;
             packet.target_id = jc4880::lora_mesh::kBroadcastTargetId;
+            if (!quoted_message_id.empty() || !quoted_preview.empty() || !edited_message_id.empty()) {
+                if (!encode_chat_payload(payload, quoted_message_id, quoted_preview, edited_message_id, encoded_public_payload)) {
+                    settle_pending_outgoing_message_locked(pending_token,
+                                                           conversation_id,
+                                                           bubble_text,
+                                                           bubble_meta,
+                                                           packet.msg_id,
+                                                           quoted_message_id,
+                                                           quoted_preview,
+                                                           false,
+                                                           edit_existing);
+                    unlock();
+                    set_status(edit_existing ? "Public chat edit encoding failed" : "Public chat reply encoding failed");
+                    return false;
+                }
+            }
         } else {
             PeerInfo *peer = find_peer_locked(peer_id);
             if ((peer == nullptr) || !peer->trusted || peer->public_key_hex.empty()) {
-                settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
+                settle_pending_outgoing_message_locked(pending_token,
+                                                       conversation_id,
+                                                       bubble_text,
+                                                       bubble_meta,
+                                                       packet.msg_id,
+                                                       quoted_message_id,
+                                                       quoted_preview,
+                                                       false,
+                                                       edit_existing);
                 unlock();
                 set_status("Selected peer is not fully paired yet");
                 return false;
@@ -5772,16 +6551,30 @@ struct LoRaMeshApp::Impl {
             packet.encrypted = true;
             packet.nonce_hex = jc4880::lora_mesh::cryptoGenerateNonceHex();
             std::string private_payload;
-            if (!encode_private_chat_payload(payload, packet.timestamp_ms, packet.msg_id, private_payload) ||
+            if (!encode_private_chat_payload(payload,
+                                             packet.timestamp_ms,
+                                             packet.msg_id,
+                                             quoted_message_id,
+                                             quoted_preview,
+                                             edited_message_id,
+                                             private_payload) ||
                 !jc4880::lora_mesh::cryptoEncryptForPeer(stored_state.identity,
                                                         peer->public_key_hex,
                                                         packet.nonce_hex,
                                                         private_payload,
                                                         packet.payload,
                                                         packet.auth_hex)) {
-                settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
+                settle_pending_outgoing_message_locked(pending_token,
+                                                       conversation_id,
+                                                       bubble_text,
+                                                       bubble_meta,
+                                                       packet.msg_id,
+                                                       quoted_message_id,
+                                                       quoted_preview,
+                                                       false,
+                                                       edit_existing);
                 unlock();
-                set_status("Private chat encryption failed");
+                set_status(edit_existing ? "Private chat edit send failed" : "Private chat encryption failed");
                 return false;
             }
         }
@@ -5790,19 +6583,35 @@ struct LoRaMeshApp::Impl {
             packet.nonce_hex = jc4880::lora_mesh::cryptoGenerateNonceHex();
             if (!jc4880::lora_mesh::cryptoEncryptSymmetric(stored_state.settings.public_group_key_hex,
                                                            packet.nonce_hex,
-                                                           payload,
+                                                           encoded_public_payload,
                                                            packet.payload,
                                                            packet.auth_hex)) {
-                settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, false);
+                settle_pending_outgoing_message_locked(pending_token,
+                                                       conversation_id,
+                                                       bubble_text,
+                                                       bubble_meta,
+                                                       packet.msg_id,
+                                                       quoted_message_id,
+                                                       quoted_preview,
+                                                       false,
+                                                       edit_existing);
                 unlock();
                 set_status("Public chat encryption failed");
                 return false;
             }
         } else {
-            packet.payload = payload;
+            packet.payload = encoded_public_payload;
         }
         const bool ok = send_packet_locked(packet, nullptr, bubble_meta);
-        settle_pending_outgoing_message_locked(pending_token, conversation_id, bubble_text, bubble_meta, ok);
+        settle_pending_outgoing_message_locked(pending_token,
+                                               conversation_id,
+                                               bubble_text,
+                                               bubble_meta,
+                                               packet.msg_id,
+                                               quoted_message_id,
+                                               quoted_preview,
+                                               ok,
+                                               edit_existing);
         save_state_if_needed_locked();
         unlock();
 
@@ -5849,8 +6658,6 @@ struct LoRaMeshApp::Impl {
                           make_message_meta_locked(format_node_id(frame.origin)),
                           false);
          } else {
-            remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
-
             std::ostringstream stream;
             stream << "RX packet kind=" << jc4880::lora_mesh::packet_kind_name(packet.kind)
                    << " from=" << packet.sender_id
@@ -5862,11 +6669,15 @@ struct LoRaMeshApp::Impl {
 
             switch (packet.kind) {
             case PacketKind::PublicChat: {
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex, false);
                 if ((frame.origin == node_id) || (packet.sender_id == stored_state.identity.device_id)) {
                     append_line_capped(log_text, "Dropped self-echo public packet");
                     break;
                 }
                 std::string text = packet.payload;
+                std::string quoted_message_id;
+                std::string quoted_preview;
+                std::string edited_message_id;
                 if (packet.encrypted) {
                     if (!jc4880::lora_mesh::cryptoDecryptSymmetric(stored_state.settings.public_group_key_hex,
                                                                    packet.nonce_hex,
@@ -5878,15 +6689,48 @@ struct LoRaMeshApp::Impl {
                         break;
                     }
                 }
+                int64_t decoded_timestamp_ms = packet.timestamp_ms;
+                std::string decoded_message_id = packet.msg_id;
+                (void)decode_private_chat_payload(text,
+                                 text,
+                                 decoded_timestamp_ms,
+                                 decoded_message_id,
+                                 quoted_message_id,
+                                 quoted_preview,
+                                 edited_message_id);
+                const std::string sender_label = packet.sender_name.empty() ? packet.sender_id : packet.sender_name;
+                const std::string resolved_preview = resolve_reply_preview_locked(jc4880::lora_mesh::kCommonConversationId,
+                                                                                 quoted_message_id,
+                                                                                 quoted_preview);
+                if (!edited_message_id.empty()) {
+                    if (update_conversation_message_locked(jc4880::lora_mesh::kCommonConversationId,
+                                                           edited_message_id,
+                                                           text,
+                                                           quoted_message_id,
+                                                           resolved_preview,
+                                                           packet.sender_id)) {
+                        status_text = "Mesh message edited";
+                        play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                    } else {
+                        append_line_capped(log_text, std::string("Dropped public edit for missing message ") + edited_message_id);
+                    }
+                    break;
+                }
                 push_conversation_locked(jc4880::lora_mesh::kCommonConversationId,
                                          text,
-                                         make_message_meta_locked(packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
-                                         false);
+                                         make_message_meta_locked(sender_label),
+                                         false,
+                             decoded_message_id.empty() ? packet.msg_id : decoded_message_id,
+                                         packet.sender_id,
+                                         sender_label,
+                                         quoted_message_id,
+                                         resolved_preview);
                 status_text = "Mesh message received";
                 play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
                 break;
             }
             case PacketKind::PairRequest: {
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
                 const int64_t now_ms = esp_timer_get_time() / 1000;
                 const bool duplicate_pair_id = packet.pair_id.empty() ||
                                                has_recent_id_locked(recent_pair_ids, packet.pair_id, now_ms) ||
@@ -5925,6 +6769,7 @@ struct LoRaMeshApp::Impl {
                 break;
             }
             case PacketKind::PairAccept: {
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
                 if (packet.target_id == stored_state.identity.device_id) {
                     const bool target_public_key_matches = packet.target_public_key_hex.empty() ||
                                                            (packet.target_public_key_hex == stored_state.identity.public_key_hex);
@@ -6007,6 +6852,7 @@ struct LoRaMeshApp::Impl {
                 break;
             }
             case PacketKind::PairReject:
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
                 if (packet.target_id == stored_state.identity.device_id) {
                     if (has_pending_outgoing_pair_request && (pending_outgoing_pair_request.pair_id == packet.pair_id)) {
                         remember_recent_id_locked(recent_pair_ids, packet.pair_id, esp_timer_get_time() / 1000, kRecentPairRetentionMs);
@@ -6022,6 +6868,7 @@ struct LoRaMeshApp::Impl {
                 }
                 break;
             case PacketKind::PairConfirm:
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
                 if (packet.target_id == stored_state.identity.device_id) {
                     PendingPairConfirmation *pending = find_pending_pair_confirmation_by_pair_id_locked(packet.pair_id);
                     std::string expected_proof_a;
@@ -6058,6 +6905,7 @@ struct LoRaMeshApp::Impl {
                 }
                 break;
             case PacketKind::PrivateChat: {
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
                 if ((packet.target_id != stored_state.identity.device_id) ||
                     (!packet.target_public_key_hex.empty() && (packet.target_public_key_hex != stored_state.identity.public_key_hex))) {
                     break;
@@ -6091,16 +6939,46 @@ struct LoRaMeshApp::Impl {
                 std::string text;
                 int64_t private_timestamp_ms = 0;
                 std::string private_seq;
-                if (!decode_private_chat_payload(private_payload, text, private_timestamp_ms, private_seq)) {
+                std::string quoted_message_id;
+                std::string quoted_preview;
+                std::string edited_message_id;
+                if (!decode_private_chat_payload(private_payload,
+                                                 text,
+                                                 private_timestamp_ms,
+                                                 private_seq,
+                                                 quoted_message_id,
+                                                 quoted_preview,
+                                                 edited_message_id)) {
                     ++drop_count;
                     append_line_capped(log_text, "Dropped private packet: invalid payload");
                     break;
                 }
                 remember_recent_id_locked(recent_private_message_ids, packet.msg_id, now_ms, kRecentPrivateMessageRetentionMs);
+                const std::string resolved_preview = resolve_reply_preview_locked(packet.sender_id, quoted_message_id, quoted_preview);
+                const std::string display_text = std::string("[private] ") + text;
+                if (!edited_message_id.empty()) {
+                    if (update_conversation_message_locked(packet.sender_id,
+                                                           edited_message_id,
+                                                           display_text,
+                                                           quoted_message_id,
+                                                           resolved_preview,
+                                                           packet.sender_id)) {
+                        status_text = "Private message edited";
+                        play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                    } else {
+                        append_line_capped(log_text, std::string("Dropped private edit for missing message ") + edited_message_id);
+                    }
+                    break;
+                }
                 push_conversation_locked(packet.sender_id,
-                                         std::string("[private] ") + text,
+                                         display_text,
                                          make_message_meta_locked(peer->display_name.empty() ? peer->device_id : peer->display_name),
-                                         false);
+                                         false,
+                                         packet.msg_id.empty() ? private_seq : packet.msg_id,
+                                         packet.sender_id,
+                                         peer->display_name.empty() ? peer->device_id : peer->display_name,
+                                         quoted_message_id,
+                                         resolved_preview);
                 status_text = "Private message received";
                 play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
                 break;
@@ -6387,12 +7265,20 @@ struct LoRaMeshApp::Impl {
                     continue;
                 }
                 has_visible_messages = true;
+                MessageActionUiContext *message_context = new (std::nothrow) MessageActionUiContext{this,
+                                                                                                    entry.conversation_id,
+                                                                                                    entry.message_id};
                 jc4880::lora_mesh::create_conversation_row({.parent = message_list,
                                                             .text = entry.text.c_str(),
+                                                            .quoted_text = entry.quoted_preview.c_str(),
                                                             .meta = entry.meta.c_str(),
                                                             .outgoing = entry.outgoing,
                                                             .transmit_pending = entry.transmit_pending,
-                                                            .transmit_failed = entry.transmit_failed});
+                                                            .transmit_failed = entry.transmit_failed,
+                                                            .click_cb = message_context == nullptr ? nullptr : on_message_bubble_clicked,
+                                                            .click_user_data = message_context,
+                                                            .cleanup_cb = message_context == nullptr ? nullptr : on_message_action_button_deleted,
+                                                            .cleanup_user_data = message_context});
             }
 
             if (!has_visible_messages) {
@@ -6800,6 +7686,9 @@ struct LoRaMeshApp::Impl {
         const lv_event_code_t code = lv_event_get_code(event);
         lv_obj_t *target = lv_event_get_target(event);
         if ((code == LV_EVENT_FOCUSED) || (code == LV_EVENT_CLICKED)) {
+            if ((target == impl->input) && (impl->chat_action_overlay_mode == ChatActionOverlayMode::MessageMenu)) {
+                impl->close_chat_action_overlay();
+            }
             impl->active_text_input = target;
             impl->set_keyboard_visible(true, target);
         } else if (code == LV_EVENT_DEFOCUSED) {
@@ -7474,10 +8363,15 @@ bool LoRaMeshApp::queueDebugUiAction(int action, const std::string &peer_id)
                                                     : impl->stored_state.identity.display_name;
                 const std::string payload = context->peer_id;
                 const std::string bubble_text = payload;
+                const std::string message_id = jc4880::lora_mesh::cryptoGenerateNonceHex(8);
                 impl->unlock();
                 (void)impl->start_send_task(jc4880::lora_mesh::kCommonConversationId,
                                             std::string(),
                                             payload,
+                                            message_id,
+                                            std::string(),
+                                            std::string(),
+                                            std::string(),
                                             false,
                                             0,
                                             bubble_text,

@@ -9,7 +9,14 @@ list(APPEND SRCS_C ${APP_EXAMPLES_PHONE_SRCS_C})
 list(APPEND SRCS_CPP ${APP_EXAMPLES_PHONE_SRCS_CPP})
 
 set(ASSETS_SRC_DIR ${PROJ_SRC_DIR}/assets)
-file(GLOB_RECURSE ASSETS_SRC_C ${ASSETS_SRC_DIR}/*.c)
+file(GLOB_RECURSE ASSETS_IMAGE_SRC_C ${ASSETS_SRC_DIR}/images/middle/*.c)
+set(ASSETS_FONT_SRC_C
+    ${ASSETS_SRC_DIR}/fonts/maison_neue_book/esp_brookesia_font_maison_neue_book_16.c
+    ${ASSETS_SRC_DIR}/fonts/maison_neue_book/esp_brookesia_font_maison_neue_book_18.c
+    ${ASSETS_SRC_DIR}/fonts/maison_neue_book/esp_brookesia_font_maison_neue_book_22.c)
+set(ASSETS_SRC_C
+    ${ASSETS_FONT_SRC_C}
+    ${ASSETS_IMAGE_SRC_C})
 list(APPEND SRCS_C ${ASSETS_SRC_C})
 
 set(CORE_SRC_DIR ${PROJ_SRC_DIR}/core)

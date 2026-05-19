@@ -14,7 +14,7 @@
 
 using namespace std;
 
-const ESP_Brookesia_PhoneStylesheet_t ESP_Brookesia_Phone::_default_stylesheet_dark = ESP_BROOKESIA_PHONE_DEFAULT_DARK_STYLESHEET();
+const ESP_Brookesia_PhoneStylesheet_t ESP_Brookesia_Phone::_default_stylesheet_dark = ESP_BROOKESIA_PHONE_480_800_DARK_STYLESHEET();
 
 ESP_Brookesia_Phone::ESP_Brookesia_Phone(lv_disp_t *display):
     ESP_Brookesia_Core(_active_stylesheet.core, _home, _manager, display),

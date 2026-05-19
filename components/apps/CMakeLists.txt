@@ -50,6 +50,11 @@ endif()
 
 if(CONFIG_JC4880_APP_MUSIC_PLAYER)
     jc4880_append_app_sources(APPS_SRCS ${APPS_DIR}/music_player)
+    list(REMOVE_ITEM APPS_SRCS
+         ${APPS_DIR}/music_player/gui_music/assets/img_music_player_cover_2.c
+         ${APPS_DIR}/music_player/gui_music/assets/img_music_player_cover_3.c
+         ${APPS_DIR}/music_player/gui_music/assets/img_music_player_cover_2_large.c
+         ${APPS_DIR}/music_player/gui_music/assets/img_music_player_cover_3_large.c)
 endif()
 
 if(CONFIG_JC4880_APP_RECORDER)

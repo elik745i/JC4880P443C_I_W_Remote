@@ -1195,25 +1195,21 @@ static void start_anim_cb(void * a, int32_t v)
 static lv_obj_t * album_img_create(lv_obj_t * parent)
 {
     LV_IMG_DECLARE(img_music_player_ui_cover_1);
-    LV_IMG_DECLARE(img_music_player_ui_cover_2);
-    LV_IMG_DECLARE(img_music_player_ui_cover_3);
 
     lv_obj_t * img;
     img = lv_img_create(parent);
+    lv_img_set_src(img, &img_music_player_ui_cover_1);
 
     switch(track_id % 3) {
         case 0:
-            lv_img_set_src(img, &img_music_player_ui_cover_1);
             spectrum = spectrum_1;
             spectrum_len = sizeof(spectrum_1) / sizeof(spectrum_1[0]);
             break;
         case 1:
-            lv_img_set_src(img, &img_music_player_ui_cover_2);
             spectrum = spectrum_2;
             spectrum_len = sizeof(spectrum_2) / sizeof(spectrum_2[0]);
             break;
         default:
-            lv_img_set_src(img, &img_music_player_ui_cover_3);
             spectrum = spectrum_3;
             spectrum_len = sizeof(spectrum_3) / sizeof(spectrum_3[0]);
             break;

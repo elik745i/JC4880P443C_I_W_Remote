@@ -8504,75 +8504,88 @@ void AppSettings::onMainMenuItemClickedEventCallback(lv_event_t *e)
     #if APP_SETTINGS_FEATURE_WIFI
     if (target == app->_wifiMenuItem) {
         lv_scr_load_anim(ui_ScreenSettingWiFi, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if CONFIG_JC4880_FEATURE_AUDIO
     if (target == app->_audioMenuItem) {
         lv_scr_load_anim(ui_ScreenSettingVolume, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if APP_SETTINGS_FEATURE_DISPLAY_MENU
     if (target == app->_displayMenuItem) {
         lv_scr_load_anim(ui_ScreenSettingLight, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if APP_SETTINGS_FEATURE_BLUETOOTH_MENU
     if (target == app->_bluetoothMenuItem) {
         lv_scr_load_anim(ui_ScreenSettingBLE, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     if (target == app->_joypadMenuItem) {
         app->ensureJoypadScreen();
         lv_scr_load_anim(app->_joypadScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #if APP_SETTINGS_FEATURE_IMU
     if (target == app->_imuMenuItem) {
         app->ensureImuScreen();
         app->refreshImuUi();
         lv_scr_load_anim(app->_imuScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if CONFIG_JC4880_APP_LORA_MESH
     if (target == app->_loraMenuItem) {
         app->ensureLoRaScreen();
         app->refreshLoRaUi();
         lv_scr_load_anim(app->_loraScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if APP_SETTINGS_FEATURE_HARDWARE_MENU
     if (target == app->_gpioTestMenuItem) {
         app->ensureGpioTestScreen();
         app->refreshHardwareGpioTestUi();
         lv_scr_load_anim(app->_gpioTestScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if CONFIG_JC4880_FEATURE_ZIGBEE
     if (target == app->_zigbeeMenuItem) {
         app->ensureZigbeeScreen();
         lv_scr_load_anim(app->_zigbeeScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if APP_SETTINGS_FEATURE_HARDWARE_MENU
     if (target == app->_hardwareMenuItem) {
         app->ensureHardwareScreen();
         lv_scr_load_anim(app->_hardwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if CONFIG_JC4880_FEATURE_SECURITY
     if (target == app->_securityMenuItem) {
         app->ensureSecurityScreen();
         lv_scr_load_anim(app->_securityScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if CONFIG_JC4880_FEATURE_OTA
     if (target == app->_firmwareMenuItem) {
         app->ensureFirmwareScreen();
         lv_scr_load_anim(app->_firmwareScreen, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
-    } else
+        goto end;
+    }
     #endif
     #if CONFIG_JC4880_FEATURE_ABOUT_DEVICE
     if (target == app->_aboutMenuItem) {
         lv_scr_load_anim(ui_ScreenSettingAbout, LV_SCR_LOAD_ANIM_MOVE_LEFT, kSettingScreenAnimTimeMs, 0, false);
+        goto end;
     }
     #endif
 
@@ -8641,5 +8654,3 @@ void AppSettings::onDropdownJoypadLocalHapticLevelValueChangeEventCallback(lv_ev
 end:
     return;
 }
-
- 

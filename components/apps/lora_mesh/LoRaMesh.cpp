@@ -21,10 +21,12 @@
 #include <unordered_map>
 #include <vector>
 
+#include "LoRaMeshConversationUi.hpp"
 #include "LoRaMeshCrypto.hpp"
 #include "LoRaMeshPackets.hpp"
 #include "LoRaPinProfile.hpp"
 #include "LoRaMeshStorage.hpp"
+#include "LoRaMeshTargetListUi.hpp"
 #include "LoRaMeshTypes.hpp"
 #include "LoRaMeshUiHelpers.hpp"
 #include "assets/esp_brookesia_assets.h"
@@ -702,6 +704,12 @@ struct LoRaMeshApp::Impl {
         std::string display_name;
     };
 
+    struct PeerDeleteUiContext {
+        Impl *impl = nullptr;
+        std::string peer_id;
+        std::string peer_name;
+    };
+
     std::vector<PendingPairRequest> pending_pair_requests;
     std::vector<PendingPairConfirmation> pending_pair_confirmations;
     std::vector<ConversationEntry> conversation;
@@ -713,6 +721,8 @@ struct LoRaMeshApp::Impl {
     std::string pair_modal_pair_id;
     std::string pair_modal_device_id;
     std::string pair_modal_display_name;
+    std::string delete_peer_id;
+    std::string delete_peer_name;
     std::string generated_pair_code;
     bool pending_pair_modal_open = false;
 
@@ -979,6 +989,97 @@ struct LoRaMeshApp::Impl {
                                           pending_pair_confirmations.end());
     }
 
+    static bool is_pair_request_transcript_text(const std::string &text)
+    {
+        return (text.rfind("Pair request sent to ", 0) == 0) ||
+               (text.rfind("Pair request from ", 0) == 0);
+    }
+
+    static bool is_pair_request_history_line(const std::string &line)
+    {
+        const size_t first_sep = line.find(kChatHistoryFieldSeparator);
+        if (first_sep == std::string::npos) {
+            return false;
+        }
+        const size_t second_sep = line.find(kChatHistoryFieldSeparator,
+                                            first_sep + std::strlen(kChatHistoryFieldSeparator));
+        if (second_sep == std::string::npos) {
+            return false;
+        }
+        const size_t third_sep = line.find(kChatHistoryFieldSeparator,
+                                           second_sep + std::strlen(kChatHistoryFieldSeparator));
+
+        std::string text = third_sep != std::string::npos
+                               ? line.substr(third_sep + std::strlen(kChatHistoryFieldSeparator))
+                               : line.substr(second_sep + std::strlen(kChatHistoryFieldSeparator));
+        while (!text.empty() && ((text.back() == '\n') || (text.back() == '\r'))) {
+            text.pop_back();
+        }
+        return is_pair_request_transcript_text(text);
+    }
+
+    bool clear_pair_request_transcripts_locked()
+    {
+        const std::string conversation_id = jc4880::lora_mesh::kCommonConversationId;
+        bool changed = false;
+
+        const size_t conversation_before = conversation.size();
+        conversation.erase(std::remove_if(conversation.begin(),
+                                          conversation.end(),
+                                          [&conversation_id](const ConversationEntry &entry) {
+                                              return (entry.conversation_id == conversation_id) &&
+                                                     is_pair_request_transcript_text(entry.text);
+                                          }),
+                           conversation.end());
+        if (conversation.size() != conversation_before) {
+            conversation_dirty = true;
+            changed = true;
+        }
+
+        const std::string history_path = conversation_history_path(conversation_id);
+        const size_t pending_before = pending_history_writes.size();
+        pending_history_writes.erase(std::remove_if(pending_history_writes.begin(),
+                                                    pending_history_writes.end(),
+                                                    [&history_path](const std::pair<std::string, std::string> &write_request) {
+                                                        return (write_request.first == history_path) &&
+                                                               is_pair_request_history_line(write_request.second);
+                                                    }),
+                                     pending_history_writes.end());
+        if (pending_history_writes.size() != pending_before) {
+            changed = true;
+        }
+
+        FILE *file = std::fopen(history_path.c_str(), "rb");
+        if (file != nullptr) {
+            std::vector<std::string> kept_lines;
+            char line[kChatHistoryLineBytes] = {};
+            while (std::fgets(line, sizeof(line), file) != nullptr) {
+                std::string record(line);
+                if (!is_pair_request_history_line(record)) {
+                    kept_lines.push_back(std::move(record));
+                } else {
+                    changed = true;
+                }
+            }
+            std::fclose(file);
+
+            if (changed) {
+                FILE *rewrite = std::fopen(history_path.c_str(), "wb");
+                if (rewrite != nullptr) {
+                    for (const std::string &record : kept_lines) {
+                        (void)std::fwrite(record.data(), 1, record.size(), rewrite);
+                    }
+                    std::fclose(rewrite);
+                }
+            }
+        }
+
+        if (changed) {
+            target_list_dirty = true;
+        }
+        return changed;
+    }
+
     bool clear_all_pair_requests_locked()
     {
         const bool had_requests = !pending_pair_requests.empty() ||
@@ -993,8 +1094,9 @@ struct LoRaMeshApp::Impl {
         pair_modal_pair_id.clear();
         pair_modal_device_id.clear();
         pair_modal_display_name.clear();
+        const bool cleared_transcripts = clear_pair_request_transcripts_locked();
         target_list_dirty = true;
-        return had_requests;
+        return had_requests || cleared_transcripts;
     }
 
     void upsert_trusted_peer_locked(const std::string &device_id,
@@ -1201,6 +1303,66 @@ struct LoRaMeshApp::Impl {
         return errno == ENOENT;
     }
 
+    bool delete_peer_chat_and_pairing_locked(const std::string &peer_id)
+    {
+        if (peer_id.empty()) {
+            return false;
+        }
+
+        const size_t peer_count_before = stored_state.peers.size();
+        stored_state.peers.erase(std::remove_if(stored_state.peers.begin(),
+                                                stored_state.peers.end(),
+                                                [&peer_id](const PeerInfo &peer) {
+                                                    return peer.device_id == peer_id;
+                                                }),
+                                 stored_state.peers.end());
+        const bool peer_removed = stored_state.peers.size() != peer_count_before;
+
+        const size_t requests_before = pending_pair_requests.size();
+        pending_pair_requests.erase(std::remove_if(pending_pair_requests.begin(),
+                                                   pending_pair_requests.end(),
+                                                   [&peer_id](const PendingPairRequest &request) {
+                                                       return request.device_id == peer_id;
+                                                   }),
+                                  pending_pair_requests.end());
+        const bool requests_removed = pending_pair_requests.size() != requests_before;
+
+        const size_t confirmations_before = pending_pair_confirmations.size();
+        pending_pair_confirmations.erase(std::remove_if(pending_pair_confirmations.begin(),
+                                                        pending_pair_confirmations.end(),
+                                                        [&peer_id](const PendingPairConfirmation &confirmation) {
+                                                            return confirmation.device_id == peer_id;
+                                                        }),
+                                       pending_pair_confirmations.end());
+        const bool confirmations_removed = pending_pair_confirmations.size() != confirmations_before;
+
+        bool outgoing_request_cleared = false;
+        if (has_pending_outgoing_pair_request &&
+            ((pending_outgoing_pair_request.peer_device_id == peer_id) ||
+             (pending_outgoing_pair_request.target_name == peer_id))) {
+            pending_outgoing_pair_request = {};
+            has_pending_outgoing_pair_request = false;
+            outgoing_request_cleared = true;
+        }
+
+        const bool had_unread = unread_conversations.erase(peer_id) > 0U;
+        const bool was_selected = (selected_conversation_id == peer_id) || (selected_peer_id == peer_id);
+        if (was_selected) {
+            show_targets_locked();
+        }
+        selected_peer_id = (selected_peer_id == peer_id) ? std::string() : selected_peer_id;
+
+        const bool history_cleared = clear_conversation_history_locked(peer_id);
+        if (peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared) {
+            state_dirty = true;
+        }
+        if (peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared || had_unread || was_selected || history_cleared) {
+            target_list_dirty = true;
+        }
+        system_ui_service::set_lora_unread(!unread_conversations.empty());
+        return peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared || had_unread || was_selected;
+    }
+
     static void play_chat_feedback_sound(bsp_extra_audio_system_sound_t sound)
     {
         if (jc_ui_tap_sound_is_enabled()) {
@@ -1252,31 +1414,6 @@ struct LoRaMeshApp::Impl {
         }
     }
 
-    static const char *delivery_status_symbol(const ConversationEntry &entry)
-    {
-        if (!entry.outgoing) {
-            return "";
-        }
-        if (entry.transmit_pending) {
-            return "...";
-        }
-        if (entry.transmit_failed) {
-            return "!";
-        }
-        return LV_SYMBOL_OK;
-    }
-
-    static lv_color_t delivery_status_color(const ConversationEntry &entry)
-    {
-        if (entry.transmit_failed) {
-            return lv_color_hex(0xB42318);
-        }
-        if (entry.transmit_pending) {
-            return lv_color_hex(0xB54708);
-        }
-        return lv_color_hex(0x027A48);
-    }
-
     void close_chat_action_overlay()
     {
         if (chat_action_overlay != nullptr) {
@@ -1288,6 +1425,8 @@ struct LoRaMeshApp::Impl {
         pair_request_code_input = nullptr;
         pair_accept_code_input = nullptr;
         pair_modal_pair_id.clear();
+        delete_peer_id.clear();
+        delete_peer_name.clear();
     }
 
     static void on_chat_overlay_dismiss(lv_event_t *event)
@@ -1334,6 +1473,32 @@ struct LoRaMeshApp::Impl {
         impl->unlock();
 
         impl->set_status(cleared ? "Chat cleared" : "Failed to clear saved chat history");
+        impl->refresh_ui();
+    }
+
+    static void on_peer_delete_confirmed(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl == nullptr) {
+            return;
+        }
+
+        const std::string peer_id = impl->delete_peer_id;
+        const std::string peer_name = impl->delete_peer_name;
+        impl->close_chat_action_overlay();
+
+        impl->lock();
+        const bool removed = impl->delete_peer_chat_and_pairing_locked(peer_id);
+        if (removed && (impl->input != nullptr)) {
+            lv_textarea_set_text(impl->input, "");
+        }
+        impl->trace_event_locked(std::string("UI deleted peer chat ") +
+                                 (peer_id.empty() ? std::string("<none>") : peer_id));
+        impl->unlock();
+
+        impl->set_status(removed
+                                 ? (std::string("Deleted ") + (peer_name.empty() ? peer_id : peer_name))
+                                 : "Nothing to delete for that peer");
         impl->refresh_ui();
     }
 
@@ -1406,12 +1571,114 @@ struct LoRaMeshApp::Impl {
         lv_label_set_text(clear_label, "Clear chat");
     }
 
+    void open_delete_peer_confirmation_overlay(const std::string &peer_id, const std::string &peer_name)
+    {
+        close_chat_action_overlay();
+
+        if (root == nullptr) {
+            return;
+        }
+
+        delete_peer_id = peer_id;
+        delete_peer_name = peer_name;
+
+        chat_action_overlay = lv_obj_create(root);
+        lv_obj_set_size(chat_action_overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_add_flag(chat_action_overlay, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_style_bg_color(chat_action_overlay, lv_color_hex(0x111B21), 0);
+        lv_obj_set_style_bg_opa(chat_action_overlay, LV_OPA_40, 0);
+        lv_obj_set_style_border_width(chat_action_overlay, 0, 0);
+        lv_obj_set_style_radius(chat_action_overlay, 0, 0);
+        lv_obj_set_style_pad_all(chat_action_overlay, 0, 0);
+        lv_obj_clear_flag(chat_action_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(chat_action_overlay, on_chat_overlay_dismiss, LV_EVENT_CLICKED, this);
+
+        lv_obj_t *card = lv_obj_create(chat_action_overlay);
+        chat_action_card = card;
+        lv_obj_set_width(card, 308);
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_center(card);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(card, 22, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 16, 0);
+        lv_obj_set_style_pad_row(card, 12, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *title_row = lv_obj_create(card);
+        lv_obj_set_width(title_row, LV_PCT(100));
+        lv_obj_set_height(title_row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(title_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(title_row, 0, 0);
+        lv_obj_set_style_pad_all(title_row, 0, 0);
+        lv_obj_set_flex_flow(title_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *title = lv_label_create(title_row);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x111B21), 0);
+        lv_label_set_text(title, "Delete private chat");
+        create_modal_close_button(title_row, this);
+
+        lv_obj_t *body = lv_label_create(card);
+        lv_obj_set_width(body, LV_PCT(100));
+        lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(body, lv_color_hex(0x475467), 0);
+        lv_label_set_text(body,
+                          (std::string("Delete the saved chat with ") +
+                           (peer_name.empty() ? peer_id : peer_name) +
+                           " and remove its pairing?")
+                                  .c_str());
+
+        lv_obj_t *actions = lv_obj_create(card);
+        lv_obj_set_width(actions, LV_PCT(100));
+        lv_obj_set_height(actions, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(actions, 0, 0);
+        lv_obj_set_style_pad_all(actions, 0, 0);
+        lv_obj_set_style_pad_column(actions, 8, 0);
+        lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *cancel_button = lv_btn_create(actions);
+        lv_obj_set_height(cancel_button, 42);
+        lv_obj_set_style_radius(cancel_button, 21, 0);
+        lv_obj_set_style_bg_color(cancel_button, lv_color_hex(0xE4E7EC), 0);
+        lv_obj_add_event_cb(cancel_button, on_chat_actions_cancel, LV_EVENT_CLICKED, this);
+        lv_label_set_text(lv_label_create(cancel_button), "Cancel");
+
+        lv_obj_t *delete_button = lv_btn_create(actions);
+        lv_obj_set_height(delete_button, 42);
+        lv_obj_set_style_radius(delete_button, 21, 0);
+        lv_obj_set_style_bg_color(delete_button, lv_color_hex(0xD92D20), 0);
+        lv_obj_add_event_cb(delete_button, on_peer_delete_confirmed, LV_EVENT_CLICKED, this);
+        lv_obj_t *delete_label = lv_label_create(delete_button);
+        lv_obj_set_style_text_color(delete_label, lv_color_hex(0xFFFFFF), 0);
+        lv_label_set_text(delete_label, "Delete");
+    }
+
     static void on_chat_action_clear_clicked(lv_event_t *event)
     {
         auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
         if (impl != nullptr) {
             impl->open_clear_chat_confirmation_overlay();
         }
+    }
+
+    static void on_peer_delete_button_deleted(lv_event_t *event)
+    {
+        auto *context = static_cast<PeerDeleteUiContext *>(lv_event_get_user_data(event));
+        delete context;
+    }
+
+    static void on_peer_delete_clicked(lv_event_t *event)
+    {
+        auto *context = static_cast<PeerDeleteUiContext *>(lv_event_get_user_data(event));
+        if ((context == nullptr) || (context->impl == nullptr) || context->peer_id.empty()) {
+            return;
+        }
+        context->impl->open_delete_peer_confirmation_overlay(context->peer_id, context->peer_name);
     }
 
     void open_chat_action_overlay()
@@ -6061,140 +6328,53 @@ struct LoRaMeshApp::Impl {
                 return;
             }
 
-            lv_obj_t *common_button = lv_btn_create(target_list);
-            lv_obj_set_width(common_button, LV_PCT(100));
-            lv_obj_set_height(common_button, 52);
-            lv_obj_set_style_radius(common_button, 18, 0);
-            lv_obj_set_style_pad_left(common_button, 16, 0);
-            lv_obj_set_style_pad_right(common_button, 16, 0);
-            lv_obj_set_style_pad_top(common_button, 0, 0);
-            lv_obj_set_style_pad_bottom(common_button, 0, 0);
-            lv_obj_set_style_border_width(common_button, 0, 0);
-            lv_obj_set_style_shadow_width(common_button, 0, 0);
-            lv_obj_set_style_bg_color(common_button, lv_color_hex(0xFFFFFF), 0);
-            lv_obj_set_flex_flow(common_button, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(common_button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-            lv_obj_add_event_cb(common_button, on_open_common_chat, LV_EVENT_CLICKED, this);
-
-            lv_obj_t *common_row = lv_obj_create(common_button);
-            lv_obj_set_width(common_row, LV_PCT(100));
-            lv_obj_set_height(common_row, LV_SIZE_CONTENT);
-            lv_obj_set_style_bg_opa(common_row, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(common_row, 0, 0);
-            lv_obj_set_style_pad_all(common_row, 0, 0);
-            lv_obj_set_style_pad_column(common_row, 8, 0);
-            lv_obj_set_flex_flow(common_row, LV_FLEX_FLOW_ROW);
-            lv_obj_set_flex_align(common_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-            lv_obj_t *common_title = lv_label_create(common_row);
-            lv_obj_set_flex_grow(common_title, 1);
-            lv_obj_set_style_text_color(common_title, lv_color_hex(0x111B21), 0);
-            lv_obj_set_style_text_font(common_title, &lv_font_montserrat_18, 0);
-            lv_label_set_long_mode(common_title, LV_LABEL_LONG_DOT);
-            lv_label_set_text(common_title,
-                              stored_state.settings.common_chat_name.empty()
-                                      ? "Common Mesh Chat"
-                                      : stored_state.settings.common_chat_name.c_str());
-            if (unread_conversations_copy.count(jc4880::lora_mesh::kCommonConversationId) > 0U) {
-                lv_obj_t *common_unread = lv_label_create(common_row);
-                lv_obj_set_style_text_font(common_unread, &lv_font_montserrat_16, 0);
-                lv_obj_set_style_text_color(common_unread, lv_color_hex(0x0C8A6A), 0);
-                lv_label_set_text(common_unread, LV_SYMBOL_ENVELOPE);
-            }
+            jc4880::lora_mesh::create_common_chat_row({.parent = target_list,
+                                                       .title = stored_state.settings.common_chat_name.empty()
+                                                                        ? "Common Mesh Chat"
+                                                                        : stored_state.settings.common_chat_name.c_str(),
+                                                       .unread = unread_conversations_copy.count(jc4880::lora_mesh::kCommonConversationId) > 0U,
+                                                       .open_cb = on_open_common_chat,
+                                                       .open_user_data = this});
 
             if (!pending_requests_copy.empty()) {
-                lv_obj_t *section_label = lv_label_create(target_list);
-                lv_obj_set_style_text_color(section_label, lv_color_hex(0x475467), 0);
-                lv_label_set_text(section_label, "Pending pair requests");
+                jc4880::lora_mesh::add_target_list_section_label(target_list, "Pending pair requests");
 
                 for (const PendingPairRequest &request : pending_requests_copy) {
                     PairRequestUiContext *request_context = new (std::nothrow) PairRequestUiContext{this,
                                                                                                   request.pair_id,
                                                                                                   request.device_id,
                                                                                                   request.display_name};
-                    lv_obj_t *button = lv_btn_create(target_list);
-                    lv_obj_set_width(button, LV_PCT(100));
-                    lv_obj_set_height(button, LV_SIZE_CONTENT);
-                    lv_obj_set_style_radius(button, 18, 0);
-                    lv_obj_set_style_pad_all(button, 14, 0);
-                    lv_obj_set_style_border_width(button, 0, 0);
-                    lv_obj_set_style_bg_color(button, lv_color_hex(0xECFDF3), 0);
-                    if (request_context != nullptr) {
-                        lv_obj_add_event_cb(button, on_accept_pair_request_clicked, LV_EVENT_CLICKED, request_context);
-                        lv_obj_add_event_cb(button, on_pair_request_button_deleted, LV_EVENT_DELETE, request_context);
-                    }
-
-                    lv_obj_t *col = lv_obj_create(button);
-                    lv_obj_set_width(col, LV_PCT(100));
-                    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_border_width(col, 0, 0);
-                    lv_obj_set_style_pad_all(col, 0, 0);
-                    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-                    lv_obj_set_style_pad_row(col, 4, 0);
-
-                    lv_obj_t *title = lv_label_create(col);
-                    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
-                    lv_obj_set_style_text_color(title, lv_color_hex(0x027A48), 0);
-                    lv_label_set_text(title,
-                                      (std::string("Accept pair: ") +
-                                       (request.display_name.empty() ? request.device_id : request.display_name))
-                                          .c_str());
-
-                    lv_obj_t *meta = lv_label_create(col);
-                    lv_obj_set_style_text_font(meta, &lv_font_montserrat_12, 0);
-                    lv_obj_set_style_text_color(meta, lv_color_hex(0x027A48), 0);
                     std::ostringstream request_info;
                     request_info << "ID " << request.device_id << "  state " << jc4880::lora_mesh::pairing_state_name(request.state)
                                  << "  RSSI " << request.last_rssi << " SNR " << request.last_snr;
-                    lv_label_set_text(meta, request_info.str().c_str());
+                    const std::string request_title = std::string("Accept pair: ") +
+                                                      (request.display_name.empty() ? request.device_id : request.display_name);
+                    jc4880::lora_mesh::create_pending_pair_request_row({.parent = target_list,
+                                                                        .title = request_title.c_str(),
+                                                                        .meta = request_info.str().c_str(),
+                                                                        .click_cb = request_context == nullptr ? nullptr : on_accept_pair_request_clicked,
+                                                                        .click_user_data = request_context,
+                                                                        .cleanup_cb = request_context == nullptr ? nullptr : on_pair_request_button_deleted,
+                                                                        .cleanup_user_data = request_context});
                 }
             }
 
             for (size_t index = 0; index < peers_copy.size(); ++index) {
                 const PeerInfo &peer = peers_copy[index];
-                lv_obj_t *button = lv_btn_create(target_list);
-                lv_obj_set_width(button, LV_PCT(100));
-                lv_obj_set_height(button, LV_SIZE_CONTENT);
-                lv_obj_set_style_radius(button, 18, 0);
-                lv_obj_set_style_pad_all(button, 14, 0);
-                lv_obj_set_style_border_width(button, 0, 0);
-                lv_obj_set_style_bg_color(button, lv_color_hex(0xFFFFFF), 0);
-
-                lv_obj_t *col = lv_obj_create(button);
-                lv_obj_set_width(col, LV_PCT(100));
-                lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
-                lv_obj_set_style_border_width(col, 0, 0);
-                lv_obj_set_style_pad_all(col, 0, 0);
-                lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-                lv_obj_set_style_pad_row(col, 4, 0);
-                lv_obj_t *title_row = lv_obj_create(col);
-                lv_obj_set_width(title_row, LV_PCT(100));
-                lv_obj_set_height(title_row, LV_SIZE_CONTENT);
-                lv_obj_set_style_bg_opa(title_row, LV_OPA_TRANSP, 0);
-                lv_obj_set_style_border_width(title_row, 0, 0);
-                lv_obj_set_style_pad_all(title_row, 0, 0);
-                lv_obj_set_style_pad_column(title_row, 8, 0);
-                lv_obj_set_flex_flow(title_row, LV_FLEX_FLOW_ROW);
-                lv_obj_set_flex_align(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-                lv_obj_t *title = lv_label_create(title_row);
-                lv_obj_set_flex_grow(title, 1);
-                lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
-                lv_obj_set_style_text_color(title, lv_color_hex(0x111B21), 0);
-                lv_label_set_text(title, peer_label(peer).c_str());
-                if (unread_conversations_copy.count(peer.device_id) > 0U) {
-                    lv_obj_t *unread_label = lv_label_create(title_row);
-                    lv_obj_set_style_text_font(unread_label, &lv_font_montserrat_16, 0);
-                    lv_obj_set_style_text_color(unread_label, lv_color_hex(0x0C8A6A), 0);
-                    lv_label_set_text(unread_label, LV_SYMBOL_ENVELOPE);
-                }
-                lv_obj_t *subtitle = lv_label_create(col);
-                lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_12, 0);
-                lv_obj_set_style_text_color(subtitle, lv_color_hex(0x667085), 0);
-                lv_label_set_text(subtitle, peer.trusted ? "Private encrypted chat" : "Open peer chat");
-                lv_obj_t *meta_label = lv_label_create(col);
-                lv_label_set_text(meta_label, (std::string("ID ") + peer.device_id).c_str());
-                lv_obj_add_flag(meta_label, LV_OBJ_FLAG_HIDDEN);
+                PeerDeleteUiContext *delete_context = new (std::nothrow) PeerDeleteUiContext{this,
+                                                                                              peer.device_id,
+                                                                                              peer_label(peer)};
+                const std::string peer_id_text = std::string("ID ") + peer.device_id;
+                jc4880::lora_mesh::create_peer_row({.parent = target_list,
+                                                    .title = peer_label(peer).c_str(),
+                                                    .peer_id = peer_id_text.c_str(),
+                                                    .unread = unread_conversations_copy.count(peer.device_id) > 0U,
+                                                    .open_cb = on_open_peer_chat,
+                                                    .open_user_data = this,
+                                                    .delete_click_cb = delete_context == nullptr ? nullptr : on_peer_delete_clicked,
+                                                    .delete_click_user_data = delete_context,
+                                                    .delete_cleanup_cb = delete_context == nullptr ? nullptr : on_peer_delete_button_deleted,
+                                                    .delete_cleanup_user_data = delete_context});
             }
         }
         if (conversation_dirty_copy && (message_list != nullptr)) {
@@ -6207,77 +6387,17 @@ struct LoRaMeshApp::Impl {
                     continue;
                 }
                 has_visible_messages = true;
-                lv_obj_t *row = lv_obj_create(message_list);
-                lv_obj_set_width(row, LV_PCT(100));
-                lv_obj_set_height(row, LV_SIZE_CONTENT);
-                lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-                lv_obj_set_style_border_width(row, 0, 0);
-                lv_obj_set_style_pad_all(row, 0, 0);
-
-                lv_obj_t *bubble = lv_obj_create(row);
-                lv_obj_set_width(bubble, LV_PCT(78));
-                lv_obj_set_height(bubble, LV_SIZE_CONTENT);
-                lv_obj_set_style_border_width(bubble, 0, 0);
-                lv_obj_set_style_radius(bubble, 18, 0);
-                lv_obj_set_style_pad_left(bubble, 14, 0);
-                lv_obj_set_style_pad_right(bubble, 14, 0);
-                lv_obj_set_style_pad_top(bubble, 10, 0);
-                lv_obj_set_style_pad_bottom(bubble, 10, 0);
-                lv_obj_set_style_pad_row(bubble, 6, 0);
-                lv_obj_set_flex_flow(bubble, LV_FLEX_FLOW_COLUMN);
-                lv_obj_set_style_bg_color(bubble,
-                                          entry.outgoing ? lv_color_hex(0xD9FDD3) : lv_color_hex(0xFFFFFF),
-                                          0);
-                lv_obj_set_align(bubble, entry.outgoing ? LV_ALIGN_TOP_RIGHT : LV_ALIGN_TOP_LEFT);
-
-                lv_obj_t *message_label = lv_label_create(bubble);
-                lv_obj_set_width(message_label, LV_PCT(100));
-                lv_label_set_long_mode(message_label, LV_LABEL_LONG_WRAP);
-                lv_obj_set_style_text_color(message_label, lv_color_hex(0x111B21), 0);
-                lv_label_set_text(message_label, entry.text.c_str());
-
-                lv_obj_t *meta_row = lv_obj_create(bubble);
-                lv_obj_set_width(meta_row, LV_PCT(100));
-                lv_obj_set_height(meta_row, LV_SIZE_CONTENT);
-                lv_obj_set_style_bg_opa(meta_row, LV_OPA_TRANSP, 0);
-                lv_obj_set_style_border_width(meta_row, 0, 0);
-                lv_obj_set_style_pad_all(meta_row, 0, 0);
-                lv_obj_set_style_pad_column(meta_row, 6, 0);
-                lv_obj_set_flex_flow(meta_row, LV_FLEX_FLOW_ROW);
-                lv_obj_set_flex_align(meta_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-                lv_obj_t *meta_label = lv_label_create(meta_row);
-                lv_obj_set_flex_grow(meta_label, 1);
-                lv_obj_set_style_text_font(meta_label, &lv_font_montserrat_12, 0);
-                lv_obj_set_style_text_color(meta_label, lv_color_hex(0x667781), 0);
-                lv_obj_set_style_text_align(meta_label, entry.outgoing ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
-                lv_label_set_text(meta_label, entry.meta.c_str());
-
-                if (entry.outgoing) {
-                    lv_obj_t *status_label = lv_label_create(meta_row);
-                    lv_obj_set_style_text_font(status_label, &lv_font_montserrat_12, 0);
-                    lv_obj_set_style_text_color(status_label, delivery_status_color(entry), 0);
-                    lv_label_set_text(status_label, delivery_status_symbol(entry));
-                }
+                jc4880::lora_mesh::create_conversation_row({.parent = message_list,
+                                                            .text = entry.text.c_str(),
+                                                            .meta = entry.meta.c_str(),
+                                                            .outgoing = entry.outgoing,
+                                                            .transmit_pending = entry.transmit_pending,
+                                                            .transmit_failed = entry.transmit_failed});
             }
 
             if (!has_visible_messages) {
-                lv_obj_t *empty_row = lv_obj_create(message_list);
-                lv_obj_set_width(empty_row, LV_PCT(100));
-                lv_obj_set_height(empty_row, LV_SIZE_CONTENT);
-                lv_obj_set_style_bg_opa(empty_row, LV_OPA_TRANSP, 0);
-                lv_obj_set_style_border_width(empty_row, 0, 0);
-                lv_obj_set_style_pad_top(empty_row, 18, 0);
-                lv_obj_set_style_pad_bottom(empty_row, 18, 0);
-                lv_obj_set_style_pad_left(empty_row, 10, 0);
-                lv_obj_set_style_pad_right(empty_row, 10, 0);
-
-                lv_obj_t *empty_label = lv_label_create(empty_row);
-                lv_obj_set_width(empty_label, LV_PCT(100));
-                lv_label_set_long_mode(empty_label, LV_LABEL_LONG_WRAP);
-                lv_obj_set_style_text_align(empty_label, LV_TEXT_ALIGN_CENTER, 0);
-                lv_obj_set_style_text_color(empty_label, lv_color_hex(0x667781), 0);
-                lv_label_set_text(empty_label, "No messages yet. Incoming mesh messages will appear here.");
+                jc4880::lora_mesh::create_empty_conversation_row(message_list,
+                                                                 "No messages yet. Incoming mesh messages will appear here.");
             }
 
             jc4880::lora_mesh::scroll_chat_to_latest(message_list,

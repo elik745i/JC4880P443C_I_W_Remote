@@ -12,6 +12,7 @@ struct ConversationRowConfig {
     bool outgoing = false;
     bool transmit_pending = false;
     bool transmit_failed = false;
+    bool delivered = false;
     lv_event_cb_t click_cb = nullptr;
     void *click_user_data = nullptr;
     lv_event_cb_t cleanup_cb = nullptr;

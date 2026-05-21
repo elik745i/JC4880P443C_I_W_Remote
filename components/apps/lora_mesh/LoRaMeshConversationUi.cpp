@@ -24,6 +24,9 @@ const char *delivery_status_symbol(const ConversationRowConfig &config)
     if (config.transmit_failed) {
         return "!";
     }
+    if (config.delivered) {
+        return "\xEF\x80\x8C\xEF\x80\x8C";
+    }
     return LV_SYMBOL_OK;
 }
 

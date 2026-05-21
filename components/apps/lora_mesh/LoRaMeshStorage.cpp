@@ -1,5 +1,6 @@
 #include "LoRaMeshStorage.hpp"
 
+#include <array>
 #include <vector>
 
 #include "LoRaMeshCrypto.hpp"
@@ -41,6 +42,46 @@ void add_string(cJSON *object, const char *key, const std::string &value)
     if (!value.empty()) {
         cJSON_AddStringToObject(object, key, value.c_str());
     }
+}
+
+std::string bytes_to_hex(const uint8_t *data, size_t size)
+{
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(size * 2U);
+    for (size_t index = 0; index < size; ++index) {
+        out.push_back(kHex[(data[index] >> 4) & 0x0F]);
+        out.push_back(kHex[data[index] & 0x0F]);
+    }
+    return out;
+}
+
+bool hex_to_bytes(const std::string &hex, uint8_t *out, size_t out_size)
+{
+    if ((hex.size() != (out_size * 2U)) || (out == nullptr)) {
+        return false;
+    }
+    auto hex_value = [](char value) -> int {
+        if ((value >= '0') && (value <= '9')) {
+            return value - '0';
+        }
+        if ((value >= 'a') && (value <= 'f')) {
+            return 10 + (value - 'a');
+        }
+        if ((value >= 'A') && (value <= 'F')) {
+            return 10 + (value - 'A');
+        }
+        return -1;
+    };
+    for (size_t index = 0; index < out_size; ++index) {
+        const int high = hex_value(hex[index * 2U]);
+        const int low = hex_value(hex[(index * 2U) + 1U]);
+        if ((high < 0) || (low < 0)) {
+            return false;
+        }
+        out[index] = static_cast<uint8_t>((high << 4) | low);
+    }
+    return true;
 }
 
 PeerPresence parse_presence(const std::string &value)
@@ -424,6 +465,7 @@ bool load_stored_state(StoredState &state)
     state.settings.e22_fixed_transmission = read_bool(settings, "e22_fixed_transmission", state.settings.e22_fixed_transmission);
     state.settings.e22_rssi_ambient_noise = read_bool(settings, "e22_rssi_ambient_noise", state.settings.e22_rssi_ambient_noise);
     state.settings.public_chat_encryption = read_bool(settings, "public_chat_encryption", state.settings.public_chat_encryption);
+    state.settings.common_chat_muted = read_bool(settings, "common_chat_muted", state.settings.common_chat_muted);
     state.settings.common_chat_name = read_string(settings, "common_chat_name");
     state.settings.hop_limit = static_cast<uint8_t>(read_int(settings, "hop_limit", state.settings.hop_limit));
     state.settings.forwarding_enabled = read_bool(settings, "forwarding_enabled", state.settings.forwarding_enabled);
@@ -444,11 +486,29 @@ bool load_stored_state(StoredState &state)
             entry.public_key_hex = read_string(peer, "public_key");
             const std::string legacy_pair_secret = read_string(peer, "pair_secret");
             entry.trusted = read_bool(peer, "trusted", !entry.public_key_hex.empty() && !legacy_pair_secret.empty());
+            entry.muted = read_bool(peer, "muted", false);
+            entry.blocked = read_bool(peer, "blocked", false);
+            entry.pending_unpair = read_bool(peer, "pending_unpair", false);
+            entry.pending_unpair_id = read_string(peer, "pending_unpair_id");
+            entry.last_unpair_attempt_ms = static_cast<int64_t>(read_int(peer, "last_unpair_attempt_ms", 0));
             entry.paired_ms = static_cast<int64_t>(read_int(peer, "paired_ms", 0));
             entry.last_seen_ms = static_cast<int64_t>(read_int(peer, "last_seen_ms", 0));
             entry.last_rssi = read_int(peer, "last_rssi", 0);
             entry.last_snr = read_int(peer, "last_snr", 0);
             entry.presence = parse_presence(read_string(peer, "presence"));
+            const cJSON *ratchet = cJSON_GetObjectItemCaseSensitive(peer, "ratchet");
+            if (ratchet != nullptr) {
+                entry.ratchet.chat_id = read_string(ratchet, "chat_id");
+                entry.ratchet.peer_device_id = read_string(ratchet, "peer_device_id");
+                entry.ratchet.peer_name = read_string(ratchet, "peer_name");
+                entry.ratchet.peer_identity_pub_hex = read_string(ratchet, "peer_identity_pub");
+                entry.ratchet.send_msg_no = static_cast<uint32_t>(read_int(ratchet, "send_msg_no", 0));
+                entry.ratchet.recv_msg_no = static_cast<uint32_t>(read_int(ratchet, "recv_msg_no", 0));
+                entry.ratchet.initialized = read_bool(ratchet, "initialized", false);
+                (void)hex_to_bytes(read_string(ratchet, "root_key"), entry.ratchet.root_key.data(), entry.ratchet.root_key.size());
+                (void)hex_to_bytes(read_string(ratchet, "send_chain_key"), entry.ratchet.send_chain_key.data(), entry.ratchet.send_chain_key.size());
+                (void)hex_to_bytes(read_string(ratchet, "recv_chain_key"), entry.ratchet.recv_chain_key.data(), entry.ratchet.recv_chain_key.size());
+            }
             state.peers.push_back(entry);
         }
     }
@@ -502,6 +562,7 @@ bool save_stored_state(const StoredState &state)
     cJSON_AddBoolToObject(settings, "e22_fixed_transmission", state.settings.e22_fixed_transmission);
     cJSON_AddBoolToObject(settings, "e22_rssi_ambient_noise", state.settings.e22_rssi_ambient_noise);
     cJSON_AddBoolToObject(settings, "public_chat_encryption", state.settings.public_chat_encryption);
+    cJSON_AddBoolToObject(settings, "common_chat_muted", state.settings.common_chat_muted);
     add_string(settings, "common_chat_name", state.settings.common_chat_name);
     cJSON_AddNumberToObject(settings, "hop_limit", state.settings.hop_limit);
     cJSON_AddBoolToObject(settings, "forwarding_enabled", state.settings.forwarding_enabled);
@@ -518,11 +579,29 @@ bool save_stored_state(const StoredState &state)
         add_string(entry, "display_name", peer.display_name);
         add_string(entry, "public_key", peer.public_key_hex);
         cJSON_AddBoolToObject(entry, "trusted", peer.trusted);
+        cJSON_AddBoolToObject(entry, "muted", peer.muted);
+        cJSON_AddBoolToObject(entry, "blocked", peer.blocked);
+        cJSON_AddBoolToObject(entry, "pending_unpair", peer.pending_unpair);
+        add_string(entry, "pending_unpair_id", peer.pending_unpair_id);
+        cJSON_AddNumberToObject(entry, "last_unpair_attempt_ms", static_cast<double>(peer.last_unpair_attempt_ms));
         cJSON_AddNumberToObject(entry, "paired_ms", static_cast<double>(peer.paired_ms));
         cJSON_AddNumberToObject(entry, "last_seen_ms", static_cast<double>(peer.last_seen_ms));
         cJSON_AddNumberToObject(entry, "last_rssi", peer.last_rssi);
         cJSON_AddNumberToObject(entry, "last_snr", peer.last_snr);
         add_string(entry, "presence", presence_name(peer.presence));
+        if (peer.ratchet.initialized) {
+            cJSON *ratchet = cJSON_AddObjectToObject(entry, "ratchet");
+            add_string(ratchet, "chat_id", peer.ratchet.chat_id);
+            add_string(ratchet, "peer_device_id", peer.ratchet.peer_device_id);
+            add_string(ratchet, "peer_name", peer.ratchet.peer_name);
+            add_string(ratchet, "peer_identity_pub", peer.ratchet.peer_identity_pub_hex);
+            add_string(ratchet, "root_key", bytes_to_hex(peer.ratchet.root_key.data(), peer.ratchet.root_key.size()));
+            add_string(ratchet, "send_chain_key", bytes_to_hex(peer.ratchet.send_chain_key.data(), peer.ratchet.send_chain_key.size()));
+            add_string(ratchet, "recv_chain_key", bytes_to_hex(peer.ratchet.recv_chain_key.data(), peer.ratchet.recv_chain_key.size()));
+            cJSON_AddNumberToObject(ratchet, "send_msg_no", static_cast<double>(peer.ratchet.send_msg_no));
+            cJSON_AddNumberToObject(ratchet, "recv_msg_no", static_cast<double>(peer.ratchet.recv_msg_no));
+            cJSON_AddBoolToObject(ratchet, "initialized", peer.ratchet.initialized);
+        }
         cJSON_AddItemToArray(peers, entry);
     }
 

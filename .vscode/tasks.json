@@ -1061,6 +1061,150 @@
 			"isBackground": false,
 			"problemMatcher": [],
 			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 Pair Probe",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com10-pair-probe.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM11 Pair Pending Probe",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com11-pair-pending.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: Flash COM10 Latest Pairing Fix",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-flash-com10.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: Flash COM11 Latest Pairing Fix",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-flash-com11.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 Pair Probe V2",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com10-pair-probe-v2.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM11 Pair Pending Probe V2",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com11-pair-pending-v2.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: Flash COM10 Pair Wire Fix",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-flash-com10-v2.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: Flash COM11 Pair Wire Fix",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-flash-com11-v2.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 Pair Probe V3",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com10-pair-probe-v3.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM11 Pair Pending Probe V3",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com11-pair-pending-v3.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: Flash COM10 Pair Size Final",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-flash-com10-v3.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: Flash COM11 Pair Size Final",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-flash-com11-v3.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 Pair Probe V4",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com10-pair-probe-v4.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM11 Pair Pending Probe V4",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com11-pair-pending-v4.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM11 Pair Pending After Send",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com11-pair-pending-v4.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "Copilot: COM10 Pair Probe Live Send",
+			"type": "shell",
+			"command": "${workspaceFolder}\\.vscode\\copilot-com10-pair-probe-v4.cmd",
+			"args": [],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
 		}
 	]
 }

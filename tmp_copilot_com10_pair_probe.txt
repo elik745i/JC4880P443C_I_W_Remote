@@ -1,0 +1,4 @@
+lora.open
+lora.peers
+lora.pair.request COM11 TEST-PAIR
+lora.log 100

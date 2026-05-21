@@ -16,8 +16,10 @@ struct PendingPairRequestRowConfig {
     lv_obj_t *parent = nullptr;
     const char *title = nullptr;
     const char *meta = nullptr;
-    lv_event_cb_t click_cb = nullptr;
-    void *click_user_data = nullptr;
+    lv_event_cb_t accept_click_cb = nullptr;
+    void *accept_click_user_data = nullptr;
+    lv_event_cb_t reject_click_cb = nullptr;
+    void *reject_click_user_data = nullptr;
     lv_event_cb_t cleanup_cb = nullptr;
     void *cleanup_user_data = nullptr;
 };

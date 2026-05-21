@@ -86,16 +86,18 @@ lv_obj_t *create_common_chat_row(const CommonChatRowConfig &config)
 lv_obj_t *create_pending_pair_request_row(const PendingPairRequestRowConfig &config)
 {
     lv_obj_t *button = lv_btn_create(config.parent);
-    style_target_list_button(button, lv_color_hex(0xECFDF3), LV_SIZE_CONTENT, 14, 14, 10, 10);
-    if (config.click_cb != nullptr) {
-        lv_obj_add_event_cb(button, config.click_cb, LV_EVENT_CLICKED, config.click_user_data);
-    }
+    style_target_list_button(button, lv_color_hex(0xECFDF3), 52, 16, 12, 0, 0);
+    lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     if (config.cleanup_cb != nullptr) {
         lv_obj_add_event_cb(button, config.cleanup_cb, LV_EVENT_DELETE, config.cleanup_user_data);
     }
 
     lv_obj_t *col = create_passive_layout_container(button);
-    lv_obj_set_width(col, LV_PCT(100));
+    lv_obj_set_width(col, 0);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_height(col, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_right(col, 8, 0);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(col, 2, 0);
 
@@ -108,6 +110,32 @@ lv_obj_t *create_pending_pair_request_row(const PendingPairRequestRowConfig &con
     lv_obj_set_style_text_font(meta, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(meta, lv_color_hex(0x027A48), 0);
     lv_label_set_text(meta, safe_text(config.meta));
+
+    auto create_action_button = [button](lv_color_t background,
+                                         lv_color_t text_color,
+                                         const char *text,
+                                         lv_event_cb_t click_cb,
+                                         void *user_data) {
+        lv_obj_t *action_button = lv_btn_create(button);
+        lv_obj_set_size(action_button, 36, 36);
+        lv_obj_set_style_radius(action_button, 18, 0);
+        lv_obj_set_style_pad_all(action_button, 0, 0);
+        lv_obj_set_style_border_width(action_button, 0, 0);
+        lv_obj_set_style_shadow_width(action_button, 0, 0);
+        lv_obj_set_style_bg_color(action_button, background, 0);
+        if (click_cb != nullptr) {
+            lv_obj_add_event_cb(action_button, click_cb, LV_EVENT_CLICKED, user_data);
+        }
+
+        lv_obj_t *label = lv_label_create(action_button);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(label, text_color, 0);
+        lv_label_set_text(label, text);
+        lv_obj_center(label);
+    };
+
+    create_action_button(lv_color_hex(0xD1FADF), lv_color_hex(0x027A48), LV_SYMBOL_OK, config.accept_click_cb, config.accept_click_user_data);
+    create_action_button(lv_color_hex(0xFEE4E2), lv_color_hex(0xB42318), LV_SYMBOL_CLOSE, config.reject_click_cb, config.reject_click_user_data);
 
     return button;
 }

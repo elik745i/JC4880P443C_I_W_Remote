@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@ namespace jc4880::lora_mesh {
 
 inline constexpr const char *kBroadcastTargetId = "broadcast";
 inline constexpr const char *kCommonConversationId = "common";
+inline constexpr size_t kRatchetKeySize = 32U;
 
 enum class PacketKind : uint8_t {
     PublicChat = 1,
@@ -17,6 +19,7 @@ enum class PacketKind : uint8_t {
     PairRequest,
     PairAccept,
     PairReject,
+    Unpair,
     PairConfirm,
     Ack,
     Hello,
@@ -47,6 +50,14 @@ enum class PairingState : uint8_t {
     Timeout,
 };
 
+enum class DeliveryState : uint8_t {
+    None = 0,
+    PendingTx,
+    SentToRadio,
+    Delivered,
+    Failed,
+};
+
 enum class RadioModule : uint8_t {
     E22_400M22S = 0,
     E22_400T22S,
@@ -60,11 +71,30 @@ struct CryptoIdentity {
     std::string private_key_hex;
 };
 
+struct RatchetState {
+    std::string chat_id;
+    std::string peer_device_id;
+    std::string peer_name;
+    std::string peer_identity_pub_hex;
+    std::array<uint8_t, kRatchetKeySize> root_key = {};
+    std::array<uint8_t, kRatchetKeySize> send_chain_key = {};
+    std::array<uint8_t, kRatchetKeySize> recv_chain_key = {};
+    uint32_t send_msg_no = 0;
+    uint32_t recv_msg_no = 0;
+    bool initialized = false;
+};
+
 struct PeerInfo {
     std::string device_id;
     std::string display_name;
     std::string public_key_hex;
     bool trusted = false;
+    bool muted = false;
+    bool blocked = false;
+    bool pending_unpair = false;
+    std::string pending_unpair_id;
+    int64_t last_unpair_attempt_ms = 0;
+    RatchetState ratchet = {};
     int64_t paired_ms = 0;
     int64_t last_seen_ms = 0;
     int last_rssi = 0;
@@ -77,10 +107,10 @@ struct PendingPairRequest {
     std::string device_id;
     std::string display_name;
     std::string public_key_hex;
+    std::string ephemeral_public_key_hex;
     std::string target_public_key_hex;
     PairingState state = PairingState::Idle;
     std::string msg_id;
-    std::string nonce_hex;
     int64_t received_ms = 0;
     int64_t expires_ms = 0;
     int last_rssi = 0;
@@ -119,6 +149,7 @@ struct MeshSettings {
     bool e22_fixed_transmission = false;
     bool e22_rssi_ambient_noise = false;
     bool public_chat_encryption = false;
+    bool common_chat_muted = false;
     std::string common_chat_name = "Common Mesh Chat";
     uint8_t hop_limit = 4;
     bool forwarding_enabled = true;
@@ -145,15 +176,20 @@ struct MeshPacket {
     std::string sender_id;
     std::string sender_name;
     std::string target_id = kBroadcastTargetId;
+    std::string receipt_type;
+    std::string receipt_message_id;
     std::string pair_id;
+    std::string chat_id;
     std::string msg_id;
     int64_t timestamp_ms = 0;
     uint8_t ttl = 0;
+    uint32_t message_number = 0;
     bool encrypted = false;
     std::string payload;
     std::string nonce_hex;
     std::string auth_hex;
     std::string public_key_hex;
+    std::string ephemeral_public_key_hex;
     std::string target_public_key_hex;
 };
 
@@ -178,5 +214,6 @@ struct ChatTargetSummary {
 const char *packet_kind_name(PacketKind kind);
 const char *presence_name(PeerPresence presence);
 const char *pairing_state_name(PairingState state);
+const char *delivery_state_name(DeliveryState state);
 
 } // namespace jc4880::lora_mesh

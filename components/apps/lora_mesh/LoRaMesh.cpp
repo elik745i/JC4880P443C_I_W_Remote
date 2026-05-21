@@ -93,6 +93,8 @@ constexpr uint32_t kUartAuxBusyTimeoutMs = 150;
 constexpr uint32_t kHistoryWriteTaskStack = 6144;
 constexpr int64_t kPairSessionTimeoutMs = 90000;
 constexpr int64_t kRecentPairRetentionMs = 180000;
+constexpr int64_t kPendingUnpairRetryMs = 5000;
+constexpr int64_t kPendingPrivateRetryMs = 5000;
 constexpr int64_t kRecentPrivateMessageRetentionMs = 180000;
 
 constexpr uint8_t kE22CommandWritePersistent = 0xC0;
@@ -233,9 +235,12 @@ struct ConversationEntry {
     std::string meta;
     std::string author_id;
     std::string author_name;
+    std::string author_public_key_hex;
     std::string quoted_message_id;
     std::string quoted_preview;
     std::string history_timestamp;
+    jc4880::lora_mesh::DeliveryState delivery_state = jc4880::lora_mesh::DeliveryState::None;
+    int64_t last_delivery_attempt_ms = 0;
     bool outgoing = false;
     uint64_t pending_token = 0;
     bool transmit_pending = false;
@@ -260,6 +265,7 @@ enum class ChatActionOverlayMode : uint8_t {
     None = 0,
     ChatMenu,
     TargetsMenu,
+    PairedDevices,
     ClearChatConfirm,
     DeletePeerConfirm,
     PairRequest,
@@ -603,6 +609,8 @@ struct LoRaMeshApp::Impl {
     TaskHandle_t rx_task = nullptr;
     TaskHandle_t startup_task = nullptr;
     TaskHandle_t send_task = nullptr;
+    TaskHandle_t unpair_task = nullptr;
+    TaskHandle_t delivery_retry_task = nullptr;
     TaskHandle_t self_test_task = nullptr;
     TaskHandle_t settings_apply_task = nullptr;
     TaskHandle_t module_command_task = nullptr;
@@ -644,8 +652,6 @@ struct LoRaMeshApp::Impl {
     lv_obj_t *settings_forward_switch = nullptr;
     lv_obj_t *settings_encrypt_switch = nullptr;
     lv_obj_t *pair_request_target_input = nullptr;
-    lv_obj_t *pair_request_code_input = nullptr;
-    lv_obj_t *pair_accept_code_input = nullptr;
     lv_obj_t *active_text_input = nullptr;
     ChatActionOverlayMode chat_action_overlay_mode = ChatActionOverlayMode::None;
     uint32_t node_id = 0;
@@ -693,9 +699,11 @@ struct LoRaMeshApp::Impl {
         PairingState state = PairingState::Idle;
         std::string pair_id;
         std::string target_name;
+        std::string target_device_id;
+        std::string target_display_name;
         std::string target_public_key_hex;
-        std::string code;
-        std::string nonce_a_hex;
+        std::string local_ephemeral_public_key_hex;
+        std::string local_ephemeral_private_key_hex;
         std::string peer_device_id;
         std::string peer_display_name;
         std::string peer_public_key_hex;
@@ -736,6 +744,19 @@ struct LoRaMeshApp::Impl {
         std::string message_id;
     };
 
+    enum class DeviceManagementAction : uint8_t {
+        ToggleMute = 0,
+        ToggleBlock,
+        Unpair,
+    };
+
+    struct DeviceManagementUiContext {
+        Impl *impl = nullptr;
+        std::string peer_id;
+        DeviceManagementAction action = DeviceManagementAction::ToggleMute;
+        bool common_chat = false;
+    };
+
     std::vector<PendingPairRequest> pending_pair_requests;
     std::vector<PendingPairConfirmation> pending_pair_confirmations;
     std::vector<ConversationEntry> conversation;
@@ -747,12 +768,14 @@ struct LoRaMeshApp::Impl {
     std::string pair_modal_pair_id;
     std::string pair_modal_device_id;
     std::string pair_modal_display_name;
+    std::string pair_modal_public_key_hex;
     std::string delete_peer_id;
     std::string delete_peer_name;
     std::string message_action_conversation_id;
     std::string message_action_message_id;
     std::string message_action_author_id;
     std::string message_action_author_name;
+    std::string message_action_author_public_key_hex;
     std::string message_action_text;
     bool message_action_can_edit = false;
     std::string pending_reply_message_id;
@@ -762,7 +785,6 @@ struct LoRaMeshApp::Impl {
     std::string pending_edit_message_id;
     std::string pending_edit_quoted_message_id;
     std::string pending_edit_quoted_preview;
-    std::string generated_pair_code;
     bool pending_pair_modal_open = false;
 
     struct PendingSendContext {
@@ -784,6 +806,26 @@ struct LoRaMeshApp::Impl {
     struct PendingModuleCommandContext {
         Impl *impl = nullptr;
         std::string command_text;
+    };
+
+    struct PendingUnpairContext {
+        Impl *impl = nullptr;
+        std::string peer_id;
+        std::string peer_name;
+        std::string peer_public_key_hex;
+        std::string unpair_id;
+    };
+
+    struct PendingDeliveryRetryContext {
+        Impl *impl = nullptr;
+        std::string conversation_id;
+        std::string payload;
+        std::string message_id;
+        std::string quoted_message_id;
+        std::string quoted_preview;
+        std::string bubble_text;
+        std::string bubble_meta;
+        uint64_t pending_token = 0;
     };
 
     ~Impl()
@@ -874,36 +916,15 @@ struct LoRaMeshApp::Impl {
         return normalized;
     }
 
-    static std::string normalize_pair_code(const std::string &value)
+    static std::string public_key_fingerprint(const std::string &public_key_hex)
     {
-        std::string normalized;
-        normalized.reserve(value.size());
-        for (unsigned char ch : value) {
-            if (std::isalnum(ch) != 0) {
-                normalized.push_back(static_cast<char>(std::toupper(ch)));
-            }
+        if (public_key_hex.empty()) {
+            return "Unavailable";
         }
-        return normalized;
-    }
-
-    static std::string format_pair_code(const std::string &value)
-    {
-        const std::string normalized = normalize_pair_code(value);
-        if (normalized.size() <= 4U) {
-            return normalized;
+        if (public_key_hex.size() <= 16) {
+            return public_key_hex;
         }
-        return normalized.substr(0, 4) + "-" + normalized.substr(4, 4);
-    }
-
-    static std::string generate_pair_code()
-    {
-        static constexpr char kAlphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        std::string compact;
-        compact.reserve(8);
-        for (size_t index = 0; index < 8; ++index) {
-            compact.push_back(kAlphabet[esp_random() % (sizeof(kAlphabet) - 1U)]);
-        }
-        return format_pair_code(compact);
+        return public_key_hex.substr(0, 8) + "..." + public_key_hex.substr(public_key_hex.size() - 8);
     }
 
     bool matches_local_pair_target_locked(const std::string &target_name) const
@@ -976,6 +997,14 @@ struct LoRaMeshApp::Impl {
     }
 
     PeerInfo *find_peer_locked(const std::string &device_id)
+    {
+        auto iterator = std::find_if(stored_state.peers.begin(), stored_state.peers.end(), [&device_id](const PeerInfo &peer) {
+            return peer.device_id == device_id;
+        });
+        return iterator == stored_state.peers.end() ? nullptr : &(*iterator);
+    }
+
+    const PeerInfo *find_peer_locked(const std::string &device_id) const
     {
         auto iterator = std::find_if(stored_state.peers.begin(), stored_state.peers.end(), [&device_id](const PeerInfo &peer) {
             return peer.device_id == device_id;
@@ -1145,7 +1174,8 @@ struct LoRaMeshApp::Impl {
 
     void upsert_trusted_peer_locked(const std::string &device_id,
                                     const std::string &display_name,
-                                    const std::string &public_key_hex)
+                                    const std::string &public_key_hex,
+                                    const jc4880::lora_mesh::RatchetState *ratchet_state = nullptr)
     {
         if (device_id.empty() || public_key_hex.empty()) {
             return;
@@ -1157,6 +1187,7 @@ struct LoRaMeshApp::Impl {
                                                   .display_name = display_name.empty() ? device_id : display_name,
                                                   .public_key_hex = public_key_hex,
                                                   .trusted = true,
+                                                  .ratchet = ratchet_state == nullptr ? jc4880::lora_mesh::RatchetState{} : *ratchet_state,
                                                   .paired_ms = now_ms,
                                                   .last_seen_ms = now_ms,
                                                   .last_rssi = last_rssi,
@@ -1167,7 +1198,13 @@ struct LoRaMeshApp::Impl {
                 peer->display_name = display_name;
             }
             peer->public_key_hex = public_key_hex;
+            if (ratchet_state != nullptr) {
+                peer->ratchet = *ratchet_state;
+            }
             peer->trusted = true;
+            peer->pending_unpair = false;
+            peer->pending_unpair_id.clear();
+            peer->last_unpair_attempt_ms = 0;
             if (peer->paired_ms == 0) {
                 peer->paired_ms = now_ms;
             }
@@ -1178,6 +1215,53 @@ struct LoRaMeshApp::Impl {
         }
         state_dirty = true;
         target_list_dirty = true;
+    }
+
+    bool can_reset_pending_unpair_for_repair_locked(const PeerInfo &peer) const
+    {
+        return peer.pending_unpair && !peer.trusted && !peer.ratchet.initialized;
+    }
+
+    void clear_pending_unpair_locked(PeerInfo &peer)
+    {
+        peer.pending_unpair = false;
+        peer.pending_unpair_id.clear();
+        peer.last_unpair_attempt_ms = 0;
+        state_dirty = true;
+        target_list_dirty = true;
+    }
+
+    bool select_pending_unpair_locked(std::string &peer_id,
+                                      std::string &peer_name,
+                                      std::string &peer_public_key_hex,
+                                      std::string &unpair_id) const
+    {
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        for (const PeerInfo &peer : stored_state.peers) {
+            if (!peer.pending_unpair || peer.device_id.empty() || peer.public_key_hex.empty()) {
+                continue;
+            }
+            if (peer.presence != jc4880::lora_mesh::PeerPresence::Online) {
+                continue;
+            }
+            if ((peer.last_unpair_attempt_ms != 0) && ((now_ms - peer.last_unpair_attempt_ms) < kPendingUnpairRetryMs)) {
+                continue;
+            }
+            peer_id = peer.device_id;
+            peer_name = peer_label(peer);
+            peer_public_key_hex = peer.public_key_hex;
+            unpair_id = peer.pending_unpair_id.empty() ? jc4880::lora_mesh::cryptoGenerateNonceHex(4) : peer.pending_unpair_id;
+            return !unpair_id.empty();
+        }
+        return false;
+    }
+
+    PeerInfo *find_peer_by_chat_id_locked(const std::string &chat_id)
+    {
+        auto iterator = std::find_if(stored_state.peers.begin(), stored_state.peers.end(), [&chat_id](const PeerInfo &peer) {
+            return peer.trusted && peer.ratchet.initialized && (peer.ratchet.chat_id == chat_id);
+        });
+        return iterator == stored_state.peers.end() ? nullptr : &(*iterator);
     }
 
     bool build_pair_proof_hex(const std::string &normalized_code,
@@ -1195,6 +1279,11 @@ struct LoRaMeshApp::Impl {
         return jc4880::lora_mesh::cryptoComputeHmacHex(normalized_code, material.str(), proof_hex);
     }
 
+    void p2pPairingTick()
+    {
+        prune_pair_sessions_locked();
+    }
+
     void prune_pair_sessions_locked()
     {
         const int64_t now_ms = esp_timer_get_time() / 1000;
@@ -1203,6 +1292,7 @@ struct LoRaMeshApp::Impl {
                                         if ((request.expires_ms != 0) && (request.expires_ms <= now_ms)) {
                                             remember_recent_id_locked(recent_pair_ids, request.pair_id, now_ms, kRecentPairRetentionMs);
                                             changed = true;
+                                            append_line_capped(log_text, std::string("[P2P] pair request expired id=") + request.pair_id);
                                             status_text = "Pair request timed out";
                                             return true;
                                         }
@@ -1226,6 +1316,7 @@ struct LoRaMeshApp::Impl {
                                       pending_outgoing_pair_request.pair_id,
                                       now_ms,
                                       kRecentPairRetentionMs);
+            append_line_capped(log_text, std::string("[P2P] pair request expired id=") + pending_outgoing_pair_request.pair_id);
             pending_outgoing_pair_request = PendingOutgoingPairRequest{};
             has_pending_outgoing_pair_request = false;
             changed = true;
@@ -1388,14 +1479,84 @@ struct LoRaMeshApp::Impl {
                (selected_conversation_id == conversation_id);
     }
 
-    void mark_conversation_unread_locked(const std::string &conversation_id)
+    bool is_peer_blocked_locked(const std::string &peer_id) const
+    {
+        if (peer_id.empty()) {
+            return false;
+        }
+        const PeerInfo *peer = find_peer_locked(peer_id);
+        return (peer != nullptr) && peer->blocked;
+    }
+
+    bool is_conversation_muted_locked(const std::string &conversation_id) const
     {
         if (conversation_id.empty()) {
+            return false;
+        }
+        if (conversation_id == jc4880::lora_mesh::kCommonConversationId) {
+            return stored_state.settings.common_chat_muted;
+        }
+        const PeerInfo *peer = find_peer_locked(conversation_id);
+        return (peer != nullptr) && peer->muted;
+    }
+
+    bool should_notify_conversation_locked(const std::string &conversation_id) const
+    {
+        return !is_conversation_muted_locked(conversation_id);
+    }
+
+    bool mark_message_delivery_state_locked(const std::string &conversation_id,
+                                           const std::string &message_id,
+                                           jc4880::lora_mesh::DeliveryState state,
+                                           int64_t last_attempt_ms,
+                                           bool rewrite_history = true)
+    {
+        ConversationEntry *entry = find_conversation_entry_locked(conversation_id, message_id);
+        if (entry == nullptr) {
+            return false;
+        }
+
+        entry->delivery_state = state;
+        entry->last_delivery_attempt_ms = last_attempt_ms;
+        entry->transmit_pending = (state == jc4880::lora_mesh::DeliveryState::PendingTx);
+        entry->transmit_failed = (state == jc4880::lora_mesh::DeliveryState::Failed);
+        conversation_dirty = true;
+        target_list_dirty = true;
+        if (rewrite_history && !rewrite_conversation_history_locked(conversation_id)) {
+            append_line_capped(log_text, std::string("Failed to rewrite chat history for ") + conversation_id);
+        }
+        return true;
+    }
+
+    bool send_private_delivery_receipt_locked(const std::string &target_device_id,
+                                              const std::string &target_public_key_hex,
+                                              const std::string &message_id)
+    {
+        if (target_device_id.empty() || target_public_key_hex.empty() || message_id.empty()) {
+            return false;
+        }
+
+        MeshPacket packet = {};
+        packet.kind = PacketKind::Ack;
+        packet.sender_id = stored_state.identity.device_id;
+        packet.sender_name = stored_state.identity.display_name;
+        packet.target_id = target_device_id;
+        packet.target_public_key_hex = target_public_key_hex;
+        packet.receipt_type = "private_delivered";
+        packet.receipt_message_id = message_id;
+        packet.payload = "delivery";
+        packet.timestamp_ms = esp_timer_get_time() / 1000;
+        packet.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
+        return send_control_packet_from_rx_locked(packet);
+    }
+
+    void mark_conversation_unread_locked(const std::string &conversation_id)
+    {
+        if (conversation_id.empty() || is_conversation_muted_locked(conversation_id)) {
             return;
         }
         unread_conversations[conversation_id] = true;
         target_list_dirty = true;
-        system_ui_service::set_lora_unread(true);
     }
 
     void ensure_saved_mapping_self_test_for_chat_locked()
@@ -1438,20 +1599,36 @@ struct LoRaMeshApp::Impl {
         return errno == ENOENT;
     }
 
-    bool delete_peer_chat_and_pairing_locked(const std::string &peer_id)
+    bool delete_peer_chat_and_pairing_locked(const std::string &peer_id, bool queue_remote_unpair = true)
     {
         if (peer_id.empty()) {
             return false;
         }
 
-        const size_t peer_count_before = stored_state.peers.size();
-        stored_state.peers.erase(std::remove_if(stored_state.peers.begin(),
-                                                stored_state.peers.end(),
-                                                [&peer_id](const PeerInfo &peer) {
-                                                    return peer.device_id == peer_id;
-                                                }),
-                                 stored_state.peers.end());
-        const bool peer_removed = stored_state.peers.size() != peer_count_before;
+        bool queued_remote_unpair = false;
+        bool peer_removed = false;
+        if (PeerInfo *peer = find_peer_locked(peer_id); peer != nullptr) {
+            if (queue_remote_unpair && peer->trusted && !peer->public_key_hex.empty()) {
+                peer->trusted = false;
+                peer->pending_unpair = true;
+                if (peer->pending_unpair_id.empty()) {
+                    peer->pending_unpair_id = jc4880::lora_mesh::cryptoGenerateNonceHex(4);
+                }
+                peer->last_unpair_attempt_ms = 0;
+                peer->paired_ms = 0;
+                peer->ratchet = {};
+                queued_remote_unpair = true;
+            } else {
+                const size_t peer_count_before = stored_state.peers.size();
+                stored_state.peers.erase(std::remove_if(stored_state.peers.begin(),
+                                                        stored_state.peers.end(),
+                                                        [&peer_id](const PeerInfo &peer) {
+                                                            return peer.device_id == peer_id;
+                                                        }),
+                                         stored_state.peers.end());
+                peer_removed = stored_state.peers.size() != peer_count_before;
+            }
+        }
 
         const size_t requests_before = pending_pair_requests.size();
         pending_pair_requests.erase(std::remove_if(pending_pair_requests.begin(),
@@ -1488,14 +1665,14 @@ struct LoRaMeshApp::Impl {
         selected_peer_id = (selected_peer_id == peer_id) ? std::string() : selected_peer_id;
 
         const bool history_cleared = clear_conversation_history_locked(peer_id);
-        if (peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared) {
+        if (queued_remote_unpair || peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared) {
             state_dirty = true;
         }
-        if (peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared || had_unread || was_selected || history_cleared) {
+        if (queued_remote_unpair || peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared || had_unread || was_selected || history_cleared) {
             target_list_dirty = true;
         }
         system_ui_service::set_lora_unread(!unread_conversations.empty());
-        return peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared || had_unread || was_selected;
+        return queued_remote_unpair || peer_removed || requests_removed || confirmations_removed || outgoing_request_cleared || had_unread || was_selected;
     }
 
     bool delete_conversation_message_locked(const std::string &conversation_id, const std::string &message_id)
@@ -1580,6 +1757,8 @@ struct LoRaMeshApp::Impl {
 
         const uint64_t token = next_pending_message_token_locked();
         entry->pending_token = token;
+        entry->delivery_state = jc4880::lora_mesh::DeliveryState::PendingTx;
+        entry->last_delivery_attempt_ms = 0;
         entry->transmit_pending = true;
         entry->transmit_failed = false;
         status_text = "Sending mesh message...";
@@ -1618,9 +1797,33 @@ struct LoRaMeshApp::Impl {
                                        stored_state.identity.device_id,
                                        stored_state.identity.display_name.empty() ? stored_state.identity.device_id
                                                                                   : stored_state.identity.display_name,
+                                       stored_state.identity.public_key_hex,
                                        quoted_message_id,
-                                       quoted_preview);
+                                       quoted_preview,
+                                       std::string(),
+                                       conversation_id == jc4880::lora_mesh::kCommonConversationId
+                                           ? jc4880::lora_mesh::DeliveryState::None
+                                           : jc4880::lora_mesh::DeliveryState::PendingTx,
+                                       0);
         status_text = "Sending mesh message...";
+        return token;
+    }
+
+    uint64_t stage_pending_delivery_retry_locked(const std::string &conversation_id, const std::string &message_id)
+    {
+        ConversationEntry *entry = find_conversation_entry_locked(conversation_id, message_id);
+        if ((entry == nullptr) || !entry->outgoing) {
+            return 0;
+        }
+
+        const uint64_t token = next_pending_message_token_locked();
+        entry->pending_token = token;
+        entry->delivery_state = jc4880::lora_mesh::DeliveryState::PendingTx;
+        entry->last_delivery_attempt_ms = esp_timer_get_time() / 1000;
+        entry->transmit_pending = true;
+        entry->transmit_failed = false;
+        conversation_dirty = true;
+        target_list_dirty = true;
         return token;
     }
 
@@ -1654,6 +1857,7 @@ struct LoRaMeshApp::Impl {
                                                stored_state.identity.device_id,
                                                stored_state.identity.display_name.empty() ? stored_state.identity.device_id
                                                                                           : stored_state.identity.display_name,
+                                               stored_state.identity.public_key_hex,
                                                quoted_message_id,
                                                quoted_preview);
             }
@@ -1663,6 +1867,14 @@ struct LoRaMeshApp::Impl {
         entry->transmit_pending = false;
         entry->transmit_failed = !ok;
         entry->pending_token = 0;
+        entry->last_delivery_attempt_ms = ok ? (esp_timer_get_time() / 1000) : 0;
+        if (conversation_id == jc4880::lora_mesh::kCommonConversationId) {
+            entry->delivery_state = ok ? jc4880::lora_mesh::DeliveryState::None
+                                       : jc4880::lora_mesh::DeliveryState::Failed;
+        } else {
+            entry->delivery_state = ok ? jc4880::lora_mesh::DeliveryState::SentToRadio
+                                       : jc4880::lora_mesh::DeliveryState::Failed;
+        }
         conversation_dirty = true;
         target_list_dirty = true;
 
@@ -1683,13 +1895,13 @@ struct LoRaMeshApp::Impl {
             lv_obj_del(chat_action_overlay);
             chat_action_overlay = nullptr;
         }
+        chat_action_overlay_mode = ChatActionOverlayMode::None;
         chat_action_card = nullptr;
         pair_request_target_input = nullptr;
-        pair_request_code_input = nullptr;
-        pair_accept_code_input = nullptr;
         pair_modal_pair_id.clear();
         delete_peer_id.clear();
         delete_peer_name.clear();
+        pair_modal_public_key_hex.clear();
     }
 
     static void on_chat_overlay_dismiss(lv_event_t *event)
@@ -1751,7 +1963,12 @@ struct LoRaMeshApp::Impl {
         impl->close_chat_action_overlay();
 
         impl->lock();
+        const PeerInfo *peer = impl->find_peer_locked(peer_id);
+        const bool queued_remote_unpair = (peer != nullptr) && peer->trusted && !peer->public_key_hex.empty();
         const bool removed = impl->delete_peer_chat_and_pairing_locked(peer_id);
+        if (removed) {
+            impl->save_state_if_needed_locked();
+        }
         if (removed && (impl->input != nullptr)) {
             lv_textarea_set_text(impl->input, "");
         }
@@ -1760,7 +1977,9 @@ struct LoRaMeshApp::Impl {
         impl->unlock();
 
         impl->set_status(removed
-                                 ? (std::string("Deleted ") + (peer_name.empty() ? peer_id : peer_name))
+                                 ? (queued_remote_unpair
+                                        ? (std::string("Deleted locally; waiting to unpair ") + (peer_name.empty() ? peer_id : peer_name))
+                                        : (std::string("Deleted ") + (peer_name.empty() ? peer_id : peer_name)))
                                  : "Nothing to delete for that peer");
         impl->refresh_ui();
     }
@@ -1959,6 +2178,7 @@ struct LoRaMeshApp::Impl {
 
         const std::string author_id = impl->message_action_author_id;
         const std::string author_name = impl->message_action_author_name;
+        std::string author_public_key_hex = impl->message_action_author_public_key_hex;
         impl->close_chat_action_overlay();
 
         if (author_id.empty() || (author_id == impl->stored_state.identity.device_id)) {
@@ -1966,7 +2186,29 @@ struct LoRaMeshApp::Impl {
             return;
         }
 
-        impl->open_pair_request_overlay(author_id.empty() ? author_name : author_id);
+        impl->lock();
+        PeerInfo *peer = impl->find_peer_locked(author_id);
+        const bool already_paired = (peer != nullptr) && peer->trusted && peer->ratchet.initialized;
+        if (author_public_key_hex.empty() && (peer != nullptr)) {
+            author_public_key_hex = peer->public_key_hex;
+        }
+        if (already_paired) {
+            impl->show_peer_chat_locked(author_id);
+        }
+        impl->unlock();
+        if (already_paired) {
+            impl->refresh_ui();
+            if (impl->startup_complete) {
+                impl->focus_input();
+            }
+            return;
+        }
+        if (author_public_key_hex.empty()) {
+            impl->set_status("Cannot pair without the sender identity key");
+            return;
+        }
+
+        (void)impl->send_pair_request(author_id, author_public_key_hex);
     }
 
     static void on_message_reply_clicked(lv_event_t *event)
@@ -2078,6 +2320,7 @@ struct LoRaMeshApp::Impl {
         message_action_message_id = message_id;
         message_action_author_id = entry->author_id;
         message_action_author_name = entry->author_name;
+        message_action_author_public_key_hex = entry->author_public_key_hex;
         message_action_text = entry->text;
         message_action_can_edit = entry->outgoing && (entry->author_id == stored_state.identity.device_id);
         author_id = entry->author_id;
@@ -2118,7 +2361,15 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_flex_align(card, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
 
-        const bool can_pair = !author_id.empty() && (author_id != stored_state.identity.device_id);
+        bool has_private_chat = false;
+        lock();
+        if (!author_id.empty() && (author_id != stored_state.identity.device_id)) {
+            const PeerInfo *peer = find_peer_locked(author_id);
+            has_private_chat = (peer != nullptr) && peer->trusted;
+        }
+        unlock();
+
+        const bool can_pair = !author_id.empty() && (author_id != stored_state.identity.device_id) && !has_private_chat;
         const bool can_edit = message_action_can_edit;
 
         auto create_action_button = [&](const char *label_text, lv_color_t bg, lv_color_t fg, lv_event_cb_t callback, bool enabled) {
@@ -2142,7 +2393,11 @@ struct LoRaMeshApp::Impl {
             return button;
         };
 
-        create_action_button(LV_SYMBOL_PLUS "\nPair", lv_color_hex(0xECFDF3), lv_color_hex(0x027A48), on_message_pair_clicked, can_pair);
+        create_action_button(has_private_chat ? LV_SYMBOL_RIGHT "\nPrivate" : LV_SYMBOL_PLUS "\nPair",
+                     has_private_chat ? lv_color_hex(0xEEF4FF) : lv_color_hex(0xECFDF3),
+                     has_private_chat ? lv_color_hex(0x175CD3) : lv_color_hex(0x027A48),
+                     has_private_chat ? on_message_private_clicked : on_message_pair_clicked,
+                     has_private_chat || can_pair);
         create_action_button(LV_SYMBOL_UPLOAD "\nReply", lv_color_hex(0xEEF4FF), lv_color_hex(0x175CD3), on_message_reply_clicked, true);
         create_action_button(LV_SYMBOL_EDIT "\nEdit", lv_color_hex(0xFFFAEB), lv_color_hex(0xB54708), on_message_edit_clicked, can_edit);
         create_action_button(LV_SYMBOL_TRASH "\nDelete", lv_color_hex(0xFEF3F2), lv_color_hex(0xD92D20), on_message_delete_clicked, true);
@@ -2291,25 +2546,287 @@ struct LoRaMeshApp::Impl {
         return ok;
     }
 
-    bool send_pair_request(const std::string &target_name, const std::string &code)
+    bool send_control_packet_from_rx_locked(MeshPacket &packet)
     {
-        const std::string normalized_target = normalize_pair_name(target_name);
-        const std::string normalized_code = normalize_pair_code(code);
-        if (normalized_target.empty()) {
-            set_status("Enter the target device name");
-            refresh_ui();
+        const bool ok = send_packet_locked(packet, nullptr, std::string());
+        save_state_if_needed_locked();
+        return ok;
+    }
+
+    bool send_unpair_packet(const std::string &target_device_id,
+                            const std::string &target_display_name,
+                            const std::string &target_public_key_hex,
+                            const std::string &unpair_id)
+    {
+        if (target_device_id.empty() || target_public_key_hex.empty() || unpair_id.empty()) {
             return false;
         }
-        if (normalized_code.size() != 8U) {
-            set_status("Pair code must be 8 letters or digits");
-            refresh_ui();
+
+        MeshPacket packet = {};
+        packet.kind = PacketKind::Unpair;
+        packet.sender_id = stored_state.identity.device_id;
+        packet.sender_name = stored_state.identity.display_name;
+        packet.target_id = target_device_id;
+        packet.target_public_key_hex = target_public_key_hex;
+        packet.pair_id = unpair_id;
+        packet.payload = "unpair";
+        packet.public_key_hex = stored_state.identity.public_key_hex;
+        packet.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
+
+        const bool sent = send_control_packet(packet);
+
+        lock();
+        if (PeerInfo *peer = find_peer_locked(target_device_id); peer != nullptr) {
+            peer->pending_unpair = true;
+            peer->pending_unpair_id = unpair_id;
+            peer->last_unpair_attempt_ms = esp_timer_get_time() / 1000;
+            state_dirty = true;
+            save_state_if_needed_locked();
+            if (sent) {
+                append_line_capped(log_text,
+                                   std::string("[P2P] unpair request sent to ") +
+                                       (target_display_name.empty() ? target_device_id : target_display_name));
+                status_text = "Waiting for peer unpair";
+            }
+        }
+        unlock();
+        return sent;
+    }
+
+    static void pending_unpair_task_entry(void *context)
+    {
+        std::unique_ptr<PendingUnpairContext> request(static_cast<PendingUnpairContext *>(context));
+        if ((request == nullptr) || (request->impl == nullptr)) {
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        Impl *impl = request->impl;
+        (void)impl->send_unpair_packet(request->peer_id,
+                                       request->peer_name,
+                                       request->peer_public_key_hex,
+                                       request->unpair_id);
+
+        bsp_display_lock(0);
+        (void)lv_async_call(&Impl::refresh_ui_async, impl);
+        bsp_display_unlock();
+
+        impl->lock();
+        if (impl->unpair_task == xTaskGetCurrentTaskHandle()) {
+            impl->unpair_task = nullptr;
+        }
+        impl->unlock();
+        vTaskDelete(nullptr);
+    }
+
+    bool start_pending_unpair_task_locked()
+    {
+        if ((unpair_task != nullptr) || (send_task != nullptr)) {
+            return false;
+        }
+
+        std::string peer_id;
+        std::string peer_name;
+        std::string peer_public_key_hex;
+        std::string unpair_id;
+        if (!select_pending_unpair_locked(peer_id, peer_name, peer_public_key_hex, unpair_id)) {
+            return false;
+        }
+
+        auto *context = new PendingUnpairContext{.impl = this,
+                                                 .peer_id = peer_id,
+                                                 .peer_name = peer_name,
+                                                 .peer_public_key_hex = peer_public_key_hex,
+                                                 .unpair_id = unpair_id};
+        if (context == nullptr) {
+            return false;
+        }
+
+        TaskHandle_t task = nullptr;
+        if (!create_task_prefer_psram(&Impl::pending_unpair_task_entry,
+                                      "lora_unpair",
+                                      4096,
+                                      context,
+                                      kRxTaskPriority,
+                                      &task)) {
+            delete context;
+            return false;
+        }
+
+        unpair_task = task;
+        return true;
+    }
+
+    bool select_pending_private_delivery_locked(std::string &conversation_id,
+                                                std::string &payload,
+                                                std::string &message_id,
+                                                std::string &quoted_message_id,
+                                                std::string &quoted_preview,
+                                                std::string &bubble_text,
+                                                std::string &bubble_meta)
+    {
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        for (ConversationEntry &entry : conversation) {
+            if (!entry.outgoing || entry.conversation_id.empty() || (entry.conversation_id == jc4880::lora_mesh::kCommonConversationId)) {
+                continue;
+            }
+            if ((entry.delivery_state != jc4880::lora_mesh::DeliveryState::SentToRadio) &&
+                (entry.delivery_state != jc4880::lora_mesh::DeliveryState::Failed)) {
+                continue;
+            }
+            if ((entry.last_delivery_attempt_ms != 0) && ((now_ms - entry.last_delivery_attempt_ms) < kPendingPrivateRetryMs)) {
+                continue;
+            }
+
+            const PeerInfo *peer = find_peer_locked(entry.conversation_id);
+            if ((peer == nullptr) || !peer->trusted || peer->blocked || peer->public_key_hex.empty() ||
+                (peer->presence != jc4880::lora_mesh::PeerPresence::Online)) {
+                continue;
+            }
+
+            conversation_id = entry.conversation_id;
+            message_id = entry.message_id;
+            quoted_message_id = entry.quoted_message_id;
+            quoted_preview = entry.quoted_preview;
+            bubble_text = entry.text;
+            payload = entry.text.rfind("[private] ", 0) == 0 ? entry.text.substr(10) : entry.text;
+            bubble_meta = stored_state.identity.display_name.empty() ? stored_state.identity.device_id : stored_state.identity.display_name;
+            entry.delivery_state = jc4880::lora_mesh::DeliveryState::PendingTx;
+            entry.last_delivery_attempt_ms = now_ms;
+            entry.transmit_pending = true;
+            entry.transmit_failed = false;
+            conversation_dirty = true;
+            return true;
+        }
+        return false;
+    }
+
+    static void pending_delivery_retry_task_entry(void *context)
+    {
+        std::unique_ptr<PendingDeliveryRetryContext> request(static_cast<PendingDeliveryRetryContext *>(context));
+        if ((request == nullptr) || (request->impl == nullptr)) {
+            vTaskDelete(nullptr);
+            return;
+        }
+
+        Impl *impl = request->impl;
+        (void)impl->send_user_message(request->conversation_id,
+                                      request->conversation_id,
+                                      request->payload,
+                                      request->message_id,
+                                      std::string(),
+                                      request->quoted_message_id,
+                                      request->quoted_preview,
+                                      false,
+                                      request->pending_token,
+                                      request->bubble_text,
+                                      request->bubble_meta,
+                                      true);
+
+        bsp_display_lock(0);
+        (void)lv_async_call(&Impl::refresh_ui_async, impl);
+        bsp_display_unlock();
+
+        impl->lock();
+        if (impl->delivery_retry_task == xTaskGetCurrentTaskHandle()) {
+            impl->delivery_retry_task = nullptr;
+        }
+        impl->unlock();
+        vTaskDelete(nullptr);
+    }
+
+    bool start_pending_delivery_retry_task_locked()
+    {
+        if ((delivery_retry_task != nullptr) || (send_task != nullptr) || (unpair_task != nullptr)) {
+            return false;
+        }
+
+        std::string conversation_id;
+        std::string payload;
+        std::string message_id;
+        std::string quoted_message_id;
+        std::string quoted_preview;
+        std::string bubble_text;
+        std::string bubble_meta;
+        if (!select_pending_private_delivery_locked(conversation_id,
+                                                   payload,
+                                                   message_id,
+                                                   quoted_message_id,
+                                                   quoted_preview,
+                                                   bubble_text,
+                                                   bubble_meta)) {
+            return false;
+        }
+
+        const uint64_t pending_token = stage_pending_delivery_retry_locked(conversation_id, message_id);
+        if (pending_token == 0) {
+            return false;
+        }
+        if (!rewrite_conversation_history_locked(conversation_id)) {
+            append_line_capped(log_text, std::string("Failed to rewrite chat history for ") + conversation_id);
+        }
+
+        auto *request = new PendingDeliveryRetryContext{.impl = this,
+                                                        .conversation_id = conversation_id,
+                                                        .payload = payload,
+                                                        .message_id = message_id,
+                                                        .quoted_message_id = quoted_message_id,
+                                                        .quoted_preview = quoted_preview,
+                                                        .bubble_text = bubble_text,
+                                                        .bubble_meta = bubble_meta,
+                                                        .pending_token = pending_token};
+        if (request == nullptr) {
+            return false;
+        }
+
+        TaskHandle_t task = nullptr;
+        if (!create_task_prefer_psram(&Impl::pending_delivery_retry_task_entry,
+                                      "lora_retry",
+                                      6144,
+                                      request,
+                                      kRxTaskPriority,
+                                      &task)) {
+            delete request;
+            return false;
+        }
+
+        delivery_retry_task = task;
+        return true;
+    }
+
+    bool send_unpair_ack_locked(const std::string &target_device_id, const std::string &unpair_id)
+    {
+        if (target_device_id.empty() || unpair_id.empty()) {
+            return false;
+        }
+
+        MeshPacket packet = {};
+        packet.kind = PacketKind::Ack;
+        packet.sender_id = stored_state.identity.device_id;
+        packet.sender_name = stored_state.identity.display_name;
+        packet.target_id = target_device_id;
+        packet.pair_id = unpair_id;
+        packet.payload = "unpair";
+        packet.timestamp_ms = esp_timer_get_time() / 1000;
+        packet.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
+        return send_control_packet_from_rx_locked(packet);
+    }
+
+    bool send_pair_request(const std::string &target_device_id,
+                           const std::string &target_public_key_hex = std::string())
+    {
+        if (target_device_id.empty()) {
             return false;
         }
 
         MeshPacket packet = {};
         std::string sender_label;
-        std::string pair_id;
-        std::string nonce_a_hex;
+        std::string request_id;
+        std::string local_ephemeral_public_key_hex;
+        std::string local_ephemeral_private_key_hex;
+        std::string resolved_target_device_id = target_device_id;
+        std::string resolved_target_display_name = target_device_id;
+        std::string resolved_target_public_key_hex = target_public_key_hex;
 
         lock();
         if (send_task != nullptr) {
@@ -2324,18 +2841,56 @@ struct LoRaMeshApp::Impl {
             refresh_ui();
             return false;
         }
-        pair_id = jc4880::lora_mesh::cryptoGenerateNonceHex(8);
-        nonce_a_hex = jc4880::lora_mesh::cryptoGenerateNonceHex();
+        if (PeerInfo *peer = find_peer_by_name_or_id_locked(target_device_id); peer != nullptr) {
+            if (peer->blocked) {
+                unlock();
+                set_status("Unblock the device before pairing");
+                refresh_ui();
+                return false;
+            }
+            if (peer->pending_unpair) {
+                if (can_reset_pending_unpair_for_repair_locked(*peer)) {
+                    append_line_capped(log_text,
+                                       std::string("[P2P] clearing stale pending unpair before new pair request to ") +
+                                           peer->device_id);
+                    clear_pending_unpair_locked(*peer);
+                } else {
+                    unlock();
+                    set_status("Waiting for remote unpair to finish");
+                    refresh_ui();
+                    return false;
+                }
+            }
+        }
+        if (resolved_target_public_key_hex.empty()) {
+            if (PeerInfo *peer = find_peer_by_name_or_id_locked(target_device_id); peer != nullptr) {
+                resolved_target_device_id = peer->device_id;
+                resolved_target_display_name = peer_label(*peer);
+                resolved_target_public_key_hex = peer->public_key_hex;
+            }
+        }
+        if (resolved_target_public_key_hex.empty()) {
+            unlock();
+            set_status("Target identity key unavailable for pairing");
+            refresh_ui();
+            return false;
+        }
+        if (!jc4880::lora_mesh::cryptoGenerateEphemeralKeypair(local_ephemeral_public_key_hex, local_ephemeral_private_key_hex)) {
+            unlock();
+            set_status("Failed to create pairing keys");
+            refresh_ui();
+            return false;
+        }
+        request_id = jc4880::lora_mesh::cryptoGenerateNonceHex(4);
         packet.kind = PacketKind::PairRequest;
         packet.sender_id = stored_state.identity.device_id;
         packet.sender_name = stored_state.identity.display_name;
-        packet.target_id = jc4880::lora_mesh::kBroadcastTargetId;
-        packet.pair_id = pair_id;
+        packet.target_id = resolved_target_device_id;
+        packet.pair_id = request_id;
         packet.timestamp_ms = esp_timer_get_time() / 1000;
         packet.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
         packet.public_key_hex = stored_state.identity.public_key_hex;
-        packet.payload = normalized_target;
-        packet.nonce_hex = nonce_a_hex;
+        packet.ephemeral_public_key_hex = local_ephemeral_public_key_hex;
         sender_label = stored_state.identity.display_name.empty() ? stored_state.identity.device_id : stored_state.identity.display_name;
         unlock();
 
@@ -2345,21 +2900,21 @@ struct LoRaMeshApp::Impl {
         if (ok) {
             has_pending_outgoing_pair_request = true;
             pending_outgoing_pair_request.state = PairingState::WaitingForAccept;
-            pending_outgoing_pair_request.pair_id = pair_id;
-            pending_outgoing_pair_request.target_name = normalized_target;
-            pending_outgoing_pair_request.target_public_key_hex.clear();
-            pending_outgoing_pair_request.code = normalized_code;
-            pending_outgoing_pair_request.nonce_a_hex = nonce_a_hex;
+            pending_outgoing_pair_request.pair_id = request_id;
+            pending_outgoing_pair_request.target_name = target_device_id;
+            pending_outgoing_pair_request.target_device_id = resolved_target_device_id;
+            pending_outgoing_pair_request.target_display_name = resolved_target_display_name;
+            pending_outgoing_pair_request.target_public_key_hex = resolved_target_public_key_hex;
+            pending_outgoing_pair_request.local_ephemeral_public_key_hex = local_ephemeral_public_key_hex;
+            pending_outgoing_pair_request.local_ephemeral_private_key_hex = local_ephemeral_private_key_hex;
             pending_outgoing_pair_request.created_ms = esp_timer_get_time() / 1000;
             pending_outgoing_pair_request.expires_ms = pending_outgoing_pair_request.created_ms + kPairSessionTimeoutMs;
-            push_conversation_locked(jc4880::lora_mesh::kCommonConversationId,
-                                     std::string("Pair request sent to ") + normalized_target,
-                                     std::string(sender_label) + "  waiting for secure reply",
-                                     true);
-            trace_event_locked(std::string("UI sent pair request to ") + normalized_target);
-            status_text = std::string("Pair request sent to ") + normalized_target + ". Share the key out of band.";
+            target_list_dirty = true;
+            append_line_capped(log_text, std::string("[P2P] pair request sent id=") + request_id + " to=" + target_device_id);
+            trace_event_locked(std::string("UI sent pair request to ") + target_device_id);
+            status_text = "Pair request sent";
         } else {
-            trace_event_locked(std::string("UI failed to send pair request to ") + normalized_target);
+            trace_event_locked(std::string("UI failed to send pair request to ") + target_device_id);
         }
         unlock();
 
@@ -2367,23 +2922,19 @@ struct LoRaMeshApp::Impl {
         return ok;
     }
 
-    bool accept_pair_request(const std::string &pair_id, const std::string &code)
+    bool accept_pair_request(const std::string &pair_id)
     {
         if (pair_id.empty()) {
             return false;
         }
 
-        const std::string normalized_code = normalize_pair_code(code);
-        if (normalized_code.size() != 8U) {
-            set_status("Enter the 8-character pair key");
-            refresh_ui();
-            return false;
-        }
-
         MeshPacket packet = {};
         PendingPairRequest request = {};
-        std::string proof_b_hex;
-        std::string nonce_b_hex;
+        std::array<uint8_t, jc4880::lora_mesh::kRatchetKeySize> shared_secret = {};
+        jc4880::lora_mesh::RatchetState ratchet_state = {};
+        std::string responder_ephemeral_public_key_hex;
+        std::string responder_ephemeral_private_key_hex;
+        std::string auth_tag_hex;
 
         lock();
         if (send_task != nullptr) {
@@ -2400,17 +2951,43 @@ struct LoRaMeshApp::Impl {
             return false;
         }
         request = *pending;
-        nonce_b_hex = jc4880::lora_mesh::cryptoGenerateNonceHex();
-        if (!build_pair_proof_hex(normalized_code,
-                                  "PAIR_ACCEPT",
-                                  request.pair_id,
-                                  request.nonce_hex,
-                                  nonce_b_hex,
-                                  request.public_key_hex,
-                                  stored_state.identity.public_key_hex,
-                                  proof_b_hex)) {
+        append_line_capped(log_text, "[P2P] pair accepted by local user");
+        if (!jc4880::lora_mesh::cryptoGenerateEphemeralKeypair(responder_ephemeral_public_key_hex, responder_ephemeral_private_key_hex)) {
             unlock();
-            set_status("Failed to build pair proof");
+            set_status("Failed to create pairing keys");
+            refresh_ui();
+            return false;
+        }
+        append_line_capped(log_text, "[P2P] deriving shared secret");
+        if (!jc4880::lora_mesh::cryptoDerivePairingSharedSecret(stored_state.identity,
+                                                                responder_ephemeral_private_key_hex,
+                                                                request.public_key_hex,
+                                                                request.ephemeral_public_key_hex,
+                                                                false,
+                                                                shared_secret)) {
+            unlock();
+            set_status("Failed to derive shared secret");
+            refresh_ui();
+            return false;
+        }
+        append_line_capped(log_text, "[P2P] shared secret derived OK");
+        if (!jc4880::lora_mesh::cryptoBuildPairAcceptAuthTag(shared_secret,
+                                                             request.pair_id,
+                                                             stored_state.identity.device_id,
+                                                             request.device_id,
+                                                             stored_state.identity.public_key_hex,
+                                                             responder_ephemeral_public_key_hex,
+                                                             auth_tag_hex) ||
+            !jc4880::lora_mesh::cryptoInitializeMiniRatchet(shared_secret,
+                                                            stored_state.identity.device_id,
+                                                            stored_state.identity.display_name,
+                                                            stored_state.identity.public_key_hex,
+                                                            request.device_id,
+                                                            request.display_name,
+                                                            request.public_key_hex,
+                                                            ratchet_state)) {
+            unlock();
+            set_status("Failed to initialize private chat");
             refresh_ui();
             return false;
         }
@@ -2418,13 +2995,11 @@ struct LoRaMeshApp::Impl {
         packet.sender_id = stored_state.identity.device_id;
         packet.sender_name = stored_state.identity.display_name;
         packet.target_id = request.device_id;
-        packet.target_public_key_hex = request.public_key_hex;
         packet.pair_id = request.pair_id;
         packet.timestamp_ms = esp_timer_get_time() / 1000;
         packet.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
-        packet.public_key_hex = stored_state.identity.public_key_hex;
-        packet.nonce_hex = nonce_b_hex;
-        packet.auth_hex = proof_b_hex;
+        packet.ephemeral_public_key_hex = responder_ephemeral_public_key_hex;
+        packet.auth_hex = auth_tag_hex;
         unlock();
 
         const bool ok = send_control_packet(packet);
@@ -2432,22 +3007,19 @@ struct LoRaMeshApp::Impl {
         lock();
         if (ok) {
             erase_pending_request_locked(request.pair_id);
-            pending_pair_confirmations.push_back(PendingPairConfirmation{.state = PairingState::AcceptSentWaitingConfirm,
-                                                                         .pair_id = request.pair_id,
-                                                                         .device_id = request.device_id,
-                                                                         .display_name = request.display_name,
-                                                                         .public_key_hex = request.public_key_hex,
-                                                                         .target_public_key_hex = stored_state.identity.public_key_hex,
-                                                                         .code = normalized_code,
-                                                                         .nonce_a_hex = request.nonce_hex,
-                                                                         .nonce_b_hex = nonce_b_hex,
-                                                                         .created_ms = esp_timer_get_time() / 1000,
-                                                                         .expires_ms = (esp_timer_get_time() / 1000) + kPairSessionTimeoutMs});
+            upsert_trusted_peer_locked(request.device_id,
+                                       request.display_name.empty() ? request.device_id : request.display_name,
+                                       request.public_key_hex,
+                                       &ratchet_state);
+            close_chat_action_overlay();
+            show_peer_chat_locked(request.device_id);
             target_list_dirty = true;
+            append_line_capped(log_text, "[P2P] private chat created");
             trace_event_locked(std::string("UI sent pair acceptance to ") + request.device_id);
-            status_text = "Waiting for confirmation...";
+            status_text = "Pair accepted";
         } else {
             trace_event_locked(std::string("UI failed to send pair acceptance to ") + request.device_id);
+            status_text = "Failed to send pair acceptance";
         }
         unlock();
 
@@ -2519,9 +3091,39 @@ struct LoRaMeshApp::Impl {
         if (impl == nullptr) {
             return;
         }
-        impl->generated_pair_code = generate_pair_code();
         impl->close_chat_action_overlay();
         impl->open_pair_request_overlay();
+    }
+
+    static void on_message_private_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl == nullptr) {
+            return;
+        }
+
+        const std::string author_id = impl->message_action_author_id;
+        impl->close_chat_action_overlay();
+        if (author_id.empty() || (author_id == impl->stored_state.identity.device_id)) {
+            impl->set_status("Private chat is only available for paired peers");
+            return;
+        }
+
+        impl->lock();
+        PeerInfo *peer = impl->find_peer_locked(author_id);
+        const bool can_open = (peer != nullptr) && peer->trusted;
+        if (can_open) {
+            impl->show_peer_chat_locked(author_id);
+        }
+        impl->unlock();
+        if (!can_open) {
+            impl->set_status("Pair with this device first");
+            return;
+        }
+        impl->refresh_ui();
+        if (impl->startup_complete) {
+            impl->focus_input();
+        }
     }
 
     static void on_clear_requests_clicked(lv_event_t *event)
@@ -2549,43 +3151,39 @@ struct LoRaMeshApp::Impl {
         if ((context == nullptr) || (context->impl == nullptr) || context->pair_id.empty()) {
             return;
         }
-        Impl *impl = context->impl;
-        impl->pair_modal_pair_id = context->pair_id;
-        impl->pair_modal_device_id = context->device_id;
-        impl->pair_modal_display_name = context->display_name;
-        impl->lock();
-        PendingPairRequest *pending = impl->find_pending_request_by_pair_id_locked(context->pair_id);
-        if (pending != nullptr) {
-            impl->pair_modal_display_name = pending->display_name;
-            impl->pair_modal_device_id = pending->device_id;
+        (void)context->impl->accept_pair_request(context->pair_id);
+    }
+
+    static void on_reject_pair_request_clicked(lv_event_t *event)
+    {
+        auto *context = static_cast<PairRequestUiContext *>(lv_event_get_user_data(event));
+        if ((context == nullptr) || (context->impl == nullptr) || context->pair_id.empty()) {
+            return;
         }
-        impl->unlock();
-        impl->close_chat_action_overlay();
-        impl->open_pair_accept_overlay();
+        context->impl->close_chat_action_overlay();
+        (void)context->impl->reject_pair_request(context->pair_id);
     }
 
     static void on_pair_request_send_clicked(lv_event_t *event)
     {
         auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
-        if ((impl == nullptr) || (impl->pair_request_target_input == nullptr) || (impl->pair_request_code_input == nullptr)) {
+        if ((impl == nullptr) || (impl->pair_request_target_input == nullptr)) {
             return;
         }
         const std::string target_name = lv_textarea_get_text(impl->pair_request_target_input);
-        const std::string code = lv_textarea_get_text(impl->pair_request_code_input);
+        const std::string target_public_key_hex = impl->pair_modal_public_key_hex;
         impl->set_keyboard_visible(false);
-        (void)impl->send_pair_request(target_name, code);
+        (void)impl->send_pair_request(target_name, target_public_key_hex);
     }
 
     static void on_pair_accept_confirm_clicked(lv_event_t *event)
     {
         auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
-        if ((impl == nullptr) || (impl->pair_accept_code_input == nullptr)) {
+        if (impl == nullptr) {
             return;
         }
         const std::string pair_id = impl->pair_modal_pair_id;
-        const std::string code = lv_textarea_get_text(impl->pair_accept_code_input);
-        impl->close_chat_action_overlay();
-        (void)impl->accept_pair_request(pair_id, code);
+        (void)impl->accept_pair_request(pair_id);
     }
 
     static void on_pair_accept_reject_clicked(lv_event_t *event)
@@ -2616,11 +3214,324 @@ struct LoRaMeshApp::Impl {
         return button;
     }
 
-    void open_pair_request_overlay(const std::string &target_name = std::string())
+    static void on_device_management_action_deleted(lv_event_t *event)
+    {
+        auto *context = static_cast<DeviceManagementUiContext *>(lv_event_get_user_data(event));
+        delete context;
+    }
+
+    static void on_open_paired_devices_clicked(lv_event_t *event)
+    {
+        auto *impl = static_cast<Impl *>(lv_event_get_user_data(event));
+        if (impl == nullptr) {
+            return;
+        }
+        impl->close_chat_action_overlay();
+        impl->open_paired_devices_overlay();
+    }
+
+    static lv_obj_t *create_management_button(lv_obj_t *parent,
+                                              const char *label_text,
+                                              lv_color_t background,
+                                              lv_color_t foreground,
+                                              lv_event_cb_t callback,
+                                              void *user_data)
+    {
+        lv_obj_t *button = lv_btn_create(parent);
+        lv_obj_set_height(button, 36);
+        lv_obj_set_style_radius(button, 18, 0);
+        lv_obj_set_style_bg_color(button, background, 0);
+        lv_obj_set_style_border_width(button, 0, 0);
+        lv_obj_set_style_shadow_width(button, 0, 0);
+        lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, user_data);
+        lv_obj_t *label = lv_label_create(button);
+        lv_obj_set_style_text_color(label, foreground, 0);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+        lv_label_set_text(label, label_text);
+        lv_obj_center(label);
+        return button;
+    }
+
+    static void on_device_management_action_clicked(lv_event_t *event)
+    {
+        auto *context = static_cast<DeviceManagementUiContext *>(lv_event_get_user_data(event));
+        if ((context == nullptr) || (context->impl == nullptr)) {
+            return;
+        }
+
+        Impl *impl = context->impl;
+        bool reopen_devices_modal = true;
+        std::string status_message = "Nothing changed";
+
+        impl->lock();
+        if (context->common_chat) {
+            impl->stored_state.settings.common_chat_muted = !impl->stored_state.settings.common_chat_muted;
+            if (impl->stored_state.settings.common_chat_muted) {
+                impl->unread_conversations.erase(jc4880::lora_mesh::kCommonConversationId);
+            }
+            impl->state_dirty = true;
+            impl->target_list_dirty = true;
+            impl->save_state_if_needed_locked();
+            status_message = impl->stored_state.settings.common_chat_muted ? "Common chat muted" : "Common chat unmuted";
+        } else if (PeerInfo *peer = impl->find_peer_locked(context->peer_id); peer != nullptr) {
+            switch (context->action) {
+            case DeviceManagementAction::ToggleMute:
+                peer->muted = !peer->muted;
+                if (peer->muted) {
+                    impl->unread_conversations.erase(peer->device_id);
+                }
+                impl->state_dirty = true;
+                impl->target_list_dirty = true;
+                impl->save_state_if_needed_locked();
+                status_message = peer->muted ? (peer_label(*peer) + " muted") : (peer_label(*peer) + " unmuted");
+                break;
+            case DeviceManagementAction::ToggleBlock:
+                peer->blocked = !peer->blocked;
+                if (peer->blocked) {
+                    impl->unread_conversations.erase(peer->device_id);
+                }
+                impl->state_dirty = true;
+                impl->target_list_dirty = true;
+                impl->save_state_if_needed_locked();
+                status_message = peer->blocked ? (peer_label(*peer) + " blocked") : (peer_label(*peer) + " unblocked");
+                break;
+            case DeviceManagementAction::Unpair: {
+                const std::string peer_id = peer->device_id;
+                const std::string peer_name = peer_label(*peer);
+                const bool queued_remote_unpair = peer->trusted && !peer->public_key_hex.empty();
+                const bool removed = impl->delete_peer_chat_and_pairing_locked(peer_id);
+                if (removed) {
+                    impl->save_state_if_needed_locked();
+                }
+                if (removed && (impl->input != nullptr)) {
+                    lv_textarea_set_text(impl->input, "");
+                }
+                status_message = removed
+                                     ? (queued_remote_unpair ? (std::string("Deleted locally; waiting to unpair ") + peer_name)
+                                                             : (std::string("Deleted ") + peer_name))
+                                     : "Nothing to delete for that peer";
+                break;
+            }
+            }
+        }
+        impl->unlock();
+
+        impl->close_chat_action_overlay();
+        if (reopen_devices_modal) {
+            impl->open_paired_devices_overlay();
+        }
+        impl->set_status(status_message);
+        impl->refresh_ui();
+    }
+
+    void open_paired_devices_overlay()
     {
         if ((root == nullptr) || (chat_action_overlay != nullptr)) {
             return;
         }
+
+        chat_action_overlay_mode = ChatActionOverlayMode::PairedDevices;
+        chat_action_overlay = lv_obj_create(root);
+        lv_obj_set_size(chat_action_overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_add_flag(chat_action_overlay, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_style_bg_color(chat_action_overlay, lv_color_hex(0x111B21), 0);
+        lv_obj_set_style_bg_opa(chat_action_overlay, LV_OPA_40, 0);
+        lv_obj_set_style_border_width(chat_action_overlay, 0, 0);
+        lv_obj_set_style_radius(chat_action_overlay, 0, 0);
+        lv_obj_set_style_pad_all(chat_action_overlay, 0, 0);
+        lv_obj_clear_flag(chat_action_overlay, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(chat_action_overlay, on_chat_overlay_dismiss, LV_EVENT_CLICKED, this);
+
+        lv_obj_t *card = lv_obj_create(chat_action_overlay);
+        chat_action_card = card;
+        lv_obj_set_width(card, 340);
+        lv_obj_set_height(card, 360);
+        lv_obj_center(card);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_radius(card, 22, 0);
+        lv_obj_set_style_border_width(card, 0, 0);
+        lv_obj_set_style_pad_all(card, 16, 0);
+        lv_obj_set_style_pad_row(card, 12, 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *title_row = lv_obj_create(card);
+        lv_obj_set_width(title_row, LV_PCT(100));
+        lv_obj_set_height(title_row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(title_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(title_row, 0, 0);
+        lv_obj_set_style_pad_all(title_row, 0, 0);
+        lv_obj_set_flex_flow(title_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(title_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *title = lv_label_create(title_row);
+        lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+        lv_obj_set_style_text_color(title, lv_color_hex(0x111B21), 0);
+        lv_label_set_text(title, "Paired devices");
+        create_modal_close_button(title_row, this);
+
+        lv_obj_t *body = lv_label_create(card);
+        lv_obj_set_width(body, LV_PCT(100));
+        lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_color(body, lv_color_hex(0x475467), 0);
+        lv_obj_set_style_text_font(body, &lv_font_montserrat_12, 0);
+        lv_label_set_text(body, "Mute hides unread badges and sounds. Block drops traffic from that device. Unpair removes it from the list and keeps retrying remote unpair in the background until the peer is reachable.");
+
+        lv_obj_t *list = lv_obj_create(card);
+        lv_obj_set_width(list, LV_PCT(100));
+        lv_obj_set_flex_grow(list, 1);
+        lv_obj_set_style_radius(list, 16, 0);
+        lv_obj_set_style_border_width(list, 0, 0);
+        lv_obj_set_style_pad_all(list, 8, 0);
+        lv_obj_set_style_pad_row(list, 8, 0);
+        lv_obj_set_style_bg_color(list, lv_color_hex(0xF8FAFC), 0);
+        lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+
+        auto *common_context = new DeviceManagementUiContext{.impl = this,
+                                                             .peer_id = jc4880::lora_mesh::kCommonConversationId,
+                                                             .action = DeviceManagementAction::ToggleMute,
+                                                             .common_chat = true};
+        lv_obj_t *common_card = lv_obj_create(list);
+        lv_obj_set_width(common_card, LV_PCT(100));
+        lv_obj_set_height(common_card, LV_SIZE_CONTENT);
+        lv_obj_set_style_radius(common_card, 14, 0);
+        lv_obj_set_style_border_width(common_card, 0, 0);
+        lv_obj_set_style_pad_all(common_card, 12, 0);
+        lv_obj_set_style_pad_row(common_card, 8, 0);
+        lv_obj_set_style_bg_color(common_card, lv_color_hex(0xFFFFFF), 0);
+        lv_obj_set_flex_flow(common_card, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *common_title = lv_label_create(common_card);
+        lv_obj_set_style_text_font(common_title, &lv_font_montserrat_16, 0);
+        lv_label_set_text(common_title, "Common chat");
+        lv_obj_t *common_subtitle = lv_label_create(common_card);
+        lv_obj_set_style_text_font(common_subtitle, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(common_subtitle, lv_color_hex(0x667085), 0);
+        lv_label_set_text(common_subtitle, stored_state.settings.common_chat_muted ? "Muted" : "Notifications on");
+        lv_obj_t *common_actions = lv_obj_create(common_card);
+        lv_obj_set_width(common_actions, LV_PCT(100));
+        lv_obj_set_height(common_actions, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(common_actions, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(common_actions, 0, 0);
+        lv_obj_set_style_pad_all(common_actions, 0, 0);
+        lv_obj_set_style_pad_column(common_actions, 8, 0);
+        lv_obj_set_flex_flow(common_actions, LV_FLEX_FLOW_ROW);
+        lv_obj_add_event_cb(common_actions, on_device_management_action_deleted, LV_EVENT_DELETE, common_context);
+        create_management_button(common_actions,
+                                 stored_state.settings.common_chat_muted ? "Unmute" : "Mute",
+                                 lv_color_hex(0xE0F2FE),
+                                 lv_color_hex(0x075985),
+                                 on_device_management_action_clicked,
+                                 common_context);
+
+        bool has_visible_peers = false;
+        for (const PeerInfo &peer : stored_state.peers) {
+            if (!peer.trusted) {
+                continue;
+            }
+            has_visible_peers = true;
+            lv_obj_t *peer_card = lv_obj_create(list);
+            lv_obj_set_width(peer_card, LV_PCT(100));
+            lv_obj_set_height(peer_card, LV_SIZE_CONTENT);
+            lv_obj_set_style_radius(peer_card, 14, 0);
+            lv_obj_set_style_border_width(peer_card, 0, 0);
+            lv_obj_set_style_pad_all(peer_card, 12, 0);
+            lv_obj_set_style_pad_row(peer_card, 8, 0);
+            lv_obj_set_style_bg_color(peer_card, lv_color_hex(0xFFFFFF), 0);
+            lv_obj_set_flex_flow(peer_card, LV_FLEX_FLOW_COLUMN);
+
+            lv_obj_t *peer_title = lv_label_create(peer_card);
+            lv_obj_set_style_text_font(peer_title, &lv_font_montserrat_16, 0);
+            lv_label_set_text(peer_title, peer_label(peer).c_str());
+
+            std::string subtitle = std::string("ID ") + peer.device_id;
+            if (peer.blocked) {
+                subtitle += "  Blocked";
+            }
+            if (peer.muted) {
+                subtitle += "  Muted";
+            }
+            lv_obj_t *peer_subtitle = lv_label_create(peer_card);
+            lv_obj_set_style_text_font(peer_subtitle, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(peer_subtitle, lv_color_hex(0x667085), 0);
+            lv_label_set_text(peer_subtitle, subtitle.c_str());
+
+            lv_obj_t *peer_actions = lv_obj_create(peer_card);
+            lv_obj_set_width(peer_actions, LV_PCT(100));
+            lv_obj_set_height(peer_actions, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_opa(peer_actions, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(peer_actions, 0, 0);
+            lv_obj_set_style_pad_all(peer_actions, 0, 0);
+            lv_obj_set_style_pad_column(peer_actions, 8, 0);
+            lv_obj_set_flex_flow(peer_actions, LV_FLEX_FLOW_ROW_WRAP);
+
+            auto *mute_context = new DeviceManagementUiContext{.impl = this,
+                                                               .peer_id = peer.device_id,
+                                                               .action = DeviceManagementAction::ToggleMute,
+                                                               .common_chat = false};
+            lv_obj_add_event_cb(peer_actions, on_device_management_action_deleted, LV_EVENT_DELETE, mute_context);
+            create_management_button(peer_actions,
+                                     peer.muted ? "Unmute" : "Mute",
+                                     lv_color_hex(0xE0F2FE),
+                                     lv_color_hex(0x075985),
+                                     on_device_management_action_clicked,
+                                     mute_context);
+
+            auto *block_context = new DeviceManagementUiContext{.impl = this,
+                                                                .peer_id = peer.device_id,
+                                                                .action = DeviceManagementAction::ToggleBlock,
+                                                                .common_chat = false};
+            lv_obj_add_event_cb(peer_actions, on_device_management_action_deleted, LV_EVENT_DELETE, block_context);
+            create_management_button(peer_actions,
+                                     peer.blocked ? "Unblock" : "Block",
+                                     lv_color_hex(0xFEF3F2),
+                                     lv_color_hex(0xB42318),
+                                     on_device_management_action_clicked,
+                                     block_context);
+
+            auto *unpair_context = new DeviceManagementUiContext{.impl = this,
+                                                                 .peer_id = peer.device_id,
+                                                                 .action = DeviceManagementAction::Unpair,
+                                                                 .common_chat = false};
+            lv_obj_add_event_cb(peer_actions, on_device_management_action_deleted, LV_EVENT_DELETE, unpair_context);
+            create_management_button(peer_actions,
+                                     "Unpair",
+                                     lv_color_hex(0xECFDF3),
+                                     lv_color_hex(0x027A48),
+                                     on_device_management_action_clicked,
+                                     unpair_context);
+        }
+
+        if (!has_visible_peers) {
+            lv_obj_t *empty = lv_label_create(list);
+            lv_obj_set_width(empty, LV_PCT(100));
+            lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_font(empty, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(empty, lv_color_hex(0x667085), 0);
+            lv_label_set_text(empty, "No paired devices yet.");
+        }
+    }
+
+    void open_pair_request_overlay(const std::string &target_name = std::string(),
+                                   const std::string &display_name = std::string(),
+                                   const std::string &target_public_key_hex = std::string())
+    {
+        if ((root == nullptr) || (chat_action_overlay != nullptr)) {
+            return;
+        }
+
+        std::string resolved_target_public_key_hex = target_public_key_hex;
+        if (resolved_target_public_key_hex.empty() && !target_name.empty()) {
+            lock();
+            if (PeerInfo *peer = find_peer_by_name_or_id_locked(target_name); peer != nullptr) {
+                resolved_target_public_key_hex = peer->public_key_hex;
+            }
+            unlock();
+        }
+
+        pair_modal_device_id = target_name;
+        pair_modal_display_name = display_name;
+        pair_modal_public_key_hex = resolved_target_public_key_hex;
 
         chat_action_overlay = lv_obj_create(root);
         lv_obj_set_size(chat_action_overlay, LV_PCT(100), LV_PCT(100));
@@ -2663,35 +3574,40 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_width(body, LV_PCT(100));
         lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(body, lv_color_hex(0x475467), 0);
+        lv_label_set_text(body,
+                          (resolved_target_public_key_hex.empty()
+                               ? "Send a pairing request so the receiver can accept or reject it."
+                               : (std::string("Bind this pairing to ") +
+                                  (display_name.empty() ? target_name : display_name) +
+                                  " so the receiver can accept or reject it.")
+                                     .c_str()));
 
         create_setting_field(card, "Target device name or ID", &pair_request_target_input, "COM11 or P4-ABCD", this);
-        create_setting_field(card, "Shared pair key", &pair_request_code_input, "XXXX-XXXX", this);
         if ((pair_request_target_input != nullptr) && !target_name.empty()) {
             lv_textarea_set_text(pair_request_target_input, target_name.c_str());
         }
-        if (pair_request_code_input != nullptr) {
-        lv_obj_add_flag(chat_panel, LV_OBJ_FLAG_SCROLLABLE);
-        }
 
-        lv_obj_t *code_wrap = lv_obj_create(card);
-        lv_obj_set_width(code_wrap, LV_PCT(100));
-        lv_obj_set_height(code_wrap, LV_SIZE_CONTENT);
-        lv_obj_add_flag(composer, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_set_style_border_width(code_wrap, 0, 0);
-        lv_obj_set_style_radius(code_wrap, 16, 0);
-        lv_obj_set_style_pad_all(code_wrap, 12, 0);
-        lv_obj_set_flex_flow(code_wrap, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_style_pad_row(code_wrap, 4, 0);
+        lv_obj_t *keys_wrap = lv_obj_create(card);
+        lv_obj_set_width(keys_wrap, LV_PCT(100));
+        lv_obj_set_height(keys_wrap, LV_SIZE_CONTENT);
+        lv_obj_set_style_border_width(keys_wrap, 0, 0);
+        lv_obj_set_style_radius(keys_wrap, 16, 0);
+        lv_obj_set_style_bg_color(keys_wrap, lv_color_hex(0xF8FAFC), 0);
+        lv_obj_set_style_pad_all(keys_wrap, 12, 0);
+        lv_obj_set_flex_flow(keys_wrap, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(keys_wrap, 4, 0);
 
-        lv_obj_t *code_label = lv_label_create(code_wrap);
-            jc4880::lora_mesh::scroll_chat_to_latest(message_list, composer, false);
-        lv_obj_set_style_text_color(code_label, lv_color_hex(0x667085), 0);
-        lv_label_set_text(code_label, "Suggested format");
+        lv_obj_t *local_key_label = lv_label_create(keys_wrap);
+        lv_obj_set_style_text_color(local_key_label, lv_color_hex(0x475467), 0);
+        lv_label_set_text(local_key_label,
+                (std::string("Your device key: ") + public_key_fingerprint(stored_state.identity.public_key_hex)).c_str());
 
-        lv_obj_t *code_value = lv_label_create(code_wrap);
-        lv_obj_set_style_text_font(code_value, &lv_font_montserrat_24, 0);
-        lv_obj_set_style_text_color(code_value, lv_color_hex(0x111B21), 0);
-        lv_label_set_text(code_value, generated_pair_code.c_str());
+        lv_obj_t *remote_key_label = lv_label_create(keys_wrap);
+        lv_obj_set_style_text_color(remote_key_label,
+                    resolved_target_public_key_hex.empty() ? lv_color_hex(0xB42318) : lv_color_hex(0x027A48),
+                        0);
+        lv_label_set_text(remote_key_label,
+                (std::string("Remote device key: ") + public_key_fingerprint(resolved_target_public_key_hex)).c_str());
 
         lv_obj_t *actions = lv_obj_create(card);
         lv_obj_set_width(actions, LV_PCT(100));
@@ -2762,7 +3678,7 @@ struct LoRaMeshApp::Impl {
         lv_obj_t *title = lv_label_create(title_row);
         lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
         lv_obj_set_style_text_color(title, lv_color_hex(0x111B21), 0);
-        lv_label_set_text(title, "Confirm pair request");
+        lv_label_set_text(title, "Pair request");
         create_modal_close_button(title_row, this);
 
         lv_obj_t *body = lv_label_create(card);
@@ -2770,11 +3686,29 @@ struct LoRaMeshApp::Impl {
         lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_color(body, lv_color_hex(0x475467), 0);
         lv_label_set_text(body,
-                          (std::string("Enter the key shared by ") +
-                           (pair_modal_display_name.empty() ? pair_modal_device_id : pair_modal_display_name))
-                              .c_str());
+                                  (std::string("Accept or reject the pairing request from ") +
+                                    (pair_modal_display_name.empty() ? pair_modal_device_id : pair_modal_display_name))
+                                        .c_str());
 
-        create_setting_field(card, "Pair key", &pair_accept_code_input, "XXXX-XXXX", this);
+        lv_obj_t *keys_wrap = lv_obj_create(card);
+        lv_obj_set_width(keys_wrap, LV_PCT(100));
+        lv_obj_set_height(keys_wrap, LV_SIZE_CONTENT);
+        lv_obj_set_style_border_width(keys_wrap, 0, 0);
+        lv_obj_set_style_radius(keys_wrap, 16, 0);
+        lv_obj_set_style_bg_color(keys_wrap, lv_color_hex(0xF8FAFC), 0);
+        lv_obj_set_style_pad_all(keys_wrap, 12, 0);
+        lv_obj_set_flex_flow(keys_wrap, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_style_pad_row(keys_wrap, 4, 0);
+
+        lv_obj_t *remote_key_label = lv_label_create(keys_wrap);
+        lv_obj_set_style_text_color(remote_key_label, lv_color_hex(0x475467), 0);
+        lv_label_set_text(remote_key_label,
+                  (std::string("Requester key: ") + public_key_fingerprint(pair_modal_public_key_hex)).c_str());
+
+        lv_obj_t *local_key_label = lv_label_create(keys_wrap);
+        lv_obj_set_style_text_color(local_key_label, lv_color_hex(0x475467), 0);
+        lv_label_set_text(local_key_label,
+                  (std::string("Your key: ") + public_key_fingerprint(stored_state.identity.public_key_hex)).c_str());
 
         lv_obj_t *actions = lv_obj_create(card);
         lv_obj_set_width(actions, LV_PCT(100));
@@ -2817,6 +3751,8 @@ struct LoRaMeshApp::Impl {
         if ((root == nullptr) || (chat_action_overlay != nullptr)) {
             return;
         }
+
+        chat_action_overlay_mode = ChatActionOverlayMode::TargetsMenu;
 
         chat_action_overlay = lv_obj_create(root);
         lv_obj_set_size(chat_action_overlay, LV_PCT(100), LV_PCT(100));
@@ -2898,12 +3834,40 @@ struct LoRaMeshApp::Impl {
         lv_obj_set_style_text_font(clear_text, &lv_font_montserrat_16, 0);
         lv_label_set_text(clear_text, "Clear requests");
 
+        lv_obj_t *devices_button = lv_btn_create(card);
+        lv_obj_set_width(devices_button, LV_PCT(100));
+        lv_obj_set_height(devices_button, 46);
+        lv_obj_set_style_radius(devices_button, 14, 0);
+        lv_obj_set_style_bg_color(devices_button, lv_color_hex(0xEEF4FF), 0);
+        lv_obj_set_style_shadow_width(devices_button, 0, 0);
+        lv_obj_set_style_border_width(devices_button, 0, 0);
+        lv_obj_add_event_cb(devices_button, on_open_paired_devices_clicked, LV_EVENT_CLICKED, this);
+
+        lv_obj_t *devices_row = lv_obj_create(devices_button);
+        lv_obj_set_size(devices_row, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(devices_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(devices_row, 0, 0);
+        lv_obj_set_style_pad_all(devices_row, 0, 0);
+        lv_obj_set_style_pad_column(devices_row, 8, 0);
+        lv_obj_set_flex_flow(devices_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(devices_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+        lv_obj_t *devices_icon = lv_label_create(devices_row);
+        lv_obj_set_style_text_color(devices_icon, lv_color_hex(0x1849A9), 0);
+        lv_obj_set_style_text_font(devices_icon, &lv_font_montserrat_16, 0);
+        lv_label_set_text(devices_icon, LV_SYMBOL_DIRECTORY);
+
+        lv_obj_t *devices_text = lv_label_create(devices_row);
+        lv_obj_set_style_text_color(devices_text, lv_color_hex(0x1849A9), 0);
+        lv_obj_set_style_text_font(devices_text, &lv_font_montserrat_16, 0);
+        lv_label_set_text(devices_text, "Paired devices");
+
         lv_obj_t *hint = lv_label_create(card);
         lv_obj_set_width(hint, LV_PCT(100));
         lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
         lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(hint, lv_color_hex(0x667085), 0);
-        lv_label_set_text(hint, "Broadcast a pairing handshake by target name. Clear requests removes pending pair items from the main screen.");
+        lv_label_set_text(hint, "Broadcast a pairing handshake by target name. Paired devices opens mute, block, and unpair controls. Clear requests removes pending pair items from the main screen.");
     }
 
     static void on_chat_settings_clicked(lv_event_t *event)
@@ -3584,6 +4548,78 @@ struct LoRaMeshApp::Impl {
         lock();
         send_task = task;
         unlock();
+        return true;
+    }
+
+    bool send_debug_message(const std::string &conversation_id,
+                            const std::string &peer_id,
+                            const std::string &payload)
+    {
+        if (payload.empty()) {
+            set_status("Enter a message before sending");
+            return false;
+        }
+
+        const bool is_common = conversation_id == jc4880::lora_mesh::kCommonConversationId;
+        const std::string resolved_peer_id = is_common ? std::string() : (peer_id.empty() ? conversation_id : peer_id);
+        const std::string message_id = jc4880::lora_mesh::cryptoGenerateNonceHex(8);
+        const std::string bubble_text = is_common ? payload : std::string("[private] ") + payload;
+        uint64_t pending_token = 0;
+        std::string bubble_meta;
+
+        lock();
+        if (send_task != nullptr) {
+            status_text = "LoRa transmit already in progress";
+            unlock();
+            refresh_ui();
+            return false;
+        }
+        if (!is_common && (find_peer_locked(resolved_peer_id) == nullptr)) {
+            status_text = "Peer not found";
+            unlock();
+            refresh_ui();
+            return false;
+        }
+
+        bubble_meta = stored_state.identity.display_name.empty() ? stored_state.identity.device_id
+                                                                 : stored_state.identity.display_name;
+        pending_token = append_pending_outgoing_message_locked(conversation_id,
+                                                               bubble_text,
+                                                               bubble_meta,
+                                                               message_id,
+                                                               std::string(),
+                                                               std::string());
+        unlock();
+
+        if (!start_send_task(conversation_id,
+                             resolved_peer_id,
+                             payload,
+                             message_id,
+                             std::string(),
+                             std::string(),
+                             std::string(),
+                             false,
+                             pending_token,
+                             bubble_text,
+                             bubble_meta,
+                             false)) {
+            lock();
+            settle_pending_outgoing_message_locked(pending_token,
+                                                   conversation_id,
+                                                   bubble_text,
+                                                   bubble_meta,
+                                                   message_id,
+                                                   std::string(),
+                                                   std::string(),
+                                                   false,
+                                                   false);
+            status_text = "Failed to start LoRa send task";
+            unlock();
+            refresh_ui();
+            return false;
+        }
+
+        refresh_ui();
         return true;
     }
 
@@ -4907,8 +5943,11 @@ struct LoRaMeshApp::Impl {
                author + kChatHistoryFieldSeparator +
                sanitize_chat_history_field(entry.message_id) + kChatHistoryFieldSeparator +
                sanitize_chat_history_field(entry.author_id) + kChatHistoryFieldSeparator +
+               sanitize_chat_history_field(entry.author_public_key_hex) + kChatHistoryFieldSeparator +
                sanitize_chat_history_field(entry.quoted_message_id) + kChatHistoryFieldSeparator +
                sanitize_chat_history_field(entry.quoted_preview) + kChatHistoryFieldSeparator +
+             sanitize_chat_history_field(jc4880::lora_mesh::delivery_state_name(entry.delivery_state)) + kChatHistoryFieldSeparator +
+             sanitize_chat_history_field(std::to_string(entry.last_delivery_attempt_ms)) + kChatHistoryFieldSeparator +
                sanitize_chat_history_field(entry.text) + "\n";
     }
 
@@ -5125,9 +6164,12 @@ struct LoRaMeshApp::Impl {
                                         const std::string &message_id = std::string(),
                                         const std::string &author_id = std::string(),
                                         const std::string &author_name = std::string(),
+                                        const std::string &author_public_key_hex = std::string(),
                                         const std::string &quoted_message_id = std::string(),
                                         const std::string &quoted_preview = std::string(),
-                                        const std::string &history_timestamp = std::string())
+                                        const std::string &history_timestamp = std::string(),
+                                        jc4880::lora_mesh::DeliveryState delivery_state = jc4880::lora_mesh::DeliveryState::None,
+                                        int64_t last_delivery_attempt_ms = 0)
     {
         ConversationEntry entry = {};
         entry.conversation_id = conversation_id;
@@ -5136,9 +6178,12 @@ struct LoRaMeshApp::Impl {
         entry.meta = meta;
         entry.author_id = author_id.empty() && outgoing ? stored_state.identity.device_id : author_id;
         entry.author_name = author_name.empty() ? conversation_author_from_meta_locked(meta, outgoing) : author_name;
+        entry.author_public_key_hex = author_public_key_hex.empty() && outgoing ? stored_state.identity.public_key_hex : author_public_key_hex;
         entry.quoted_message_id = quoted_message_id;
         entry.quoted_preview = shorten_reply_preview(quoted_preview);
         entry.history_timestamp = history_timestamp.empty() ? current_timestamp_text() : history_timestamp;
+        entry.delivery_state = delivery_state;
+        entry.last_delivery_attempt_ms = last_delivery_attempt_ms;
         entry.outgoing = outgoing;
         entry.pending_token = pending_token;
         entry.transmit_pending = transmit_pending;
@@ -5200,12 +6245,37 @@ struct LoRaMeshApp::Impl {
             std::string author;
             std::string message_id;
             std::string author_id;
+            std::string author_public_key_hex;
             std::string quoted_message_id;
             std::string quoted_preview;
+            std::string delivery_state;
+            std::string last_delivery_attempt_ms_text;
             std::string text;
             bool outgoing = false;
 
-            if (fields.size() >= 8) {
+            if (fields.size() >= 11) {
+                direction = fields[1];
+                author = fields[2];
+                message_id = fields[3];
+                author_id = fields[4];
+                author_public_key_hex = fields[5];
+                quoted_message_id = fields[6];
+                quoted_preview = fields[7];
+                delivery_state = fields[8];
+                last_delivery_attempt_ms_text = fields[9];
+                text = fields[10];
+                outgoing = (direction == "out");
+            } else if (fields.size() >= 9) {
+                direction = fields[1];
+                author = fields[2];
+                message_id = fields[3];
+                author_id = fields[4];
+                author_public_key_hex = fields[5];
+                quoted_message_id = fields[6];
+                quoted_preview = fields[7];
+                text = fields[8];
+                outgoing = (direction == "out");
+            } else if (fields.size() >= 8) {
                 direction = fields[1];
                 author = fields[2];
                 message_id = fields[3];
@@ -5229,15 +6299,34 @@ struct LoRaMeshApp::Impl {
                 message_id = std::string("hist-") + conversation_id + "-" + std::to_string(++loaded_index);
             }
 
+            jc4880::lora_mesh::DeliveryState parsed_delivery_state = jc4880::lora_mesh::DeliveryState::None;
+            if (delivery_state == "pending_tx") {
+                parsed_delivery_state = jc4880::lora_mesh::DeliveryState::PendingTx;
+            } else if (delivery_state == "sent") {
+                parsed_delivery_state = jc4880::lora_mesh::DeliveryState::SentToRadio;
+            } else if (delivery_state == "delivered") {
+                parsed_delivery_state = jc4880::lora_mesh::DeliveryState::Delivered;
+            } else if (delivery_state == "failed") {
+                parsed_delivery_state = jc4880::lora_mesh::DeliveryState::Failed;
+            }
+
+            int64_t last_delivery_attempt_ms = 0;
+            if (!last_delivery_attempt_ms_text.empty()) {
+                last_delivery_attempt_ms = std::strtoll(last_delivery_attempt_ms_text.c_str(), nullptr, 10);
+            }
+
             loaded_entries.push_back(ConversationEntry{.conversation_id = conversation_id,
                                                        .message_id = message_id,
                                                        .text = text,
                                                        .meta = author + "  " + timestamp,
                                                        .author_id = author_id,
                                                        .author_name = author,
+                                                       .author_public_key_hex = author_public_key_hex,
                                                        .quoted_message_id = quoted_message_id,
                                                        .quoted_preview = shorten_reply_preview(quoted_preview),
                                                        .history_timestamp = timestamp,
+                                                       .delivery_state = parsed_delivery_state,
+                                                       .last_delivery_attempt_ms = last_delivery_attempt_ms,
                                                        .outgoing = outgoing});
         }
         std::fclose(file);
@@ -5391,6 +6480,7 @@ struct LoRaMeshApp::Impl {
                                   const std::string &message_id = std::string(),
                                   const std::string &author_id = std::string(),
                                   const std::string &author_name = std::string(),
+                                  const std::string &author_public_key_hex = std::string(),
                                   const std::string &quoted_message_id = std::string(),
                                   const std::string &quoted_preview = std::string())
     {
@@ -5405,6 +6495,7 @@ struct LoRaMeshApp::Impl {
                                        message_id,
                                        author_id,
                                        author_name,
+                                       author_public_key_hex,
                                        quoted_message_id,
                                        quoted_preview);
     }
@@ -6533,7 +7624,7 @@ struct LoRaMeshApp::Impl {
             }
         } else {
             PeerInfo *peer = find_peer_locked(peer_id);
-            if ((peer == nullptr) || !peer->trusted || peer->public_key_hex.empty()) {
+            if ((peer == nullptr) || !peer->trusted || !peer->ratchet.initialized || peer->public_key_hex.empty()) {
                 settle_pending_outgoing_message_locked(pending_token,
                                                        conversation_id,
                                                        bubble_text,
@@ -6547,11 +7638,25 @@ struct LoRaMeshApp::Impl {
                 set_status("Selected peer is not fully paired yet");
                 return false;
             }
+            if (peer->blocked) {
+                settle_pending_outgoing_message_locked(pending_token,
+                                                       conversation_id,
+                                                       bubble_text,
+                                                       bubble_meta,
+                                                       packet.msg_id,
+                                                       quoted_message_id,
+                                                       quoted_preview,
+                                                       false,
+                                                       edit_existing);
+                unlock();
+                set_status("Unblock the device before sending");
+                return false;
+            }
             packet.kind = PacketKind::PrivateChat;
             packet.target_id = peer->device_id;
+            packet.chat_id = peer->ratchet.chat_id;
             packet.target_public_key_hex = peer->public_key_hex;
             packet.encrypted = true;
-            packet.nonce_hex = jc4880::lora_mesh::cryptoGenerateNonceHex();
             std::string private_payload;
             if (!encode_private_chat_payload(payload,
                                              packet.timestamp_ms,
@@ -6559,13 +7664,7 @@ struct LoRaMeshApp::Impl {
                                              quoted_message_id,
                                              quoted_preview,
                                              edited_message_id,
-                                             private_payload) ||
-                !jc4880::lora_mesh::cryptoEncryptForPeer(stored_state.identity,
-                                                        peer->public_key_hex,
-                                                        packet.nonce_hex,
-                                                        private_payload,
-                                                        packet.payload,
-                                                        packet.auth_hex)) {
+                                             private_payload)) {
                 settle_pending_outgoing_message_locked(pending_token,
                                                        conversation_id,
                                                        bubble_text,
@@ -6579,6 +7678,28 @@ struct LoRaMeshApp::Impl {
                 set_status(edit_existing ? "Private chat edit send failed" : "Private chat encryption failed");
                 return false;
             }
+            const bool encrypted_ok = jc4880::lora_mesh::cryptoRatchetEncrypt(peer->ratchet,
+                                                                              private_payload,
+                                                                              packet.nonce_hex,
+                                                                              packet.payload,
+                                                                              packet.auth_hex,
+                                                                              packet.message_number);
+            if (!encrypted_ok) {
+                settle_pending_outgoing_message_locked(pending_token,
+                                                       conversation_id,
+                                                       bubble_text,
+                                                       bubble_meta,
+                                                       packet.msg_id,
+                                                       quoted_message_id,
+                                                       quoted_preview,
+                                                       false,
+                                                       edit_existing);
+                unlock();
+                set_status(edit_existing ? "Private chat edit send failed" : "Private chat encryption failed");
+                return false;
+            }
+            append_line_capped(log_text, "[P2P] private message encrypted");
+            state_dirty = true;
         }
         if ((packet.kind == PacketKind::PublicChat) && stored_state.settings.public_chat_encryption) {
             packet.encrypted = true;
@@ -6671,7 +7792,11 @@ struct LoRaMeshApp::Impl {
 
             switch (packet.kind) {
             case PacketKind::PublicChat: {
-                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex, false);
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
+                if (is_peer_blocked_locked(packet.sender_id)) {
+                    append_line_capped(log_text, std::string("Dropped public packet from blocked peer ") + packet.sender_id);
+                    break;
+                }
                 if ((frame.origin == node_id) || (packet.sender_id == stored_state.identity.device_id)) {
                     append_line_capped(log_text, "Dropped self-echo public packet");
                     break;
@@ -6712,7 +7837,9 @@ struct LoRaMeshApp::Impl {
                                                            resolved_preview,
                                                            packet.sender_id)) {
                         status_text = "Mesh message edited";
-                        play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                        if (should_notify_conversation_locked(jc4880::lora_mesh::kCommonConversationId)) {
+                            play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                        }
                     } else {
                         append_line_capped(log_text, std::string("Dropped public edit for missing message ") + edited_message_id);
                     }
@@ -6725,129 +7852,164 @@ struct LoRaMeshApp::Impl {
                              decoded_message_id.empty() ? packet.msg_id : decoded_message_id,
                                          packet.sender_id,
                                          sender_label,
+                                         packet.public_key_hex,
                                          quoted_message_id,
                                          resolved_preview);
                 status_text = "Mesh message received";
-                play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                if (should_notify_conversation_locked(jc4880::lora_mesh::kCommonConversationId)) {
+                    play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                }
                 break;
             }
             case PacketKind::PairRequest: {
-                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
+                std::string sender_public_key_hex = packet.public_key_hex;
+                std::string sender_display_name = packet.sender_name;
+                if (PeerInfo *peer = find_peer_locked(packet.sender_id); peer != nullptr) {
+                    if (sender_public_key_hex.empty()) {
+                        sender_public_key_hex = peer->public_key_hex;
+                    }
+                    if (sender_display_name.empty() && !peer->display_name.empty()) {
+                        sender_display_name = peer->display_name;
+                    }
+                }
+                remember_peer_activity_locked(packet.sender_id, sender_display_name, sender_public_key_hex);
                 const int64_t now_ms = esp_timer_get_time() / 1000;
+                PeerInfo *existing_peer = find_peer_locked(packet.sender_id);
+                const bool addressed_to_local_identity = !packet.target_public_key_hex.empty() &&
+                                                        (packet.target_public_key_hex == stored_state.identity.public_key_hex);
                 const bool duplicate_pair_id = packet.pair_id.empty() ||
                                                has_recent_id_locked(recent_pair_ids, packet.pair_id, now_ms) ||
                                                (find_pending_request_by_pair_id_locked(packet.pair_id) != nullptr) ||
                                                (has_pending_outgoing_pair_request && (pending_outgoing_pair_request.pair_id == packet.pair_id));
+                if ((existing_peer != nullptr) && existing_peer->blocked) {
+                    append_line_capped(log_text, std::string("[P2P] ignored pair request from blocked peer ") + packet.sender_id);
+                    break;
+                }
+                if ((existing_peer != nullptr) && existing_peer->pending_unpair &&
+                    ((packet.target_id == stored_state.identity.device_id) || addressed_to_local_identity)) {
+                    if (can_reset_pending_unpair_for_repair_locked(*existing_peer)) {
+                        append_line_capped(log_text,
+                                           std::string("[P2P] clearing stale pending unpair for renewed pair request from ") +
+                                               packet.sender_id);
+                        clear_pending_unpair_locked(*existing_peer);
+                    } else {
+                        append_line_capped(log_text, std::string("[P2P] ignored pair request while unpair pending for ") + packet.sender_id);
+                        status_text = "Remote unpair still pending";
+                        break;
+                    }
+                }
                 if ((packet.sender_id != stored_state.identity.device_id) &&
-                    matches_local_pair_target_locked(packet.payload) &&
-                    !packet.public_key_hex.empty() &&
-                    !packet.nonce_hex.empty() &&
+                    ((packet.target_id == stored_state.identity.device_id) || addressed_to_local_identity) &&
+                    !sender_public_key_hex.empty() &&
+                    !packet.ephemeral_public_key_hex.empty() &&
                     !duplicate_pair_id) {
                     pending_pair_requests.push_back(PendingPairRequest{.pair_id = packet.pair_id,
                                                                        .device_id = packet.sender_id,
-                                                                       .display_name = packet.sender_name,
-                                                                       .public_key_hex = packet.public_key_hex,
-                                                                       .target_public_key_hex = packet.target_public_key_hex,
+                                                                       .display_name = sender_display_name,
+                                                                       .public_key_hex = sender_public_key_hex,
+                                                                       .ephemeral_public_key_hex = packet.ephemeral_public_key_hex,
+                                                                       .target_public_key_hex = stored_state.identity.public_key_hex,
                                                                        .state = PairingState::WaitingUserInput,
                                                                        .msg_id = packet.msg_id,
-                                                                       .nonce_hex = packet.nonce_hex,
                                                                        .received_ms = now_ms,
                                                                        .expires_ms = now_ms + kPairSessionTimeoutMs,
                                                                        .last_rssi = last_rssi,
                                                                        .last_snr = last_snr});
                     pair_modal_pair_id = packet.pair_id;
                     pair_modal_device_id = packet.sender_id;
-                    pair_modal_display_name = packet.sender_name;
+                    pair_modal_display_name = sender_display_name;
+                    pair_modal_public_key_hex = sender_public_key_hex;
                     pending_pair_modal_open = true;
                     target_list_dirty = true;
                     push_conversation_locked(jc4880::lora_mesh::kCommonConversationId,
                                              std::string("Pair request from ") +
-                                                 (packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
-                                             std::string("Target ") + packet.payload,
+                                                 (sender_display_name.empty() ? packet.sender_id : sender_display_name),
+                                             "Accept or reject pairing",
                                              false);
-                    trace_event_locked(std::string("Pair request queued for local target ") + packet.payload);
+                    append_line_capped(log_text, std::string("[P2P] pair request received from ") + packet.sender_id);
+                    trace_event_locked(std::string("Pair request queued for local target ") + packet.target_id);
                 }
                 status_text = "Pair request received";
                 break;
             }
             case PacketKind::PairAccept: {
-                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
+                std::string sender_public_key_hex = packet.public_key_hex;
+                std::string sender_display_name = packet.sender_name;
+                if (sender_public_key_hex.empty() && !pending_outgoing_pair_request.target_public_key_hex.empty()) {
+                    sender_public_key_hex = pending_outgoing_pair_request.target_public_key_hex;
+                }
+                if (PeerInfo *peer = find_peer_locked(packet.sender_id); peer != nullptr) {
+                    if (sender_public_key_hex.empty()) {
+                        sender_public_key_hex = peer->public_key_hex;
+                    }
+                    if (sender_display_name.empty() && !peer->display_name.empty()) {
+                        sender_display_name = peer->display_name;
+                    }
+                }
+                remember_peer_activity_locked(packet.sender_id, sender_display_name, sender_public_key_hex);
+                if (is_peer_blocked_locked(packet.sender_id)) {
+                    append_line_capped(log_text, std::string("[P2P] ignored pair_accept from blocked peer ") + packet.sender_id);
+                    break;
+                }
                 if (packet.target_id == stored_state.identity.device_id) {
-                    const bool target_public_key_matches = packet.target_public_key_hex.empty() ||
-                                                           (packet.target_public_key_hex == stored_state.identity.public_key_hex);
-                    const bool sender_key_matches = !packet.public_key_hex.empty() &&
-                                                    (pending_outgoing_pair_request.target_public_key_hex.empty() ||
-                                                     (pending_outgoing_pair_request.target_public_key_hex == packet.public_key_hex));
-                    std::string expected_proof_b;
+                    std::array<uint8_t, jc4880::lora_mesh::kRatchetKeySize> shared_secret = {};
+                    std::string expected_auth_tag;
+                    jc4880::lora_mesh::RatchetState ratchet_state = {};
                     const bool verified = has_pending_outgoing_pair_request &&
                                           (pending_outgoing_pair_request.pair_id == packet.pair_id) &&
-                                          target_public_key_matches &&
-                                          sender_key_matches &&
-                                          !packet.nonce_hex.empty() &&
-                                          build_pair_proof_hex(pending_outgoing_pair_request.code,
-                                                               "PAIR_ACCEPT",
-                                                               packet.pair_id,
-                                                               pending_outgoing_pair_request.nonce_a_hex,
-                                                               packet.nonce_hex,
-                                                               stored_state.identity.public_key_hex,
-                                                               packet.public_key_hex,
-                                                               expected_proof_b) &&
-                                          (expected_proof_b == packet.auth_hex);
+                                          !sender_public_key_hex.empty() &&
+                                          !packet.ephemeral_public_key_hex.empty() &&
+                                          jc4880::lora_mesh::cryptoDerivePairingSharedSecret(stored_state.identity,
+                                                                                             pending_outgoing_pair_request.local_ephemeral_private_key_hex,
+                                                                                             sender_public_key_hex,
+                                                                                             packet.ephemeral_public_key_hex,
+                                                                                             true,
+                                                                                             shared_secret) &&
+                                          jc4880::lora_mesh::cryptoBuildPairAcceptAuthTag(shared_secret,
+                                                                                          packet.pair_id,
+                                                                                          packet.sender_id,
+                                                                                          stored_state.identity.device_id,
+                                                                                          sender_public_key_hex,
+                                                                                          packet.ephemeral_public_key_hex,
+                                                                                          expected_auth_tag) &&
+                                          (expected_auth_tag == packet.auth_hex) &&
+                                          jc4880::lora_mesh::cryptoInitializeMiniRatchet(shared_secret,
+                                                                                         stored_state.identity.device_id,
+                                                                                         stored_state.identity.display_name,
+                                                                                         stored_state.identity.public_key_hex,
+                                                                                         packet.sender_id,
+                                                                                         sender_display_name,
+                                                                                         sender_public_key_hex,
+                                                                                         ratchet_state);
                     if (!verified) {
-                        append_line_capped(log_text, "Dropped pair accept: verification failed");
+                        append_line_capped(log_text, "[P2P] pair_accept auth failed");
                         remember_recent_id_locked(recent_pair_ids, packet.pair_id, esp_timer_get_time() / 1000, kRecentPairRetentionMs);
                         pending_outgoing_pair_request = PendingOutgoingPairRequest{};
                         has_pending_outgoing_pair_request = false;
+                        target_list_dirty = true;
                         status_text = "Pair reply verification failed";
                         break;
                     }
 
                     pending_outgoing_pair_request.peer_device_id = packet.sender_id;
-                    pending_outgoing_pair_request.peer_display_name = packet.sender_name;
-                    pending_outgoing_pair_request.peer_public_key_hex = packet.public_key_hex;
+                    pending_outgoing_pair_request.peer_display_name = sender_display_name;
+                    pending_outgoing_pair_request.peer_public_key_hex = sender_public_key_hex;
                     upsert_trusted_peer_locked(packet.sender_id,
-                                               packet.sender_name.empty() ? packet.sender_id : packet.sender_name,
-                                               packet.public_key_hex);
-
-                    MeshPacket confirm = {};
-                    std::string proof_a_hex;
-                    if (!build_pair_proof_hex(pending_outgoing_pair_request.code,
-                                              "PAIR_CONFIRM",
-                                              packet.pair_id,
-                                              pending_outgoing_pair_request.nonce_a_hex,
-                                              packet.nonce_hex,
-                                              stored_state.identity.public_key_hex,
-                                              packet.public_key_hex,
-                                              proof_a_hex)) {
-                        append_line_capped(log_text, "Pair confirm proof build failed after verified accept");
-                        status_text = "Pair verified, but confirm build failed";
-                        break;
-                    }
-                    confirm.kind = PacketKind::PairConfirm;
-                    confirm.sender_id = stored_state.identity.device_id;
-                    confirm.sender_name = stored_state.identity.display_name;
-                    confirm.target_id = packet.sender_id;
-                    confirm.target_public_key_hex = packet.public_key_hex;
-                    confirm.pair_id = packet.pair_id;
-                    confirm.timestamp_ms = esp_timer_get_time() / 1000;
-                    confirm.ttl = stored_state.settings.hop_limit == 0U ? kDefaultTtl : stored_state.settings.hop_limit;
-                    confirm.public_key_hex = stored_state.identity.public_key_hex;
-                    confirm.auth_hex = proof_a_hex;
-                    if (!send_packet_locked(confirm, nullptr, std::string())) {
-                        append_line_capped(log_text, "Pair confirm send failed after verified accept");
-                        status_text = "Pair verified, but confirm send failed";
-                        remember_recent_id_locked(recent_pair_ids, packet.pair_id, esp_timer_get_time() / 1000, kRecentPairRetentionMs);
-                        pending_outgoing_pair_request = PendingOutgoingPairRequest{};
-                        has_pending_outgoing_pair_request = false;
-                        break;
-                    }
+                                               sender_display_name.empty() ? packet.sender_id : sender_display_name,
+                                               sender_public_key_hex,
+                                               &ratchet_state);
+                    append_line_capped(log_text, "[P2P] pair_accept auth verified OK");
+                    append_line_capped(log_text, "[P2P] private chat created");
                     remember_recent_id_locked(recent_pair_ids, packet.pair_id, esp_timer_get_time() / 1000, kRecentPairRetentionMs);
                     pending_outgoing_pair_request = PendingOutgoingPairRequest{};
                     has_pending_outgoing_pair_request = false;
+                    if (!is_conversation_visible_locked(packet.sender_id)) {
+                        mark_conversation_unread_locked(packet.sender_id);
+                    }
                     push_conversation_locked(packet.sender_id,
                                              std::string("Paired with ") +
-                                                 (packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
-                                             make_message_meta_locked(packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
+                                                 (sender_display_name.empty() ? packet.sender_id : sender_display_name),
+                                             make_message_meta_locked(sender_display_name.empty() ? packet.sender_id : sender_display_name),
                                              false);
                     status_text = "Private pairing complete";
                 }
@@ -6855,12 +8017,18 @@ struct LoRaMeshApp::Impl {
             }
             case PacketKind::PairReject:
                 remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
+                if (is_peer_blocked_locked(packet.sender_id)) {
+                    append_line_capped(log_text, std::string("[P2P] ignored pair_reject from blocked peer ") + packet.sender_id);
+                    break;
+                }
                 if (packet.target_id == stored_state.identity.device_id) {
                     if (has_pending_outgoing_pair_request && (pending_outgoing_pair_request.pair_id == packet.pair_id)) {
                         remember_recent_id_locked(recent_pair_ids, packet.pair_id, esp_timer_get_time() / 1000, kRecentPairRetentionMs);
                         pending_outgoing_pair_request = PendingOutgoingPairRequest{};
                         has_pending_outgoing_pair_request = false;
+                        target_list_dirty = true;
                     }
+                    append_line_capped(log_text, "[P2P] pair request rejected");
                     push_conversation_locked(packet.sender_id,
                                              std::string("Pairing rejected by ") +
                                                  (packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
@@ -6870,44 +8038,37 @@ struct LoRaMeshApp::Impl {
                 }
                 break;
             case PacketKind::PairConfirm:
-                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
-                if (packet.target_id == stored_state.identity.device_id) {
-                    PendingPairConfirmation *pending = find_pending_pair_confirmation_by_pair_id_locked(packet.pair_id);
-                    std::string expected_proof_a;
-                    if ((pending != nullptr) &&
-                        (pending->device_id == packet.sender_id) &&
-                        (packet.public_key_hex == pending->public_key_hex) &&
-                        (packet.target_public_key_hex.empty() || (packet.target_public_key_hex == stored_state.identity.public_key_hex)) &&
-                        build_pair_proof_hex(pending->code,
-                                             "PAIR_CONFIRM",
-                                             pending->pair_id,
-                                             pending->nonce_a_hex,
-                                             pending->nonce_b_hex,
-                                             packet.public_key_hex,
-                                             stored_state.identity.public_key_hex,
-                                             expected_proof_a) &&
-                        (expected_proof_a == packet.auth_hex)) {
-                        upsert_trusted_peer_locked(packet.sender_id,
-                                                   packet.sender_name.empty() ? packet.sender_id : packet.sender_name,
-                                                   packet.public_key_hex);
-                        erase_pending_confirmation_locked(packet.pair_id);
-                        remember_recent_id_locked(recent_pair_ids, packet.pair_id, esp_timer_get_time() / 1000, kRecentPairRetentionMs);
-                        push_conversation_locked(packet.sender_id,
-                                                 std::string("Paired with ") +
-                                                     (packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
-                                                 make_message_meta_locked(packet.sender_name.empty() ? packet.sender_id : packet.sender_name),
-                                                 false);
-                        status_text = "Pairing confirmed";
-                    } else {
-                        append_line_capped(log_text, "Dropped pair confirm: verification failed");
-                        erase_pending_confirmation_locked(packet.pair_id);
-                        remember_recent_id_locked(recent_pair_ids, packet.pair_id, esp_timer_get_time() / 1000, kRecentPairRetentionMs);
-                        status_text = "Pair confirmation failed";
+                append_line_capped(log_text, "[P2P] legacy pair_confirm ignored");
+                break;
+            case PacketKind::Unpair: {
+                std::string sender_public_key_hex = packet.public_key_hex;
+                if (PeerInfo *peer = find_peer_locked(packet.sender_id); peer != nullptr) {
+                    if (sender_public_key_hex.empty()) {
+                        sender_public_key_hex = peer->public_key_hex;
                     }
                 }
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, sender_public_key_hex);
+                const bool addressed_to_local_identity = (packet.target_id == stored_state.identity.device_id) ||
+                                                        (!packet.target_public_key_hex.empty() &&
+                                                         (packet.target_public_key_hex == stored_state.identity.public_key_hex));
+                if (!addressed_to_local_identity || (packet.sender_id == stored_state.identity.device_id)) {
+                    break;
+                }
+                append_line_capped(log_text, std::string("[P2P] unpair request received from ") + packet.sender_id);
+                const bool removed = delete_peer_chat_and_pairing_locked(packet.sender_id, false);
+                if (removed && (input != nullptr)) {
+                    lv_textarea_set_text(input, "");
+                }
+                (void)send_unpair_ack_locked(packet.sender_id, packet.pair_id);
+                status_text = "Peer unpaired";
                 break;
+            }
             case PacketKind::PrivateChat: {
                 remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
+                if (is_peer_blocked_locked(packet.sender_id)) {
+                    append_line_capped(log_text, std::string("Dropped private packet from blocked peer ") + packet.sender_id);
+                    break;
+                }
                 if ((packet.target_id != stored_state.identity.device_id) ||
                     (!packet.target_public_key_hex.empty() && (packet.target_public_key_hex != stored_state.identity.public_key_hex))) {
                     break;
@@ -6921,23 +8082,31 @@ struct LoRaMeshApp::Impl {
                     append_line_capped(log_text, "Dropped duplicate private packet");
                     break;
                 }
-                PeerInfo *peer = find_peer_by_public_key_locked(packet.public_key_hex);
-                if ((peer == nullptr) || !peer->trusted) {
+                PeerInfo *peer = find_peer_locked(packet.sender_id);
+                if ((peer == nullptr) || !peer->trusted || !peer->ratchet.initialized || (packet.chat_id != peer->ratchet.chat_id)) {
                     ++drop_count;
                     append_line_capped(log_text, "Dropped private packet from untrusted sender");
                     break;
                 }
                 std::string private_payload;
-                if (!jc4880::lora_mesh::cryptoDecryptFromPeer(stored_state.identity,
-                                                             packet.public_key_hex,
-                                                             packet.nonce_hex,
-                                                             packet.payload,
-                                                             packet.auth_hex,
-                                                             private_payload)) {
+                if (packet.message_number != peer->ratchet.recv_msg_no) {
                     ++drop_count;
-                    append_line_capped(log_text, "Dropped private packet: decrypt failed");
+                    append_line_capped(log_text, "[P2P] private message out of order");
                     break;
                 }
+                const bool decrypted_ok = jc4880::lora_mesh::cryptoRatchetDecrypt(peer->ratchet,
+                                                                                   packet.message_number,
+                                                                                   packet.nonce_hex,
+                                                                                   packet.payload,
+                                                                                   packet.auth_hex,
+                                                                                   private_payload);
+                if (!decrypted_ok) {
+                    ++drop_count;
+                    append_line_capped(log_text, "[P2P] private decrypt failed");
+                    break;
+                }
+                append_line_capped(log_text, "[P2P] private message decrypted");
+                state_dirty = true;
                 std::string text;
                 int64_t private_timestamp_ms = 0;
                 std::string private_seq;
@@ -6966,7 +8135,9 @@ struct LoRaMeshApp::Impl {
                                                            resolved_preview,
                                                            packet.sender_id)) {
                         status_text = "Private message edited";
-                        play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                        if (should_notify_conversation_locked(packet.sender_id)) {
+                            play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                        }
                     } else {
                         append_line_capped(log_text, std::string("Dropped private edit for missing message ") + edited_message_id);
                     }
@@ -6979,17 +8150,50 @@ struct LoRaMeshApp::Impl {
                                          packet.msg_id.empty() ? private_seq : packet.msg_id,
                                          packet.sender_id,
                                          peer->display_name.empty() ? peer->device_id : peer->display_name,
+                                         packet.public_key_hex,
                                          quoted_message_id,
                                          resolved_preview);
+                (void)send_private_delivery_receipt_locked(packet.sender_id,
+                                                           peer->public_key_hex.empty() ? packet.public_key_hex : peer->public_key_hex,
+                                                           packet.msg_id.empty() ? private_seq : packet.msg_id);
                 status_text = "Private message received";
-                play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                if (should_notify_conversation_locked(packet.sender_id)) {
+                    play_chat_feedback_sound(BSP_EXTRA_AUDIO_SYSTEM_SOUND_MESSAGE_RECEIVED);
+                }
                 break;
             }
             case PacketKind::Hello:
             case PacketKind::Presence:
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex);
                 status_text = "Peer status updated";
                 break;
             case PacketKind::Ack:
+                remember_peer_activity_locked(packet.sender_id, packet.sender_name, packet.public_key_hex, false);
+                if ((packet.target_id == stored_state.identity.device_id) &&
+                    (packet.receipt_type == "private_delivered") &&
+                    !packet.receipt_message_id.empty()) {
+                    if (mark_message_delivery_state_locked(packet.sender_id,
+                                                           packet.receipt_message_id,
+                                                           jc4880::lora_mesh::DeliveryState::Delivered,
+                                                           esp_timer_get_time() / 1000)) {
+                        append_line_capped(log_text,
+                                           std::string("[P2P] delivery acknowledged by ") + packet.sender_id +
+                                               " for " + packet.receipt_message_id);
+                        status_text = "Private message delivered";
+                    }
+                    break;
+                }
+                if ((packet.target_id == stored_state.identity.device_id) && (packet.payload == "unpair")) {
+                    PeerInfo *peer = find_peer_locked(packet.sender_id);
+                    if ((peer != nullptr) && peer->pending_unpair && (peer->pending_unpair_id == packet.pair_id)) {
+                        append_line_capped(log_text, std::string("[P2P] unpair acknowledged by ") + packet.sender_id);
+                        const bool removed = delete_peer_chat_and_pairing_locked(packet.sender_id, false);
+                        if (removed && (input != nullptr)) {
+                            lv_textarea_set_text(input, "");
+                        }
+                        status_text = "Peer unpair confirmed";
+                    }
+                }
                 break;
             }
         }
@@ -7114,13 +8318,17 @@ struct LoRaMeshApp::Impl {
         std::vector<ConversationEntry> conversation_copy;
         std::vector<PeerInfo> peers_copy;
         std::vector<PendingPairRequest> pending_requests_copy;
+        PendingOutgoingPairRequest pending_outgoing_request_copy = {};
         std::unordered_map<std::string, bool> unread_conversations_copy;
+        bool has_unread_copy = false;
         bool conversation_dirty_copy = false;
         bool target_list_dirty_copy = false;
         bool pending_pair_modal_open_copy = false;
-
+        bool has_pending_outgoing_copy = false;
         lock();
         prune_pair_sessions_locked();
+        (void)start_pending_unpair_task_locked();
+        (void)start_pending_delivery_retry_task_locked();
         status_copy = status_text;
         self_test_copy = self_test_summary;
         self_test_ok_copy = self_test_ok;
@@ -7141,8 +8349,11 @@ struct LoRaMeshApp::Impl {
             unread_conversations_copy = unread_conversations;
             target_list_dirty = false;
         }
+        has_unread_copy = !unread_conversations.empty();
         if (target_list_dirty_copy) {
             pending_requests_copy = pending_pair_requests;
+            pending_outgoing_request_copy = pending_outgoing_pair_request;
+            has_pending_outgoing_copy = has_pending_outgoing_pair_request;
         }
         tx = tx_count;
         rx = rx_count;
@@ -7169,6 +8380,7 @@ struct LoRaMeshApp::Impl {
         if (chat_status_label != nullptr) {
             lv_label_set_text(chat_status_label, status_copy.c_str());
         }
+        system_ui_service::set_lora_unread(has_unread_copy);
         if (menu_button != nullptr) {
             lv_obj_clear_flag(menu_button, LV_OBJ_FLAG_HIDDEN);
         }
@@ -7216,24 +8428,37 @@ struct LoRaMeshApp::Impl {
                                                        .open_cb = on_open_common_chat,
                                                        .open_user_data = this});
 
-            if (!pending_requests_copy.empty()) {
-                jc4880::lora_mesh::add_target_list_section_label(target_list, "Pending pair requests");
+            if (has_pending_outgoing_copy) {
+                const std::string pending_target = pending_outgoing_request_copy.target_display_name.empty()
+                                                       ? pending_outgoing_request_copy.target_device_id
+                                                       : pending_outgoing_request_copy.target_display_name;
+                const std::string pending_title = std::string("Pair request sent to ") + pending_target;
+                jc4880::lora_mesh::create_common_chat_row({.parent = target_list,
+                                                           .title = pending_title.c_str(),
+                                                           .unread = false,
+                                                           .open_cb = nullptr,
+                                                           .open_user_data = nullptr});
+            }
 
+            if (!pending_requests_copy.empty()) {
                 for (const PendingPairRequest &request : pending_requests_copy) {
                     PairRequestUiContext *request_context = new (std::nothrow) PairRequestUiContext{this,
                                                                                                   request.pair_id,
                                                                                                   request.device_id,
                                                                                                   request.display_name};
                     std::ostringstream request_info;
-                    request_info << "ID " << request.device_id << "  state " << jc4880::lora_mesh::pairing_state_name(request.state)
-                                 << "  RSSI " << request.last_rssi << " SNR " << request.last_snr;
-                    const std::string request_title = std::string("Accept pair: ") +
-                                                      (request.display_name.empty() ? request.device_id : request.display_name);
+                    request_info << "Pair request";
+                    if (request.display_name != request.device_id) {
+                        request_info << "  ID " << request.device_id;
+                    }
+                    const std::string request_title = request.display_name.empty() ? request.device_id : request.display_name;
                     jc4880::lora_mesh::create_pending_pair_request_row({.parent = target_list,
                                                                         .title = request_title.c_str(),
                                                                         .meta = request_info.str().c_str(),
-                                                                        .click_cb = request_context == nullptr ? nullptr : on_accept_pair_request_clicked,
-                                                                        .click_user_data = request_context,
+                                                                        .accept_click_cb = request_context == nullptr ? nullptr : on_accept_pair_request_clicked,
+                                                                        .accept_click_user_data = request_context,
+                                                                        .reject_click_cb = request_context == nullptr ? nullptr : on_reject_pair_request_clicked,
+                                                                        .reject_click_user_data = request_context,
                                                                         .cleanup_cb = request_context == nullptr ? nullptr : on_pair_request_button_deleted,
                                                                         .cleanup_user_data = request_context});
                 }
@@ -7280,6 +8505,7 @@ struct LoRaMeshApp::Impl {
                                                             .outgoing = entry.outgoing,
                                                             .transmit_pending = entry.transmit_pending,
                                                             .transmit_failed = entry.transmit_failed,
+                                                            .delivered = entry.delivery_state == jc4880::lora_mesh::DeliveryState::Delivered,
                                                             .click_cb = message_context == nullptr ? nullptr : on_message_bubble_clicked,
                                                             .click_user_data = message_context,
                                                             .cleanup_cb = message_context == nullptr ? nullptr : on_message_action_button_deleted,
@@ -7910,7 +9136,6 @@ struct LoRaMeshApp::Impl {
         settings_forward_switch = nullptr;
         settings_encrypt_switch = nullptr;
         pair_request_target_input = nullptr;
-        pair_accept_code_input = nullptr;
     }
 };
 
@@ -8432,7 +9657,39 @@ bool LoRaMeshApp::debugStopSelfTestVisible()
 
 bool LoRaMeshApp::debugSendCommonMessageVisible(const std::string &message)
 {
+    if (_impl == nullptr) {
+        return false;
+    }
+    if (_impl->root == nullptr) {
+        return _impl->send_debug_message(jc4880::lora_mesh::kCommonConversationId, std::string(), message);
+    }
     return queueDebugUiAction(static_cast<int>(DebugUiAction::SendCommonMessage), message);
+}
+
+bool LoRaMeshApp::debugSendPeerMessage(const std::string &peer_id, const std::string &message)
+{
+    if ((_impl == nullptr) || peer_id.empty() || message.empty()) {
+        return false;
+    }
+    return _impl->send_debug_message(peer_id, peer_id, message);
+}
+
+bool LoRaMeshApp::debugSendPairRequest(const std::string &target_name)
+{
+    if (_impl == nullptr) {
+        return false;
+    }
+
+    return _impl->send_pair_request(target_name);
+}
+
+bool LoRaMeshApp::debugAcceptPairRequest(const std::string &pair_id)
+{
+    if (_impl == nullptr) {
+        return false;
+    }
+
+    return _impl->accept_pair_request(pair_id);
 }
 
 bool LoRaMeshApp::debugSendModuleCommandVisible(const std::string &command)
@@ -8528,6 +9785,38 @@ std::vector<std::string> LoRaMeshApp::debugListPeerSummaries() const
                << "\" presence=" << jc4880::lora_mesh::presence_name(peer.presence)
                << " rssi=" << peer.last_rssi
                << " snr=" << peer.last_snr;
+        lines.push_back(stream.str());
+    }
+    return lines;
+}
+
+std::vector<std::string> LoRaMeshApp::debugListPendingPairSummaries() const
+{
+    std::vector<std::string> lines;
+    if (_impl == nullptr) {
+        return lines;
+    }
+
+    std::vector<PendingPairRequest> requests;
+    _impl->lock();
+    requests = _impl->pending_pair_requests;
+    _impl->unlock();
+
+    lines.reserve(requests.size());
+    for (const PendingPairRequest &request : requests) {
+         const std::string requester_key_fingerprint = request.public_key_hex.empty()
+                                      ? "Unavailable"
+                                      : (request.public_key_hex.size() <= 16U
+                                          ? request.public_key_hex
+                                          : request.public_key_hex.substr(0, 8) + "..." +
+                                             request.public_key_hex.substr(request.public_key_hex.size() - 8));
+        std::ostringstream stream;
+        stream << request.pair_id
+               << " from=" << request.device_id
+               << " name=\"" << (request.display_name.empty() ? request.device_id : request.display_name) << "\""
+             << " requester_key=" << requester_key_fingerprint
+               << " rssi=" << request.last_rssi
+               << " snr=" << request.last_snr;
         lines.push_back(stream.str());
     }
     return lines;

@@ -1423,6 +1423,10 @@ static void print_serial_command_help(void)
     printf("[serial]   lora.selftest.start\r\n");
     printf("[serial]   lora.selftest.stop\r\n");
     printf("[serial]   lora.send.common <text>\r\n");
+    printf("[serial]   lora.send.peer <device_id> <text>\r\n");
+    printf("[serial]   lora.pair.request <target>\r\n");
+    printf("[serial]   lora.pair.pending\r\n");
+    printf("[serial]   lora.pair.accept <pair_id>\r\n");
     printf("[serial]   lora.log [count]\r\n");
     printf("[serial]   lora.close\r\n");
 #endif
@@ -2180,6 +2184,82 @@ static void handle_serial_command(const std::string &raw_command)
         return;
     }
 
+    static constexpr const char *kLoraSendPeerPrefix = "lora.send.peer ";
+    if (command.rfind(kLoraSendPeerPrefix, 0) == 0) {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        const std::string remainder = trim_copy(command.substr(std::strlen(kLoraSendPeerPrefix)));
+        const size_t separator = remainder.find(' ');
+        if ((separator == std::string::npos) || (separator == 0)) {
+            printf("[lora] usage: lora.send.peer <device_id> <text>\r\n");
+            return;
+        }
+
+        const std::string peer_id = trim_copy(remainder.substr(0, separator));
+        const std::string message = trim_copy(remainder.substr(separator + 1));
+        if (peer_id.empty() || message.empty()) {
+            printf("[lora] usage: lora.send.peer <device_id> <text>\r\n");
+            return;
+        }
+
+        printf("[lora] send.peer %s\r\n", s_loraMeshApp->debugSendPeerMessage(peer_id, message) ? "queued" : "failed");
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    static constexpr const char *kLoraPairRequestPrefix = "lora.pair.request ";
+    if (command.rfind(kLoraPairRequestPrefix, 0) == 0) {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        const std::string target = trim_copy(command.substr(std::strlen(kLoraPairRequestPrefix)));
+        if (target.empty()) {
+            printf("[lora] usage: lora.pair.request <target>\r\n");
+            return;
+        }
+
+        printf("[lora] pair.request %s\r\n", s_loraMeshApp->debugSendPairRequest(target) ? "queued" : "failed");
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
+    if (command == "lora.pair.pending") {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        const std::vector<std::string> requests = s_loraMeshApp->debugListPendingPairSummaries();
+        printf("[lora] pending_pair_count=%u\r\n", static_cast<unsigned>(requests.size()));
+        for (const std::string &line : requests) {
+            printf("[lora]   %s\r\n", line.c_str());
+        }
+        return;
+    }
+
+    static constexpr const char *kLoraPairAcceptPrefix = "lora.pair.accept ";
+    if (command.rfind(kLoraPairAcceptPrefix, 0) == 0) {
+        if (s_loraMeshApp == nullptr) {
+            printf("[lora] app unavailable\r\n");
+            return;
+        }
+
+        const std::string pair_id = trim_copy(command.substr(std::strlen(kLoraPairAcceptPrefix)));
+        if (pair_id.empty()) {
+            printf("[lora] usage: lora.pair.accept <pair_id>\r\n");
+            return;
+        }
+
+        printf("[lora] pair.accept %s\r\n", s_loraMeshApp->debugAcceptPairRequest(pair_id) ? "queued" : "failed");
+        printf("[lora] %s\r\n", s_loraMeshApp->debugDescribeState().c_str());
+        return;
+    }
+
     if ((command == "lora.log") || (command.rfind("lora.log ", 0) == 0)) {
         if (s_loraMeshApp == nullptr) {
             printf("[lora] app unavailable\r\n");
@@ -2223,7 +2303,11 @@ static void handle_serial_command(const std::string &raw_command)
         (command == "lora.selftest.start") || (command == "lora.selftest.stop") || (command == "lora.close") ||
         (command == "lora.gpio.show") || (command == "lora.radio.on") || (command == "lora.radio.off") ||
         (command == "lora.log") || (command.rfind("lora.log ", 0) == 0) ||
+        (command == "lora.pair.pending") ||
         (command.rfind("lora.send.common ", 0) == 0) ||
+        (command.rfind("lora.send.peer ", 0) == 0) ||
+        (command.rfind("lora.pair.request ", 0) == 0) ||
+        (command.rfind("lora.pair.accept ", 0) == 0) ||
         (command.rfind("lora.chat.peer ", 0) == 0)) {
         printf("[lora] lora mesh app is disabled in menuconfig\r\n");
         return;
